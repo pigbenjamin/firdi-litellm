@@ -1,0 +1,17 @@
+# 環境變數（含 API key、master key 等機敏資訊）
+.env
+
+# 使用記錄（保留目錄結構但不追蹤內容）
+logs/*
+!logs/.gitkeep
+
+# HuggingFace 模型快取
+.cache/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# macOS
+.DS_Store

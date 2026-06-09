@@ -1,0 +1,141 @@
+services:
+  vllm-qwen:
+    image: "vllm/vllm-openai:latest"
+    container_name: firdi-vllm-qwen
+    command:
+      - --model
+      - Qwen/Qwen3.5-9B
+      - --served-model-name
+      - Qwen/Qwen3.5-9B
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --tensor-parallel-size
+      - "${QWEN_TENSOR_PARALLEL_SIZE:-1}"
+      - --gpu-memory-utilization
+      - "${QWEN_GPU_MEMORY_UTILIZATION:-0.65}"
+      - --max-model-len
+      - "${QWEN_MAX_MODEL_LEN:-32768}"
+      - --enable-auto-tool-choice
+      - --tool-call-parser
+      - qwen3_coder
+      - --reasoning-parser
+      - qwen3
+    environment:
+      HF_TOKEN: "${HF_TOKEN:-}"
+      HUGGING_FACE_HUB_TOKEN: "${HF_TOKEN:-}"
+    ports:
+      - "${QWEN_VLLM_PORT:-8001}:8000"
+    volumes:
+      - "${HF_HOME:-./.cache/huggingface}:/root/.cache/huggingface"
+    shm_size: "${VLLM_SHM_SIZE:-32gb}"
+    ipc: host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0']
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  # vllm-gemma:
+  #   image: "${GEMMA_VLLM_IMAGE:-vllm/vllm-openai:gemma4-0505-cu130}"
+  #   container_name: firdi-vllm-gemma
+  #   command:
+  #     - --model
+  #     - google/gemma-4-31B-it
+  #     - --served-model-name
+  #     - google/gemma-4-31B-it
+  #     - --host
+  #     - 0.0.0.0
+  #     - --port
+  #     - "8000"
+  #     - --tensor-parallel-size
+  #     - "${GEMMA_TENSOR_PARALLEL_SIZE:-1}"
+  #     - --gpu-memory-utilization
+  #     - "${GEMMA_GPU_MEMORY_UTILIZATION:-0.60}"
+  #     - --max-model-len
+  #     - "${GEMMA_MAX_MODEL_LEN:-32768}"
+  #   environment:
+  #     HF_TOKEN: "${HF_TOKEN:-}"
+  #     HUGGING_FACE_HUB_TOKEN: "${HF_TOKEN:-}"
+  #   ports:
+  #     - "${GEMMA_VLLM_PORT:-8002}:8000"
+  #   volumes:
+  #     - "${HF_HOME:-./.cache/huggingface}:/root/.cache/huggingface"
+  #   shm_size: "${VLLM_SHM_SIZE:-32gb}"
+  #   ipc: host
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             device_ids: ['1']
+  #             capabilities: [gpu]
+  #   restart: unless-stopped
+
+  vllm-gpt-oss-20b:
+    image: "vllm/vllm-openai:latest"
+    container_name: firdi-vllm-gpt-oss-20b
+    command:
+      - --model
+      - openai/gpt-oss-20b
+      - --served-model-name
+      - openai/gpt-oss-20b
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --tensor-parallel-size
+      - "${GPT_OSS_TENSOR_PARALLEL_SIZE:-1}"
+      - --gpu-memory-utilization
+      - "${GPT_OSS_GPU_MEMORY_UTILIZATION:-0.65}"
+      - --max-model-len
+      - "${GPT_OSS_MAX_MODEL_LEN:-32768}"
+    environment:
+      HF_TOKEN: "${HF_TOKEN:-}"
+      HUGGING_FACE_HUB_TOKEN: "${HF_TOKEN:-}"
+    ports:
+      - "${GPT_OSS_VLLM_PORT:-8002}:8000"
+    volumes:
+      - "${HF_HOME:-./.cache/huggingface}:/root/.cache/huggingface"
+    shm_size: "${VLLM_SHM_SIZE:-32gb}"
+    ipc: host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['1']
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  litellm:
+    image: "docker.litellm.ai/berriai/litellm:main-latest"
+    container_name: firdi-litellm
+    command:
+      - --config
+      - /app/config/litellm_config.yaml
+      - --host
+      - 0.0.0.0
+      - --port
+      - "4000"
+    environment:
+      LITELLM_MASTER_KEY: "${LITELLM_MASTER_KEY:-sk-firdi-master-change-me}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
+      USER_AUTH_CONFIG_PATH: "${USER_AUTH_CONFIG_PATH:-/app/config/users.json}"
+      LOG_PATH: "${LOG_PATH:-/app/logs/usage.jsonl}"
+      PYTHONPATH: /app/config
+    ports:
+      - "${LITELLM_PORT:-4000}:4000"
+    volumes:
+      - ./config:/app/config:ro
+      - ./logs:/app/logs
+    depends_on:
+      - vllm-qwen
+      # - vllm-gemma
+      - vllm-gpt-oss-20b
+    restart: unless-stopped

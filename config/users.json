@@ -1,0 +1,59 @@
+{
+  "users": [
+    {
+      "api_key": "dev-local-key-001",
+      "key_name": "local-dev-user",
+      "user_id": "user-local-dev",
+      "user_email": "dev@example.com",
+      "team_id": "team-local",
+      "team_alias": "Local Development",
+      "models": [
+        "local-qwen3.5-9b"
+      ],
+      "rpm_limit": 60,
+      "tpm_limit": 100000,
+      "metadata": {
+        "source": "users.json",
+        "environment": "local"
+      }
+    },
+    {
+      "api_key": "dev-paid-key-001",
+      "key_name": "paid-dev-user",
+      "user_id": "user-paid-dev",
+      "user_email": "paid@example.com",
+      "team_id": "team-paid",
+      "team_alias": "Paid Providers",
+      "models": [
+        "local-qwen3.5-9b",
+        "local-gpt-oss-20b",
+        "gpt-4o-mini",
+        "gemini-2.0-flash"
+      ],
+      "rpm_limit": 120,
+      "tpm_limit": 300000,
+      "metadata": {
+        "source": "users.json",
+        "environment": "local"
+      }
+    },
+    {
+      "api_key": "dev-rate-limit-key-001",
+      "key_name": "rate-limit-test-user",
+      "user_id": "user-rate-limit-test",
+      "user_email": "rate-limit@example.com",
+      "team_id": "team-local",
+      "team_alias": "Local Development",
+      "models": [
+        "local-qwen3.5-9b"
+      ],
+      "rpm_limit": 2,
+      "tpm_limit": 100000,
+      "metadata": {
+        "source": "users.json",
+        "environment": "local",
+        "purpose": "rate-limit-test"
+      }
+    }
+  ]
+}

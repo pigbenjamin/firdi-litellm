@@ -1,0 +1,39 @@
+model_list:
+  - model_name: local-qwen3.5-9b
+    litellm_params:
+      model: hosted_vllm/Qwen/Qwen3.5-9B
+      api_base: http://vllm-qwen:8000/v1
+      api_key: EMPTY
+
+  # - model_name: local-gemma4-31b
+  #   litellm_params:
+  #     model: hosted_vllm/google/gemma-4-31B-it
+  #     api_base: http://vllm-gemma:8000/v1
+  #     api_key: EMPTY
+
+  - model_name: local-gpt-oss-20b
+    litellm_params:
+      model: hosted_vllm/openai/gpt-oss-20b
+      api_base: http://vllm-gpt-oss-20b:8000/v1
+      api_key: EMPTY
+
+  - model_name: gpt-4o-mini
+    litellm_params:
+      model: openai/gpt-4o-mini
+      api_key: os.environ/OPENAI_API_KEY
+
+  - model_name: gemini-2.0-flash
+    litellm_params:
+      model: gemini/gemini-2.0-flash
+      api_key: os.environ/GEMINI_API_KEY
+
+litellm_settings:
+  callbacks: ["custom_logger.proxy_handler_config"]
+  drop_params: true
+  request_timeout: 600
+  num_retries: 2
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  custom_auth: /app/config/custom_auth.user_api_key_auth
+  custom_auth_run_common_checks: false
