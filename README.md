@@ -1,216 +1,460 @@
-# LiteLLM + 本地 vLLM 代理
+# firdi-litellm — AI 算力平台
 
-本專案以 Docker Compose 啟動一套 LLM 代理服務，透過自訂認證機制管控不同使用者對模型的存取權限，並記錄所有使用 log。
+以 K8s 部署地端 vLLM 服務，LiteLLM Proxy 統一接取雲端與地端模型，並以部門→使用者兩層權限管控模型存取與流量。
 
-## 服務架構
+## 整體架構
 
 ```
-客戶端
-  │  Authorization: Bearer <api-key>
-  ▼
-LiteLLM Proxy（:4000）
-  ├─ custom_auth.py   — 驗證 key、比對 model allowlist
-  ├─ custom_logger.py — 記錄每次 LLM 呼叫至 logs/usage.jsonl
+使用者 (Bearer <personal-key>)
   │
-  ├─► vllm-qwen      （:8001，GPU 0）— Qwen/Qwen3.5-9B
-  ├─► vllm-gpt-oss-20b（:8002，GPU 1）— openai/gpt-oss-20b
-  ├─► OpenAI API     （外部，需 OPENAI_API_KEY）
-  └─► Gemini API     （外部，需 GEMINI_API_KEY）
+  ▼
+LiteLLM Proxy (K8s, :30400)
+  ├─ custom_auth.py  — 使用者驗證 → 部門權限 → 模型 allowlist → dept rate limit
+  ├─ custom_logger.py — 呼叫 log + OpenRouter API key 動態注入
+  │    └─ SQLite (PVC: users-db-pvc) ◄── Admin API (K8s, :30408)
+  │
+  ├─► reasoning-vllm-service  (GPU 0+1, TP=2) — Qwen/Qwen3.6-27B（思考型）
+  ├─► fast-vllm-service       (GPU 2,    TP=1) — Qwen/Qwen3.6-35B-A3B-FP8（快捷型）
+  ├─► embed-vllm-service      (GPU 3,  :8000)  — Qwen/Qwen3-Embedding-8B
+  ├─► rerank-vllm-service     (GPU 3,  :8001)  — Qwen/Qwen3-Reranker-8B
+  ├─► ollama-service          (可選，臨時需求)
+  └─► OpenRouter API          (雲端，各部門各自的 API key)
 ```
 
-## 檔案結構
+使用者與部門的**模型權限**儲存在 SQLite（`users.db`），由 Admin API 管理；Keycloak 負責身份認證，兩者職責分離。
+
+## 目錄結構
 
 ```
-├── docker-compose.yml          # 服務拓樸與 GPU 分配
-├── .env                        # 實際執行時的環境變數（不進版控）
-├── .env.example                # 環境變數範本
-├── config/
-│   ├── litellm_config.yaml     # LiteLLM 模型路由、認證、callback 設定
-│   ├── custom_auth.py          # API key 驗證、model allowlist、auth deny log
-│   ├── custom_logger.py        # LiteLLM callback，記錄 LLM 呼叫 log
-│   └── users.json              # 使用者清單（key、模型權限、rate limit）
-├── logs/
-│   └── usage.jsonl             # 使用記錄（容器重啟後保留）
-└── tests/
-    ├── test_litellm.py         # 自動化 smoke test
-    └── TEST_PLAN.md            # 測試計劃與手動測試指令
+├── k8s/                         ← K8s manifests（新架構主目錄）
+│   ├── namespace.yaml
+│   ├── shared-storage/
+│   │   └── pvc.yaml             — PVC: users-db-pvc（SQLite 共享儲存）
+│   ├── vllm/
+│   │   ├── reasoning/           — deployment.yaml, service.yaml（GPU 0+1, TP=2）
+│   │   ├── fast/                — deployment.yaml, service.yaml（GPU 2, TP=1）
+│   │   └── embed-rerank/        — deployment.yaml, service-embed.yaml, service-rerank.yaml（GPU 3）
+│   ├── litellm/
+│   │   ├── deployment.yaml
+│   │   ├── service.yaml         — NodePort 30400
+│   │   └── secrets.yaml         — Secret 建立說明（不含真實值）
+│   ├── admin-api/
+│   │   ├── deployment.yaml      — Admin API Pod
+│   │   ├── service.yaml         — NodePort 30408
+│   │   └── secret.yaml          — ADMIN_API_KEY Secret（需替換真實值）
+│   └── ollama/                  — 可選
+├── admin-api/                   ← 管理 API 原始碼（FastAPI）
+│   ├── main.py
+│   ├── database.py
+│   ├── models.py
+│   ├── auth.py
+│   ├── routers/
+│   │   ├── departments.py       — 部門 CRUD
+│   │   ├── users.py             — 使用者 CRUD + block/unblock + regenerate-key
+│   │   ├── models.py            — 可用模型清單（代理 LiteLLM /models）
+│   │   └── sync.py              — Keycloak webhook 接收
+│   ├── requirements.txt
+│   └── Dockerfile
+├── keycloak/
+│   ├── SETUP.md                 — Keycloak 插件安裝說明
+│   └── plugins/
+│       └── keycloak-user-sync-listener/  — 使用者事件 webhook 轉發插件（Java/Maven）
+├── docs/
+│   ├── admin-api.md             — Admin API 完整接口文件
+│   └── permission-sync.md       — 模型權限同步架構與 SOP（OpenWebUI 主導）
+├── config/                      ← LiteLLM + auth 設定（K8s 版）
+│   ├── litellm_config.yaml
+│   ├── custom_auth.py           — 從 SQLite 讀取使用者/部門設定
+│   ├── custom_logger.py
+│   └── users.json               — 舊格式保留，供 migrate 腳本使用
+├── scripts/
+│   └── migrate_users_json.py    — 一次性將 users.json 匯入 SQLite
+└── docker-compose/              ← 舊架構保留（參考用）
 ```
 
-## 快速啟動
+## 硬體 GPU 分配
+
+| GPU | 服務 | 模型 | 定位 | 關鍵 vLLM 參數 |
+|-----|------|------|------|----------------|
+| GPU 0+1 | reasoning-vllm | Qwen/Qwen3.6-27B | 思考型：長 CoT、深度推理 | TP=2, max-model-len=65536, max-num-seqs=2 |
+| GPU 2 | fast-vllm | Qwen/Qwen3.6-35B-A3B-FP8 | 快捷型：快速問答、高並發 | TP=1, max-model-len=32768, max-num-seqs=256 |
+| GPU 3 | embed-rerank-vllm | Qwen3-Embedding-8B + Qwen3-Reranker-8B | 向量化 + 重排序（同一 Pod） | 各 gpu-mem-util=0.45（合計 ~86GB < 96GB） |
+
+GPU 由 NVIDIA Device Plugin 自動分配，不需手動指定 GPU index。
+embed-rerank Pod 內運行兩個 vLLM 進程（port 8000 + 8001），由 startup script 控制啟動順序（embed 先，待 /health 後再啟 rerank）。
+
+## 快速部署
+
+### 1. 確認 K8s GPU 環境
 
 ```bash
-cp .env.example .env
-# 視需要填入 OPENAI_API_KEY、GEMINI_API_KEY、HF_TOKEN
-docker compose up -d
+kubectl get nodes -o json | jq '.items[].status.capacity'
+# 應看到 "nvidia.com/gpu": "4"
 ```
 
-> 第一次啟動 vLLM 容器需要從 HuggingFace 下載模型，可能需要數分鐘。
+若無 GPU 資源，先安裝 NVIDIA GPU Operator：
+
+```bash
+helm repo add nvidia https://helm.ngc.nvidia.com/nvidia
+helm install gpu-operator nvidia/gpu-operator -n gpu-operator --create-namespace
+```
+
+### 2. 建立 Namespace 與 Secrets
+
+```bash
+kubectl apply -f k8s/namespace.yaml
+
+# LiteLLM master key（同時供 Admin API 查詢 /models 使用）
+kubectl create secret generic litellm-secrets \
+  --from-literal=master-key=sk-firdi-master-CHANGE-ME \
+  -n ai-platform
+
+# HuggingFace token（下載 gated 模型用）
+kubectl create secret generic hf-token \
+  --from-literal=token=<your-hf-token> \
+  -n ai-platform
+
+# Admin API 全部 secrets（包含 Keycloak 連線參數）
+kubectl create secret generic admin-api-secrets \
+  --from-literal=api-key=<admin-api-key-CHANGE-ME> \
+  --from-literal=webhook-secret=<webhook-secret-CHANGE-ME> \
+  --from-literal=keycloak-url=https://<keycloak-host>:<port>/ \
+  --from-literal=keycloak-realm=<realm-name> \
+  --from-literal=keycloak-client-id=user-sync-service \
+  --from-literal=keycloak-client-secret=<client-secret> \
+  --from-literal=keycloak-ssl-verify=false \
+  -n ai-platform
+```
+
+### 3. 建立 ConfigMaps
+
+```bash
+kubectl create configmap litellm-config \
+  --from-file=litellm_config.yaml=config/litellm_config.yaml \
+  -n ai-platform
+
+kubectl create configmap litellm-custom-auth \
+  --from-file=custom_auth.py=config/custom_auth.py \
+  -n ai-platform
+
+kubectl create configmap litellm-custom-logger \
+  --from-file=custom_logger.py=config/custom_logger.py \
+  -n ai-platform
+```
+
+### 4. 建立 PVC 並匯入初始資料
+
+先確認叢集的 StorageClass 支援狀況：
+
+```bash
+kubectl get storageclass
+```
+
+若有支援 `ReadWriteMany` 的 StorageClass（如 NFS），在 `k8s/shared-storage/pvc.yaml` 取消 `storageClassName` 的 comment 並填入對應名稱。若叢集只有 `ReadWriteOnce`，兩個 Pod 需排程在同一 node（單節點部署預設即可）。
+
+```bash
+# 建立 PVC
+kubectl apply -f k8s/shared-storage/pvc.yaml
+
+# 產生 SQLite DB（從現有 users.json 匯入）
+python3 scripts/migrate_users_json.py \
+  --json config/users.json \
+  --db /tmp/users.db
+
+# 透過臨時 Pod 將 DB 複製到 PVC
+kubectl run tmp-pod --image=busybox --restart=Never -n ai-platform \
+  --overrides='{"spec":{"volumes":[{"name":"db","persistentVolumeClaim":{"claimName":"users-db-pvc"}}],"containers":[{"name":"tmp","image":"busybox","command":["sleep","3600"],"volumeMounts":[{"mountPath":"/data","name":"db"}]}]}}'
+kubectl wait pod/tmp-pod -n ai-platform --for=condition=Ready --timeout=30s
+kubectl cp /tmp/users.db ai-platform/tmp-pod:/data/users.db
+kubectl delete pod tmp-pod -n ai-platform
+```
+
+### 5. 部署 Admin API
+
+先 build 並推送 image（替換 `<registry>` 為實際 registry 位址）：
+
+```bash
+docker build -t <registry>/firdi-admin-api:latest admin-api/
+docker push <registry>/firdi-admin-api:latest
+```
+
+更新 `k8s/admin-api/deployment.yaml` 中的 `image` 欄位後部署：
+
+```bash
+kubectl apply -f k8s/admin-api/
+```
+
+Admin API 啟動後在 `http://<node-ip>:30408`，API 文件在 `/docs`。
+
+### 6. 部署 vLLM 服務
+
+```bash
+# 依序部署（第一次啟動需下載模型，可能需要 5~20 分鐘）
+kubectl apply -f k8s/vllm/reasoning/
+kubectl apply -f k8s/vllm/fast/
+kubectl apply -f k8s/vllm/embed-rerank/
+
+# 觀察 Pod 狀態
+kubectl get pods -n ai-platform -w
+```
+
+### 7. 部署 LiteLLM
+
+```bash
+kubectl apply -f k8s/litellm/deployment.yaml
+kubectl apply -f k8s/litellm/service.yaml
+```
+
+LiteLLM 對外服務在 `http://<node-ip>:30400`。
 
 ## 可用模型
 
-| 模型名稱 | 實際模型 | 位置 | GPU |
-|---------|---------|------|-----|
-| `local-qwen3.5-9b` | `Qwen/Qwen3.5-9B` | `vllm-qwen:8000` | GPU 0 |
-| `local-gpt-oss-20b` | `openai/gpt-oss-20b` | `vllm-gpt-oss-20b:8000` | GPU 1 |
-| `gpt-4o-mini` | OpenAI | 外部 API | — |
-| `gemini-2.0-flash` | Gemini | 外部 API | — |
+| 模型名稱 | 實際模型 | 定位 | 位置 |
+|---------|---------|------|------|
+| `reasoning-qwen` | Qwen/Qwen3.6-27B | 思考型（深度推理、長 CoT） | reasoning-vllm-service:8000 |
+| `fast-qwen` | Qwen/Qwen3.6-35B-A3B-FP8 | 快捷型（快速問答、高並發） | fast-vllm-service:8000 |
+| `embed-qwen` | Qwen/Qwen3-Embedding-8B | 向量化 | embed-vllm-service:8000 |
+| `rerank-qwen` | Qwen/Qwen3-Reranker-8B | 重排序 | rerank-vllm-service:8001 |
+| `openrouter/<provider>/<model>` | 各家雲端模型 | 雲端 | OpenRouter API |
+| `ollama/<model>` | 任意 Ollama 模型 | 臨時地端 | ollama-service:11434 |
 
 ## 使用方式
 
-### 本地 Qwen（一般使用者）
+### 思考型 LLM（深度推理、長 CoT）
 
 ```bash
-curl http://localhost:4000/v1/chat/completions \
-  -H "Authorization: Bearer dev-local-key-001" \
+curl http://<node-ip>:30400/v1/chat/completions \
+  -H "Authorization: Bearer sk-dev-eng-user-001" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "reasoning-qwen", "messages": [{"role": "user", "content": "請分析以下程式碼的時間複雜度..."}]}'
+```
+
+### 快捷型 LLM（快速問答）
+
+```bash
+curl http://<node-ip>:30400/v1/chat/completions \
+  -H "Authorization: Bearer sk-dev-eng-user-001" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "fast-qwen", "messages": [{"role": "user", "content": "你好"}]}'
+```
+
+### Embedding
+
+```bash
+curl http://<node-ip>:30400/v1/embeddings \
+  -H "Authorization: Bearer sk-dev-eng-user-001" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "embed-qwen", "input": "這是要 embed 的文字"}'
+```
+
+### Reranking
+
+```bash
+curl http://<node-ip>:30400/v1/rerank \
+  -H "Authorization: Bearer sk-dev-eng-user-001" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "local-qwen3.5-9b",
-    "messages": [{"role": "user", "content": "用一句話打個招呼"}]
+    "model": "rerank-qwen",
+    "query": "什麼是機器學習",
+    "documents": ["機器學習是一種 AI 技術", "深度學習是機器學習的子集", "今天天氣很好"]
   }'
 ```
 
-### 本地 GPT-OSS（付費使用者）
+### 雲端模型（OpenRouter）
 
 ```bash
-curl http://localhost:4000/v1/chat/completions \
-  -H "Authorization: Bearer dev-paid-key-001" \
+curl http://<node-ip>:30400/v1/chat/completions \
+  -H "Authorization: Bearer sk-dev-eng-user-001" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "openrouter/anthropic/claude-sonnet-4-5", "messages": [{"role": "user", "content": "你好"}]}'
+```
+
+## 權限架構
+
+**權威來源為 OpenWebUI** 畫面上的模型授權；由反向同步（pull）寫回 DB，custom_auth 讀 DB 做 enforcement。完整架構與操作 SOP 見 [docs/permission-sync.md](docs/permission-sync.md)。
+
+```
+部門 (Department)
+  ├─ openrouter_api_key     ← 雲端模型共用金鑰（各部門獨立）
+  ├─ allowed_models[]       ← 部門可用模型（來自 OpenWebUI group 授權）
+  ├─ dept_rpm_limit         ← 部門每分鐘請求數上限
+  ├─ dept_tpm_limit         ← 部門每分鐘 token 數上限
+  └─ users[]
+       ├─ api_key           ← 個人 Bearer token
+       ├─ models[]          ← 個別授權給此人的「額外」模型（來自 OpenWebUI user 授權）
+       ├─ rpm_limit         ← 個人每分鐘請求數上限
+       └─ tpm_limit         ← 個人每分鐘 token 數上限
+```
+
+### 模型權限規則（加法模型）
+
+使用者可用模型 = **部門授權 ∪ 個人授權**（聯集）：
+
+- `dept.allowed_models` 有 → 部門所有成員可用
+- `user.models` 有 → 額外只授權給該使用者（可超出部門）
+- 兩者聯集為空 → **拒絕所有 model**（未明確授權 = 沒人能用）
+- 任一邊含 `"*"` → 允許全部 model
+
+> 個人 `models` 是「加給」不是「限縮」；一般使用者留空即繼承部門。改權限請在 OpenWebUI 設定（見 permission-sync.md）。
+
+### 管理使用者與部門（Admin API）
+
+所有操作使用 `Authorization: Bearer <admin-api-key>` 標頭，API 文件詳見 `http://<node-ip>:30408/docs`。
+
+**新增部門**
+```bash
+curl -X POST http://<node-ip>:30408/api/v1/departments \
+  -H "Authorization: Bearer <admin-api-key>" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "local-gpt-oss-20b",
-    "messages": [{"role": "user", "content": "用一句話打個招呼"}]
+    "dept_id": "data-science",
+    "dept_name": "資料科學部",
+    "openrouter_api_key": "sk-or-...",
+    "allowed_models": ["reasoning-qwen", "fast-qwen", "openrouter/anthropic/claude-sonnet-4-5"],
+    "dept_rpm_limit": 300,
+    "dept_tpm_limit": 1000000
   }'
 ```
 
-### 外部 OpenAI（付費使用者）
-
+**新增使用者**
 ```bash
-curl http://localhost:4000/v1/chat/completions \
-  -H "Authorization: Bearer dev-paid-key-001" \
+curl -X POST http://<node-ip>:30408/api/v1/users \
+  -H "Authorization: Bearer <admin-api-key>" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "gpt-4o-mini",
-    "messages": [{"role": "user", "content": "用一句話打個招呼"}]
+    "api_key": "sk-ds-user-001",
+    "key_name": "ds-user-alice",
+    "user_id": "ds-alice",
+    "user_email": "alice@company.com",
+    "dept_id": "data-science",
+    "models": ["reasoning-qwen", "fast-qwen"],
+    "rpm_limit": 60,
+    "tpm_limit": 200000
   }'
 ```
 
-## 自訂認證（Custom Auth）
+**封鎖 / 解封使用者**
+```bash
+curl -X POST http://<node-ip>:30408/api/v1/users/ds-alice/block \
+  -H "Authorization: Bearer <admin-api-key>"
 
-### 認證流程
-
-```
-請求進入
-  → custom_auth.py：比對 users.json 驗證 API key     → 不存在回傳 401
-  → custom_auth.py：比對使用者的 model allowlist      → 不在清單回傳 403
-  → LiteLLM 執行 rpm_limit / tpm_limit rate limiting
-  → 路由至對應的 LLM 後端
+curl -X POST http://<node-ip>:30408/api/v1/users/ds-alice/unblock \
+  -H "Authorization: Bearer <admin-api-key>"
 ```
 
-### 使用者設定（users.json）
+**重新生成使用者 API Key**（例如 key 外洩時）
+```bash
+curl -X POST http://<node-ip>:30408/api/v1/users/ds-alice/regenerate-key \
+  -H "Authorization: Bearer <admin-api-key>"
+# 回傳含新 api_key 的使用者物件
+```
 
-| 使用者 | API Key | 可用模型 | RPM | TPM |
-|--------|---------|----------|-----|-----|
-| local-dev-user | `dev-local-key-001` | `local-qwen3.5-9b` | 60 | 100,000 |
-| paid-dev-user | `dev-paid-key-001` | `local-qwen3.5-9b`、`local-gpt-oss-20b`、`gpt-4o-mini`、`gemini-2.0-flash` | 120 | 300,000 |
-| rate-limit-test-user | `dev-rate-limit-key-001` | `local-qwen3.5-9b` | 2 | 100,000 |
+**更新部門可用模型**（例外流程：權威來源是 OpenWebUI，DB 側 PATCH 須遵守 `pull → PATCH → push`，見 [docs/permission-sync.md](docs/permission-sync.md)）
+```bash
+curl -X PATCH http://<node-ip>:30408/api/v1/departments/data-science \
+  -H "Authorization: Bearer <admin-api-key>" \
+  -H "Content-Type: application/json" \
+  -d '{"allowed_models": ["reasoning-qwen", "fast-qwen"]}'
+```
 
-### 重要設計說明
+**查詢系統可用模型清單**（UI 選取時使用）
+```bash
+curl http://<node-ip>:30408/api/v1/models \
+  -H "Authorization: Bearer <admin-api-key>"
+# {"models": ["embed-qwen", "fast-qwen", "reasoning-qwen", "rerank-qwen"]}
+```
 
-- **Model allowlist** 由 `custom_auth.py` 在 auth 階段直接攔截，不依賴 LiteLLM 的內部機制
-- **Rate limiting（RPM/TPM）** 由 LiteLLM in-memory 計數器執行，不需要 DB
-- `custom_auth_run_common_checks` 設為 `false`，因為 common checks 需要 Postgres DB，本專案未使用
-- `team_id` / `team_alias` 儲存在 `metadata` 欄位，不傳入 `UserAPIKeyAuth` 頂層（避免 LiteLLM 觸發 DB 查詢）
+變更**即時生效**（custom_auth.py 在下一次 auth check 時會偵測到 db_version 變化並重載快取，最慢 30 秒）。
 
-### 串接真實認證系統
+完整接口文件詳見 [docs/admin-api.md](docs/admin-api.md)。
+模型權限管理（OpenWebUI 主導）的架構與操作 SOP 詳見 [docs/permission-sync.md](docs/permission-sync.md)。
 
-將 `config/custom_auth.py` 中的 `_find_user()` 替換為對應你的認證服務或資料庫的查詢邏輯，再將結果映射至 `UserAPIKeyAuth` 即可，其他邏輯不需改動。
+## Keycloak 使用者同步
 
-## 使用記錄（Logging）
+使用者身份（user_id、email、所屬部門）由 Keycloak 透過 webhook 自動同步至 Admin API，**無需手動建立使用者帳號**。
 
-每次請求都會記錄至 `logs/usage.jsonl`（JSON Lines 格式，每行一筆），容器重啟後保留。
+### 同步流程
 
-### 記錄類型
+```
+Keycloak 事件
+  │  REGISTER / UPDATE_PROFILE（使用者自身操作）
+  │  CREATE / UPDATE / DELETE（管理員操作）
+  ▼
+keycloak-user-sync-listener（JAR 插件）
+  │  POST /api/v1/sync/keycloak
+  │  Header: X-Webhook-Secret: <webhook-secret>
+  ▼
+Admin API
+  ├─ 查詢 Keycloak Admin API 取得使用者詳情
+  ├─ 解析群組路徑（/DeptName/...）→ dept_id
+  ├─ 新使用者：建立帳號，分配 sk-{uuid} API key，models 留空（模型權限由 OpenWebUI pull 填入）
+  ├─ 舊使用者：更新 email / username / dept_id / blocked
+  └─ DELETE 事件：blocked=1（資料保留，封鎖存取）
+```
 
-**成功的 LLM 呼叫**
+### 插件安裝
+
+詳見 [keycloak/SETUP.md](keycloak/SETUP.md)。簡要步驟：
+
+1. `cd keycloak/plugins/keycloak-user-sync-listener && mvn package`
+2. 將 `target/keycloak-user-sync-listener-1.0.0.jar` 複製到 Keycloak 的 `providers/` 目錄
+3. 重啟 Keycloak，在 Realm → Events → Event listeners 啟用 `user-sync-listener`
+4. 在 Keycloak Realm 設定中加入環境變數（或在插件 `ProviderFactory` 中設定）：
+   - `USER_SYNC_WEBHOOK_URL`：`http://<admin-api-host>/api/v1/sync/keycloak`
+   - `USER_SYNC_WEBHOOK_SECRET`：與 `WEBHOOK_SECRET` 一致
+
+### 部門對應規則
+
+使用者的 Keycloak 群組路徑第一段作為 `dept_id`：
+
+| Keycloak 群組 | dept_id |
+|--------------|---------|
+| `/engineering` | `engineering` |
+| `/engineering/backend` | `engineering` |
+| `/data-science/senior` | `data-science` |
+
+若部門不存在會自動建立（`allowed_models` 為空，需管理員手動設定）。
+
+## 使用記錄（Log）
+
+Log 格式（JSON Lines）位於 LiteLLM Pod 內 `/app/logs/usage.jsonl`，包含 `dept_id` 欄位：
+
 ```json
-{"timestamp": "2025-06-09T12:00:00+00:00", "event": "llm_call", "status": "success", "user_id": "user-local-dev", "key_name": "local-dev-user", "model": "local-qwen3.5-9b", "prompt_tokens": 10, "completion_tokens": 16, "total_tokens": 26, "latency_ms": 1234}
+{"timestamp": "...", "event": "llm_call", "status": "success", "user_id": "eng-user-001", "key_name": "engineering-dev-user", "dept_id": "engineering", "model": "reasoning-qwen", "prompt_tokens": 20, "completion_tokens": 50, "total_tokens": 70, "latency_ms": 1234}
 ```
 
-**無效 key 被拒絕**
-```json
-{"timestamp": "2025-06-09T12:00:01+00:00", "event": "auth_denied", "reason": "invalid_key"}
-```
-
-**model 不在 allowlist**
-```json
-{"timestamp": "2025-06-09T12:00:02+00:00", "event": "auth_denied", "reason": "model_not_allowed", "user_id": "user-local-dev", "key_name": "local-dev-user", "model": "gpt-4o-mini"}
-```
-
-**LLM 呼叫失敗**
-```json
-{"timestamp": "2025-06-09T12:00:03+00:00", "event": "llm_call", "status": "failure", "user_id": "user-local-dev", "key_name": "local-dev-user", "model": "local-qwen3.5-9b", "error": "...", "latency_ms": 500}
-```
-
-### 查看 log
+查看 log：
 
 ```bash
-# 查看所有記錄
-cat logs/usage.jsonl
-
-# 即時追蹤
-tail -f logs/usage.jsonl
-
-# 只看 LLM 呼叫成功的記錄
-grep '"status": "success"' logs/usage.jsonl
-
-# 只看被拒絕的記錄
-grep '"event": "auth_denied"' logs/usage.jsonl
+kubectl exec -n ai-platform deploy/litellm -- tail -f /app/logs/usage.jsonl
 ```
 
-## GPU 設定
+## 監控指標
 
-每個模型透過 `deploy.resources.reservations.devices` 分配專屬 GPU，不依賴 `NVIDIA_VISIBLE_DEVICES` 環境變數：
+若已部署 DCGM Exporter + Prometheus，關鍵指標：
 
-- **Qwen** → GPU 0
-- **GPT-OSS** → GPU 1
+| 指標 | 意義 |
+|------|------|
+| `vllm:num_requests_waiting` | Queue 積壓數，> 0 代表壅塞 |
+| `vllm:gpu_cache_usage_perc` | KV cache 使用率，接近 100% 代表 throughput 瓶頸 |
+| `vllm:num_requests_running` | 目前正在處理的請求數 |
+| `DCGM_FI_DEV_GPU_UTIL` | GPU 計算使用率 |
 
-若需要 Tensor Parallelism（模型跨多張 GPU）：
+## Ollama 臨時使用
+
+4 張 GPU 已全數分配。若需臨時使用 Ollama，手動釋放 embed-rerank：
 
 ```bash
-QWEN_TENSOR_PARALLEL_SIZE=2
-GPT_OSS_TENSOR_PARALLEL_SIZE=2
+kubectl scale deploy/embed-rerank-vllm --replicas=0 -n ai-platform
+# ... 使用 Ollama ...
+kubectl scale deploy/embed-rerank-vllm --replicas=1 -n ai-platform
 ```
 
-若 VRAM 不足，調低以下參數：
+## 舊有架構
+
+原 Docker Compose 架構保留於 `docker-compose/` 目錄，可用於本地開發測試：
 
 ```bash
-QWEN_GPU_MEMORY_UTILIZATION=0.5   # 預設 0.55
-QWEN_MAX_MODEL_LEN=16384          # 預設 32768
-```
-
-## 環境變數說明
-
-| 變數 | 說明 | 預設值 |
-|------|------|--------|
-| `LITELLM_MASTER_KEY` | LiteLLM 管理員 key（可繞過 custom auth） | `sk-firdi-master-change-me` |
-| `USER_AUTH_CONFIG_PATH` | users.json 在容器內的路徑 | `/app/config/users.json` |
-| `LOG_PATH` | usage log 在容器內的路徑 | `/app/logs/usage.jsonl` |
-| `HF_TOKEN` | HuggingFace token（下載 gated 模型用） | 空 |
-| `LITELLM_PORT` | LiteLLM 對外 port | `4000` |
-| `QWEN_VLLM_PORT` | Qwen vLLM 對外 port | `8001` |
-| `GPT_OSS_VLLM_PORT` | GPT-OSS vLLM 對外 port | `8002` |
-| `VLLM_SHM_SIZE` | vLLM 容器的 shared memory 大小 | `32gb` |
-
-## 測試
-
-詳細測試計劃請參考 [tests/TEST_PLAN.md](tests/TEST_PLAN.md)。
-
-```bash
-# 完整測試（兩個 vLLM 皆已啟動）
-python3 tests/test_litellm.py
-
-# vLLM 載入中，先跳過 rate limit
-python3 tests/test_litellm.py --skip-rate-limit
-
-# 只有 Qwen 啟動
-python3 tests/test_litellm.py --skip-gpt-oss --skip-rate-limit
+cd docker-compose
+docker compose up -d
 ```

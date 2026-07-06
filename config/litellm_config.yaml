@@ -1,31 +1,42 @@
 model_list:
-  - model_name: local-qwen3.5-9b
+  # 地端模型（K8s vLLM 服務）
+  - model_name: reasoning-qwen
     litellm_params:
-      model: hosted_vllm/Qwen/Qwen3.5-9B
-      api_base: http://vllm-qwen:8000/v1
+      model: hosted_vllm/Qwen/Qwen3.6-27B
+      api_base: http://reasoning-vllm-service:8000/v1
       api_key: EMPTY
 
-  # - model_name: local-gemma4-31b
-  #   litellm_params:
-  #     model: hosted_vllm/google/gemma-4-31B-it
-  #     api_base: http://vllm-gemma:8000/v1
-  #     api_key: EMPTY
-
-  - model_name: local-gpt-oss-20b
+  - model_name: fast-qwen
     litellm_params:
-      model: hosted_vllm/openai/gpt-oss-20b
-      api_base: http://vllm-gpt-oss-20b:8000/v1
+      model: hosted_vllm/Qwen/Qwen3.6-35B-A3B-FP8
+      api_base: http://fast-vllm-service:8000/v1
       api_key: EMPTY
 
-  - model_name: gpt-4o-mini
+  - model_name: embed-qwen
     litellm_params:
-      model: openai/gpt-4o-mini
-      api_key: os.environ/OPENAI_API_KEY
+      model: hosted_vllm/Qwen/Qwen3-Embedding-8B
+      api_base: http://embed-vllm-service:8000/v1
+      api_key: EMPTY
 
-  - model_name: gemini-2.0-flash
+  - model_name: rerank-qwen
     litellm_params:
-      model: gemini/gemini-2.0-flash
-      api_key: os.environ/GEMINI_API_KEY
+      model: hosted_vllm/Qwen/Qwen3-Reranker-8B
+      api_base: http://rerank-vllm-service:8001
+      api_key: EMPTY
+
+  # 臨時地端（Ollama，應急短期需求）
+  - model_name: ollama/*
+    litellm_params:
+      model: ollama/*
+      api_base: http://ollama-service:11434
+
+  # 雲端（OpenRouter）— 開發期先放一個代表模型，需要時再加
+  # api_key 由 custom_logger.py 的 pre_call_hook 動態注入（從部門設定讀取）
+  - model_name: openrouter/openai/gpt-4o-mini
+    litellm_params:
+      model: openai/openai/gpt-4o-mini
+      api_base: https://openrouter.ai/api/v1
+      api_key: os.environ/OPENROUTER_API_KEY_PLACEHOLDER
 
 litellm_settings:
   callbacks: ["custom_logger.proxy_handler_config"]

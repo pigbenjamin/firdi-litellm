@@ -1,0 +1,77 @@
+services:
+  vllm-reasoning:
+    image: "vllm/vllm-openai:v0.23.0"
+    container_name: firdi-vllm-reasoning
+    command:
+      - --model
+      - Qwen/Qwen3.6-27B
+      - --served-model-name
+      - Qwen/Qwen3.6-27B
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --tensor-parallel-size
+      - "2"
+      - --max-model-len
+      - "${REASONING_MAX_MODEL_LEN:-65536}"
+      - --gpu-memory-utilization
+      - "${REASONING_GPU_MEMORY_UTILIZATION:-0.85}"
+      - --max-num-seqs
+      - "${REASONING_MAX_NUM_SEQS:-2}"
+      - --max-num-batched-tokens
+      - "${REASONING_MAX_NUM_BATCHED_TOKENS:-8192}"
+      - --reasoning-parser
+      - qwen3
+      - --trust-remote-code
+      - --disable-custom-all-reduce
+    environment:
+      HF_TOKEN: "${HF_TOKEN:-}"
+      HUGGING_FACE_HUB_TOKEN: "${HF_TOKEN:-}"
+      NCCL_P2P_DISABLE: "1"
+    ports:
+      - "${REASONING_VLLM_PORT:-8003}:8000"
+    volumes:
+      - "${HF_HOME:-./.cache/huggingface}:/root/.cache/huggingface"
+    shm_size: "${VLLM_SHM_SIZE:-32gb}"
+    ipc: host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0', '1']
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  litellm:
+    image: "docker.litellm.ai/berriai/litellm:main-latest"
+    container_name: firdi-litellm
+    command:
+      - --config
+      - /app/config/litellm_config.yaml
+      - --host
+      - 0.0.0.0
+      - --port
+      - "4000"
+    environment:
+      LITELLM_MASTER_KEY: "${LITELLM_MASTER_KEY:-sk-firdi-master-change-me}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
+      USER_AUTH_DB_PATH: "/app/data/users.db"
+      LOG_PATH: "${LOG_PATH:-/app/logs/usage.jsonl}"
+      PYTHONPATH: /app/config
+      OPENWEBUI_URL: "${OPENWEBUI_URL:-}"
+      OPENWEBUI_ADMIN_KEY: "${OPENWEBUI_ADMIN_KEY:-}"
+      OPENWEBUI_SERVICE_KEY: "${OPENWEBUI_SERVICE_KEY:-}"
+    ports:
+      - "${LITELLM_PORT:-4000}:4000"
+    volumes:
+      - ./config/litellm_config-2gpu.yaml:/app/config/litellm_config.yaml:ro
+      - ../config/custom_auth.py:/app/config/custom_auth.py:ro
+      - ../config/custom_logger.py:/app/config/custom_logger.py:ro
+      - ../data:/app/data
+      - ./logs:/app/logs
+    depends_on:
+      - vllm-reasoning
+    restart: unless-stopped

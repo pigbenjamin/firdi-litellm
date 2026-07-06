@@ -1,0 +1,33 @@
+# 套用前請先 source .env，再用 envsubst 展開變數：
+#   source .env && envsubst < k8s/shared-storage/pvc.yaml | kubectl apply -f -
+# 並確認 Node 上目錄已存在：
+#   mkdir -p ${K8S_DATA_HOST_PATH}
+
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: users-db-pv
+spec:
+  capacity:
+    storage: 1Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  hostPath:
+    path: ${K8S_DATA_HOST_PATH}
+  claimRef:
+    name: users-db-pvc
+    namespace: ai-platform
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: users-db-pvc
+  namespace: ai-platform
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi

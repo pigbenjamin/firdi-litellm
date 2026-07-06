@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: rerank-vllm-service
+  namespace: ai-platform
+  labels:
+    app: embed-rerank-vllm
+spec:
+  selector:
+    app: embed-rerank-vllm
+  ports:
+    - name: http
+      port: 8001
+      targetPort: 8001
+  type: ClusterIP

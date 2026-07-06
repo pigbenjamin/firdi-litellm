@@ -1,9 +1,13 @@
 # 環境變數（含 API key、master key 等機敏資訊）
 .env
 
-# 使用記錄（保留目錄結構但不追蹤內容）
-logs/*
-!logs/.gitkeep
+# 使用記錄（保留目錄結構但不追蹤內容，包含 docker-compose/logs 等巢狀目錄）
+**/logs/*
+!**/logs/.gitkeep
+
+# 使用者資料庫（SQLite，含真實使用者資料）
+data/*
+!data/.gitkeep
 
 # HuggingFace 模型快取
 .cache/
@@ -12,6 +16,9 @@ logs/*
 __pycache__/
 *.pyc
 *.pyo
+
+# Java / Maven build 產物（keycloak plugin）
+target/
 
 # macOS
 .DS_Store

@@ -1,0 +1,40 @@
+# 每 2 分鐘：
+#   1. pull：把入口 A 的模型授權（access_grants）pull 回 DB（A 為權威來源）
+#   2. push target=b：把 DB 權限鏡像到第二入口 B，使 B 對齊 A
+# （B 未設定時 push 回 status=skipped/HTTP 200，是安全 no-op；B 上線前此步不影響運作）
+# 管理員改完也可手動打 pull-models 立即生效
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: openwebui-pull-sync
+  namespace: ai-platform
+spec:
+  schedule: "*/2 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 90
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: pull-sync
+              image: curlimages/curl:8.7.1
+              env:
+                - name: ADMIN_API_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: admin-api-secrets
+                      key: api-key
+              command: ["sh", "-c"]
+              args:
+                - >
+                  curl -sf -X POST
+                  "http://admin-api-service:8080/api/v1/sync/openwebui/pull-models"
+                  -H "Authorization: Bearer ${ADMIN_API_KEY}"
+                  &&
+                  curl -sf -X POST
+                  "http://admin-api-service:8080/api/v1/sync/openwebui/models?target=b"
+                  -H "Authorization: Bearer ${ADMIN_API_KEY}"

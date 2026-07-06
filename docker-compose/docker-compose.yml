@@ -126,13 +126,19 @@ services:
       LITELLM_MASTER_KEY: "${LITELLM_MASTER_KEY:-sk-firdi-master-change-me}"
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
       GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
-      USER_AUTH_CONFIG_PATH: "${USER_AUTH_CONFIG_PATH:-/app/config/users.json}"
+      USER_AUTH_DB_PATH: "/app/data/users.db"
       LOG_PATH: "${LOG_PATH:-/app/logs/usage.jsonl}"
       PYTHONPATH: /app/config
+      OPENWEBUI_URL: "${OPENWEBUI_URL:-}"
+      OPENWEBUI_ADMIN_KEY: "${OPENWEBUI_ADMIN_KEY:-}"
+      OPENWEBUI_SERVICE_KEY: "${OPENWEBUI_SERVICE_KEY:-}"
     ports:
       - "${LITELLM_PORT:-4000}:4000"
     volumes:
-      - ./config:/app/config:ro
+      - ./config/litellm_config.yaml:/app/config/litellm_config.yaml:ro
+      - ../config/custom_auth.py:/app/config/custom_auth.py:ro
+      - ../config/custom_logger.py:/app/config/custom_logger.py:ro
+      - ../data:/app/data
       - ./logs:/app/logs
     depends_on:
       - vllm-qwen

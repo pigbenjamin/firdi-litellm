@@ -1,8 +1,12 @@
+import asyncio
 import json
 import os
+import sqlite3
+import time
 from datetime import datetime, timezone
 from threading import Lock
 
+import httpx
 from fastapi import Request
 from litellm.proxy._types import ProxyException, UserAPIKeyAuth
 
@@ -18,42 +22,258 @@ def write_log(record: dict) -> None:
             fh.write(line + "\n")
 
 
-DEFAULT_CONFIG_PATH = "/app/config/users.json"
-_CONFIG_LOCK = Lock()
-_CONFIG_CACHE: dict | None = None
-_CONFIG_CACHE_KEY: tuple[str, float] | None = None
+# ── OpenWebUI 整合設定 ────────────────────────────────────────────────────────
+
+OPENWEBUI_URL = os.getenv("OPENWEBUI_URL", "").rstrip("/")
+OPENWEBUI_ADMIN_KEY = os.getenv("OPENWEBUI_ADMIN_KEY", "")
+OPENWEBUI_SERVICE_KEY = os.getenv("OPENWEBUI_SERVICE_KEY", "")
+
+# 第二組 OpenWebUI 入口（未啟用時三值皆空 → 不會納入 OPENWEBUI_INSTANCES，行為與單入口完全相同）
+OPENWEBUI_URL_B = os.getenv("OPENWEBUI_URL_B", "").rstrip("/")
+OPENWEBUI_ADMIN_KEY_B = os.getenv("OPENWEBUI_ADMIN_KEY_B", "")
+OPENWEBUI_SERVICE_KEY_B = os.getenv("OPENWEBUI_SERVICE_KEY_B", "")
+
+
+def _build_openwebui_instances() -> dict[str, dict]:
+    """service_key → {name, url, admin_key}。只收設定齊全的入口；空 key 不納入。
+
+    用 service key 區分請求來自哪個 OpenWebUI 入口，據以決定用哪組 admin key、
+    去哪個實例把 OpenWebUI UUID 解析成 Keycloak sub。兩入口共用同一份 DB 權限。
+    """
+    instances: dict[str, dict] = {}
+    if OPENWEBUI_SERVICE_KEY:
+        instances[OPENWEBUI_SERVICE_KEY] = {
+            "name": "portal-a", "url": OPENWEBUI_URL, "admin_key": OPENWEBUI_ADMIN_KEY,
+        }
+    if OPENWEBUI_SERVICE_KEY_B and OPENWEBUI_URL_B and OPENWEBUI_ADMIN_KEY_B:
+        instances[OPENWEBUI_SERVICE_KEY_B] = {
+            "name": "portal-b", "url": OPENWEBUI_URL_B, "admin_key": OPENWEBUI_ADMIN_KEY_B,
+        }
+    return instances
+
+
+OPENWEBUI_INSTANCES = _build_openwebui_instances()
+
+# openwebui_uuid → keycloak_uuid，永不過期（mapping 不會改變）
+# UUIDv4 跨實例不會撞號，故 A / B 共用單一快取即可。
+_OPENWEBUI_USER_CACHE: dict[str, str] = {}
+
+
+async def _resolve_keycloak_sub(openwebui_id: str, url: str, admin_key: str) -> str | None:
+    """OpenWebUI UUID → Keycloak UUID，in-memory 快取，miss 時查指定實例的 Admin API。
+    使用 GET /api/v1/users/（list）再以 id 過濾，因為部分版本沒有單一使用者端點。
+    """
+    if openwebui_id in _OPENWEBUI_USER_CACHE:
+        return _OPENWEBUI_USER_CACHE[openwebui_id]
+
+    if not url or not admin_key:
+        print("[custom_auth] OpenWebUI URL or admin key not configured, cannot resolve user")
+        return None
+
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            resp = await client.get(
+                f"{url}/api/v1/users/",
+                headers={"Authorization": f"Bearer {admin_key}"},
+            )
+            print(f"[custom_auth] OpenWebUI API response status: {resp.status_code}")
+            resp.raise_for_status()
+            data = resp.json()
+            # 支援 {"users": [...]} 或直接 [...]
+            users = data.get("users", data) if isinstance(data, dict) else data
+            keycloak_sub = None
+            for u in users:
+                if u.get("id") == openwebui_id:
+                    keycloak_sub = (
+                        (u.get("oauth") or {})
+                        .get("oidc", {})
+                        .get("sub")
+                    )
+                    break
+    except Exception as e:
+        write_log({
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "event": "openwebui_resolve_error",
+            "openwebui_id": openwebui_id,
+            "error": str(e),
+        })
+        return None
+
+    if keycloak_sub:
+        _OPENWEBUI_USER_CACHE[openwebui_id] = keycloak_sub
+
+    return keycloak_sub
+
+
+# ── SQLite 設定載入（db_version 版本戳記 + TTL 雙重快取）────────────────────────
+
+DEFAULT_DB_PATH = "/app/data/users.db"
+_DB_LOCK = Lock()
+_CACHE_DATA: dict | None = None       # {"departments": [...], "users": [...]}
+_CACHE_VERSION: int = -1
+_CACHE_LOADED_AT: float = 0.0
+_CACHE_TTL: float = 30.0
+
+
+def _get_conn(db_path: str) -> sqlite3.Connection:
+    conn = sqlite3.connect(db_path, timeout=10, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    return conn
+
+
+def _load_config() -> dict:
+    global _CACHE_DATA, _CACHE_VERSION, _CACHE_LOADED_AT
+
+    db_path = os.getenv("USER_AUTH_DB_PATH", DEFAULT_DB_PATH)
+    now = time.monotonic()
+
+    with _DB_LOCK:
+        try:
+            conn = _get_conn(db_path)
+            row = conn.execute("SELECT version FROM db_version WHERE id=1").fetchone()
+            current_version = row["version"] if row else -1
+            conn.close()
+        except Exception:
+            if _CACHE_DATA is not None:
+                return _CACHE_DATA
+            raise
+
+        ttl_expired = (now - _CACHE_LOADED_AT) > _CACHE_TTL
+        if _CACHE_DATA is not None and current_version == _CACHE_VERSION and not ttl_expired:
+            return _CACHE_DATA
+
+        conn = _get_conn(db_path)
+        try:
+            depts = []
+            for r in conn.execute("SELECT * FROM departments").fetchall():
+                d = dict(r)
+                d["allowed_models"] = json.loads(d.get("allowed_models") or "[]")
+                depts.append(d)
+
+            users = []
+            for r in conn.execute("SELECT * FROM users WHERE blocked=0").fetchall():
+                u = dict(r)
+                u["models"] = json.loads(u.get("models") or "[]")
+                u["aliases"] = json.loads(u.get("aliases") or "{}")
+                u["metadata"] = json.loads(u.get("metadata") or "{}")
+                u["blocked"] = bool(u.get("blocked", 0))
+                users.append(u)
+
+            _CACHE_DATA = {"departments": depts, "users": users}
+            _CACHE_VERSION = current_version
+            _CACHE_LOADED_AT = now
+            return _CACHE_DATA
+        finally:
+            conn.close()
 
 
 def _normalize_api_key(api_key: str) -> str:
+    if not api_key:
+        return ""
     if api_key.startswith("Bearer "):
         return api_key.removeprefix("Bearer ").strip()
     return api_key.strip()
 
 
-def _load_user_config() -> dict:
-    global _CONFIG_CACHE, _CONFIG_CACHE_KEY
-
-    config_path = os.getenv("USER_AUTH_CONFIG_PATH", DEFAULT_CONFIG_PATH)
-
-    with _CONFIG_LOCK:
-        config_mtime = os.path.getmtime(config_path)
-        cache_key = (config_path, config_mtime)
-        if _CONFIG_CACHE is not None and _CONFIG_CACHE_KEY == cache_key:
-            return _CONFIG_CACHE
-
-        with open(config_path, "r", encoding="utf-8") as config_file:
-            _CONFIG_CACHE = json.load(config_file)
-            _CONFIG_CACHE_KEY = cache_key
-            return _CONFIG_CACHE
-
-
 def _find_user(api_key: str) -> dict | None:
-    normalized_key = _normalize_api_key(api_key)
-    for user in _load_user_config().get("users", []):
-        if user.get("api_key") == normalized_key and not user.get("blocked", False):
+    normalized = _normalize_api_key(api_key)
+    for user in _load_config().get("users", []):
+        if user.get("api_key") == normalized and not user.get("blocked", False):
             return user
     return None
 
+
+def _find_user_by_user_id(user_id: str) -> dict | None:
+    for user in _load_config().get("users", []):
+        if user.get("user_id") == user_id and not user.get("blocked", False):
+            return user
+    return None
+
+
+def _find_dept(dept_id: str) -> dict | None:
+    for dept in _load_config().get("departments", []):
+        if dept.get("dept_id") == dept_id:
+            return dept
+    return None
+
+
+# ── 部門層 Rate Limit（in-memory，單 replica 適用）────────────────────────────
+
+_DEPT_COUNTERS: dict[str, dict] = {}
+_DEPT_LOCK = Lock()
+
+
+def _check_dept_rate_limit(dept: dict, token_estimate: int = 0) -> None:
+    dept_id = dept["dept_id"]
+    now = time.monotonic()
+    window = 60.0
+
+    with _DEPT_LOCK:
+        if dept_id not in _DEPT_COUNTERS:
+            _DEPT_COUNTERS[dept_id] = {
+                "rpm": {"count": 0, "window_start": now},
+                "tpm": {"count": 0, "window_start": now},
+            }
+
+        c = _DEPT_COUNTERS[dept_id]
+
+        if now - c["rpm"]["window_start"] >= window:
+            c["rpm"] = {"count": 0, "window_start": now}
+        if now - c["tpm"]["window_start"] >= window:
+            c["tpm"] = {"count": 0, "window_start": now}
+
+        rpm_limit = dept.get("dept_rpm_limit")
+        tpm_limit = dept.get("dept_tpm_limit")
+
+        if rpm_limit and c["rpm"]["count"] >= rpm_limit:
+            raise ProxyException(
+                message=f"Department '{dept_id}' has exceeded RPM limit ({rpm_limit})",
+                type="rate_limit_error",
+                param="rpm",
+                code=429,
+            )
+        if tpm_limit and token_estimate and c["tpm"]["count"] >= tpm_limit:
+            raise ProxyException(
+                message=f"Department '{dept_id}' has exceeded TPM limit ({tpm_limit})",
+                type="rate_limit_error",
+                param="tpm",
+                code=429,
+            )
+
+        c["rpm"]["count"] += 1
+        c["tpm"]["count"] += token_estimate
+
+
+# ── Model 權限檢查 ────────────────────────────────────────────────────────────
+
+def _check_model_allowed(user: dict, dept: dict, model: str | None) -> None:
+    if not model:
+        return
+
+    eff = _effective_models(user, dept)
+    if eff is None or model in eff:  # None = 完全不限制
+        return
+
+    write_log({
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "event": "auth_denied",
+        "reason": "model_not_allowed",
+        "user_id": user["user_id"],
+        "key_name": user.get("key_name"),
+        "dept_id": dept["dept_id"],
+        "model": model,
+    })
+    raise ProxyException(
+        message=f"Model '{model}' is not allowed for this user",
+        type="auth_error",
+        param="model",
+        code=403,
+    )
+
+
+# ── Request body 解析 ─────────────────────────────────────────────────────────
 
 async def _get_requested_model(request: Request) -> str | None:
     try:
@@ -65,7 +285,134 @@ async def _get_requested_model(request: Request) -> str | None:
         return None
 
 
-async def user_api_key_auth(request: Request, api_key: str) -> UserAPIKeyAuth:
+# ── 主要認證入口 ──────────────────────────────────────────────────────────────
+
+_HEALTH_PATHS = {"/health", "/health/readiness", "/health/liveness", "/"}
+
+
+# LiteLLM 原生特殊值：表示這把 key 不能存取任何預設模型。
+# （LiteLLM 把 models=[] 當成「不限制=全部」，所以零權限必須用此哨兵而非空陣列）
+NO_ACCESS_SENTINEL = "no-default-models"
+
+
+def _effective_models(user: dict, dept: dict) -> list[str] | None:
+    """使用者實際可用的模型。回傳 None = 完全不限制（全部）；[] = 無任何權限。
+
+    加法模型（OpenWebUI 主導架構）：
+      effective = dept.allowed_models ∪ user.models
+      - dept.allowed_models：部門（OpenWebUI group）被授權的模型
+      - user.models：個別授權給此使用者的額外模型
+      - 聯集為空 → 拒絕（未明確授權 = 沒人能用）
+      - 任一邊含 "*" → 完全不限制
+    """
+    user_models = user.get("models", [])
+    dept_models = dept.get("allowed_models", [])
+
+    if "*" in dept_models or "*" in user_models:
+        return None
+
+    merged = list(dict.fromkeys([*dept_models, *user_models]))  # 聯集去重保序
+    return merged
+
+
+def _build_auth_response(user: dict, dept: dict, api_key: str, source: str = "api_key") -> UserAPIKeyAuth:
+    metadata: dict = dict(user.get("metadata", {}))
+    metadata["dept_id"] = dept["dept_id"]
+    metadata["dept_name"] = dept.get("dept_name", "")
+    metadata["dept_openrouter_api_key"] = dept.get("openrouter_api_key", "")
+    metadata["portal"] = source  # 請求來源入口（portal-a / portal-b / api_key），供用量分流
+
+    eff = _effective_models(user, dept)
+    if eff is None:
+        allowed = []                       # LiteLLM: 空 = 全部
+    elif len(eff) == 0:
+        allowed = [NO_ACCESS_SENTINEL]     # 零權限 → /models 回傳空、呼叫全 403
+    else:
+        allowed = eff
+
+    return UserAPIKeyAuth(
+        api_key=api_key,
+        key_name=user.get("key_name"),
+        key_alias=user.get("key_name"),
+        user_id=user["user_id"],
+        user_email=user.get("user_email"),
+        models=allowed,
+        aliases=user.get("aliases", {}),
+        rpm_limit=user.get("rpm_limit"),
+        tpm_limit=user.get("tpm_limit"),
+        max_budget=user.get("max_budget"),
+        budget_duration=user.get("budget_duration"),
+        allowed_routes=user.get("allowed_routes"),
+        metadata=metadata,
+    )
+
+
+async def _resolve_user(request: Request, api_key: str) -> tuple[dict, str]:
+    """回傳 (user, source)。source 用於標記請求來源入口（寫入 metadata / log）。
+
+    路線一：Bearer token 是個人 api_key → 直接查 SQLite。source="api_key"。
+    路線二：Bearer token 對應某 OpenWebUI 入口的 service key → 讀 X-OpenWebUI-User-Id header，
+            查該入口的 API 取得 Keycloak UUID，再查 SQLite。source=該入口名稱（portal-a/portal-b）。
+    """
+    normalized = _normalize_api_key(api_key)
+
+    # ── 路線二：OpenWebUI 模式（依 service key 對應到來源入口）──────────────────
+    instance = OPENWEBUI_INSTANCES.get(normalized)
+    if instance:
+        portal = instance["name"]
+        openwebui_id = request.headers.get("x-openwebui-user-id", "").strip()
+        if not openwebui_id:
+            write_log({
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "event": "auth_denied",
+                "reason": "missing_openwebui_user_id",
+                "portal": portal,
+            })
+            raise ProxyException(
+                message="X-OpenWebUI-User-Id header is required",
+                type="authentication_error",
+                param="x-openwebui-user-id",
+                code=401,
+            )
+
+        keycloak_sub = await _resolve_keycloak_sub(
+            openwebui_id, instance["url"], instance["admin_key"]
+        )
+        if not keycloak_sub:
+            write_log({
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "event": "auth_denied",
+                "reason": "openwebui_resolve_failed",
+                "openwebui_id": openwebui_id,
+                "portal": portal,
+            })
+            raise ProxyException(
+                message="Cannot resolve OpenWebUI user to Keycloak identity",
+                type="authentication_error",
+                param="x-openwebui-user-id",
+                code=401,
+            )
+
+        user = _find_user_by_user_id(keycloak_sub)
+        if user is None:
+            write_log({
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "event": "auth_denied",
+                "reason": "user_not_found",
+                "openwebui_id": openwebui_id,
+                "keycloak_sub": keycloak_sub,
+                "portal": portal,
+            })
+            raise ProxyException(
+                message="User not found or blocked",
+                type="authentication_error",
+                param="x-openwebui-user-id",
+                code=401,
+            )
+
+        return user, portal
+
+    # ── 路線一：api_key 模式 ────────────────────────────────────────────────────
     user = _find_user(api_key)
     if user is None:
         write_log({
@@ -80,42 +427,59 @@ async def user_api_key_auth(request: Request, api_key: str) -> UserAPIKeyAuth:
             code=401,
         )
 
-    allowed_models = user.get("models", [])
-    if allowed_models:
-        requested_model = await _get_requested_model(request)
-        if requested_model and requested_model not in allowed_models:
-            write_log({
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "event": "auth_denied",
-                "reason": "model_not_allowed",
-                "user_id": user["user_id"],
-                "key_name": user.get("key_name"),
-                "model": requested_model,
-            })
-            raise ProxyException(
-                message=f"Model '{requested_model}' is not allowed for this key",
-                type="auth_error",
-                param="model",
-                code=403,
-            )
+    return user, "api_key"
 
-    metadata = dict(user.get("metadata", {}))
-    if user.get("team_id"):
-        metadata["team_id"] = user["team_id"]
-    if user.get("team_alias"):
-        metadata["team_alias"] = user["team_alias"]
 
-    return UserAPIKeyAuth(
-        api_key=_normalize_api_key(api_key),
-        key_name=user.get("key_name"),
-        user_id=user["user_id"],
-        user_email=user.get("user_email"),
-        models=user.get("models", []),
-        aliases=user.get("aliases", {}),
-        rpm_limit=user.get("rpm_limit"),
-        tpm_limit=user.get("tpm_limit"),
-        max_budget=user.get("max_budget"),
-        budget_duration=user.get("budget_duration"),
-        allowed_routes=user.get("allowed_routes"),
-        metadata=metadata,
+async def user_api_key_auth(request: Request, api_key: str) -> UserAPIKeyAuth:
+    if request.url.path in _HEALTH_PATHS:
+        return UserAPIKeyAuth(api_key="health-check")
+
+    normalized = _normalize_api_key(api_key)
+
+    # ── Master key：管理用途（admin-api 查模型清單等），全權限 ─────────────────
+    master_key = os.getenv("LITELLM_MASTER_KEY", "")
+    if master_key and normalized == master_key:
+        return UserAPIKeyAuth(api_key=normalized, models=[])  # models=[] → 全部
+
+    # ── OpenWebUI 全域 model 探索 ──────────────────────────────────────────────
+    # OpenWebUI 由管理員在「連線」層級抓 model list，用 service key 但不帶 user header。
+    # 這種請求無法 per-user 過濾，放行並回傳全部模型；per-user 權限改由 chat 時 enforce。
+    _MODEL_LIST_PATHS = ("/models", "/v1/models", "/model/info")
+    if (
+        normalized in OPENWEBUI_INSTANCES
+        and not request.headers.get("x-openwebui-user-id", "").strip()
+        and request.url.path in _MODEL_LIST_PATHS
+    ):
+        return UserAPIKeyAuth(api_key=normalized, models=[])  # models=[] → 全部
+
+    user, source = await _resolve_user(request, api_key)
+
+    dept = _find_dept(user.get("dept_id", ""))
+    if dept is None:
+        write_log({
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "event": "auth_denied",
+            "reason": "dept_not_found",
+            "user_id": user["user_id"],
+            "dept_id": user.get("dept_id"),
+        })
+        raise ProxyException(
+            message="User's department is not configured",
+            type="auth_error",
+            param="dept_id",
+            code=403,
+        )
+
+    requested_model = await _get_requested_model(request)
+    _check_model_allowed(user, dept, requested_model)
+    _check_dept_rate_limit(dept)
+
+    return _build_auth_response(user, dept, _normalize_api_key(api_key), source)
+
+if __name__ == "__main__":
+    import asyncio
+    test_openwebui_id = "6564ea72-0063-4474-8d0d-7a9072bc68cb"
+    keycloak_sub = asyncio.run(
+        _resolve_keycloak_sub(test_openwebui_id, OPENWEBUI_URL, OPENWEBUI_ADMIN_KEY)
     )
+    print(f"OpenWebUI ID {test_openwebui_id} resolves to Keycloak sub: {keycloak_sub}")

@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: admin-api-service
+  namespace: ai-platform
+  labels:
+    app: admin-api
+spec:
+  type: NodePort
+  selector:
+    app: admin-api
+  ports:
+    - port: 8080
+      targetPort: 8080
+      nodePort: 30408
+      name: http

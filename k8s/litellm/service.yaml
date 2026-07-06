@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: litellm-service
+  namespace: ai-platform
+  labels:
+    app: litellm
+spec:
+  selector:
+    app: litellm
+  ports:
+    - name: http
+      port: 4000
+      targetPort: 4000
+      nodePort: 30400
+  type: NodePort

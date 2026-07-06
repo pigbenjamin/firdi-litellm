@@ -1,0 +1,124 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: litellm
+  namespace: ai-platform
+  labels:
+    app: litellm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: litellm
+  template:
+    metadata:
+      labels:
+        app: litellm
+    spec:
+      containers:
+        - name: litellm
+          image: ghcr.io/berriai/litellm:main-latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - "--config=/app/config/litellm_config.yaml"
+            - "--detailed_debug"
+          ports:
+            - containerPort: 4000
+              name: http
+          env:
+            - name: LITELLM_MASTER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: litellm-secrets
+                  key: master-key
+            - name: USER_AUTH_DB_PATH
+              value: /app/data/users.db
+            - name: LOG_PATH
+              value: /app/logs/usage.jsonl
+            # OpenRouter key placeholder（實際 key 由 custom_auth 從 users.json 取得）
+            - name: OPENROUTER_API_KEY_PLACEHOLDER
+              value: "placeholder"
+            - name: OPENWEBUI_URL
+              valueFrom:
+                secretKeyRef:
+                  name: litellm-secrets
+                  key: openwebui-url
+            - name: OPENWEBUI_ADMIN_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: litellm-secrets
+                  key: openwebui-admin-key
+            - name: OPENWEBUI_SERVICE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: litellm-secrets
+                  key: openwebui-service-key
+            # 第二組 OpenWebUI 入口（optional：secret 未含這些 key 時 pod 照常啟動，行為與單入口相同）
+            - name: OPENWEBUI_URL_B
+              valueFrom:
+                secretKeyRef:
+                  name: litellm-secrets
+                  key: openwebui-url-b
+                  optional: true
+            - name: OPENWEBUI_ADMIN_KEY_B
+              valueFrom:
+                secretKeyRef:
+                  name: litellm-secrets
+                  key: openwebui-admin-key-b
+                  optional: true
+            - name: OPENWEBUI_SERVICE_KEY_B
+              valueFrom:
+                secretKeyRef:
+                  name: litellm-secrets
+                  key: openwebui-service-key-b
+                  optional: true
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "2"
+              memory: "2Gi"
+          volumeMounts:
+            - name: litellm-config
+              mountPath: /app/config/litellm_config.yaml
+              subPath: litellm_config.yaml
+            - name: users-db
+              mountPath: /app/data
+            - name: custom-auth
+              mountPath: /app/config/custom_auth.py
+              subPath: custom_auth.py
+            - name: custom-logger
+              mountPath: /app/config/custom_logger.py
+              subPath: custom_logger.py
+            - name: logs
+              mountPath: /app/logs
+          livenessProbe:
+            httpGet:
+              path: /health/liveliness
+              port: 4000
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health/readiness
+              port: 4000
+            initialDelaySeconds: 15
+            periodSeconds: 10
+      volumes:
+        - name: litellm-config
+          configMap:
+            name: litellm-config
+        - name: users-db
+          persistentVolumeClaim:
+            claimName: users-db-pvc
+        - name: custom-auth
+          configMap:
+            name: litellm-custom-auth
+        - name: custom-logger
+          configMap:
+            name: litellm-custom-logger
+        - name: logs
+          hostPath:
+            path: ${K8S_LOGS_HOST_PATH}
+            type: DirectoryOrCreate

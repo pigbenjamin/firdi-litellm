@@ -1,0 +1,118 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: admin-api
+  namespace: ai-platform
+  labels:
+    app: admin-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: admin-api
+  template:
+    metadata:
+      labels:
+        app: admin-api
+    spec:
+      containers:
+        - name: admin-api
+          image: firdi-admin-api:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            - name: ADMIN_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: admin-api-secrets
+                  key: api-key
+            - name: USER_AUTH_DB_PATH
+              value: /app/data/users.db
+            - name: WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: admin-api-secrets
+                  key: webhook-secret
+            - name: KEYCLOAK_URL
+              valueFrom:
+                secretKeyRef:
+                  name: admin-api-secrets
+                  key: keycloak-url
+            - name: KEYCLOAK_REALM
+              valueFrom:
+                secretKeyRef:
+                  name: admin-api-secrets
+                  key: keycloak-realm
+            - name: KEYCLOAK_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: admin-api-secrets
+                  key: keycloak-client-id
+            - name: KEYCLOAK_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: admin-api-secrets
+                  key: keycloak-client-secret
+            - name: KEYCLOAK_SSL_VERIFY
+              valueFrom:
+                secretKeyRef:
+                  name: admin-api-secrets
+                  key: keycloak-ssl-verify
+            - name: LITELLM_URL
+              value: "http://litellm-service:4000"
+            - name: LITELLM_MASTER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: litellm-secrets
+                  key: master-key
+            - name: OPENWEBUI_URL
+              valueFrom:
+                secretKeyRef:
+                  name: litellm-secrets
+                  key: openwebui-url
+            - name: OPENWEBUI_ADMIN_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: litellm-secrets
+                  key: openwebui-admin-key
+            # 第二組 OpenWebUI 入口（push target=b 用；optional：未設定時 push 會安全 no-op）
+            - name: OPENWEBUI_URL_B
+              valueFrom:
+                secretKeyRef:
+                  name: litellm-secrets
+                  key: openwebui-url-b
+                  optional: true
+            - name: OPENWEBUI_ADMIN_KEY_B
+              valueFrom:
+                secretKeyRef:
+                  name: litellm-secrets
+                  key: openwebui-admin-key-b
+                  optional: true
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+          volumeMounts:
+            - name: users-db
+              mountPath: /app/data
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: users-db
+          persistentVolumeClaim:
+            claimName: users-db-pvc

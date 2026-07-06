@@ -1,0 +1,95 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: reasoning-vllm
+  namespace: ai-platform
+  labels:
+    app: reasoning-vllm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: reasoning-vllm
+  template:
+    metadata:
+      labels:
+        app: reasoning-vllm
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      runtimeClassName: nvidia
+      containers:
+        - name: vllm
+          image: vllm/vllm-openai:v0.23.0
+          imagePullPolicy: IfNotPresent
+          args:
+            - "--model=Qwen/Qwen3.6-27B"
+            - "--tensor-parallel-size=2"
+            - "--max-model-len=65536"
+            - "--gpu-memory-utilization=0.85"
+            - "--max-num-seqs=2"
+            - "--max-num-batched-tokens=8192"
+            - "--reasoning-parser=qwen3"
+            - "--served-model-name=Qwen/Qwen3.6-27B"
+            - "--host=0.0.0.0"
+            - "--port=8000"
+            - "--trust-remote-code"
+            - "--disable-custom-all-reduce"
+          ports:
+            - containerPort: 8000
+              name: http
+          env:
+            - name: NCCL_P2P_DISABLE
+              value: "1"
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: token
+                  optional: true
+            - name: HF_HOME
+              value: /cache/huggingface
+          resources:
+            limits:
+              nvidia.com/gpu: "2"
+            requests:
+              nvidia.com/gpu: "2"
+          volumeMounts:
+            - name: hf-cache
+              mountPath: /cache/huggingface
+            - name: shm
+              mountPath: /dev/shm
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            failureThreshold: 20
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            periodSeconds: 30
+            failureThreshold: 5
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            periodSeconds: 15
+            failureThreshold: 3
+      volumes:
+        - name: hf-cache
+          hostPath:
+            path: ${K8S_HF_CACHE_HOST_PATH}
+            type: DirectoryOrCreate
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 32Gi
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule

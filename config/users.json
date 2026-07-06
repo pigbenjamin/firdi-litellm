@@ -1,59 +1,79 @@
 {
+  "departments": [
+    {
+      "dept_id": "engineering",
+      "dept_name": "工程部",
+      "openrouter_api_key": "sk-or-CHANGE-ME",
+      "allowed_models": [
+        "reasoning-qwen",
+        "fast-qwen",
+        "embed-qwen",
+        "rerank-qwen",
+        "openrouter/anthropic/claude-sonnet-4-5",
+        "openrouter/google/gemini-2.0-flash-001",
+        "openrouter/openai/gpt-4o-mini"
+      ],
+      "dept_rpm_limit": 500,
+      "dept_tpm_limit": 2000000
+    },
+    {
+      "dept_id": "data-science",
+      "dept_name": "資料科學部",
+      "openrouter_api_key": "sk-or-CHANGE-ME-2",
+      "allowed_models": [
+        "reasoning-qwen",
+        "fast-qwen",
+        "embed-qwen",
+        "rerank-qwen",
+        "openrouter/anthropic/claude-sonnet-4-5"
+      ],
+      "dept_rpm_limit": 300,
+      "dept_tpm_limit": 1000000
+    }
+  ],
   "users": [
     {
-      "api_key": "dev-local-key-001",
-      "key_name": "local-dev-user",
-      "user_id": "user-local-dev",
-      "user_email": "dev@example.com",
-      "team_id": "team-local",
-      "team_alias": "Local Development",
+      "api_key": "sk-dev-eng-user-001",
+      "key_name": "engineering-dev-user",
+      "user_id": "eng-user-001",
+      "user_email": "dev@company.com",
+      "dept_id": "engineering",
       "models": [
-        "local-qwen3.5-9b"
+        "reasoning-qwen",
+        "fast-qwen",
+        "embed-qwen",
+        "rerank-qwen",
+        "openrouter/anthropic/claude-sonnet-4-5"
       ],
       "rpm_limit": 60,
-      "tpm_limit": 100000,
-      "metadata": {
-        "source": "users.json",
-        "environment": "local"
-      }
+      "tpm_limit": 200000,
+      "blocked": false
     },
     {
-      "api_key": "dev-paid-key-001",
-      "key_name": "paid-dev-user",
-      "user_id": "user-paid-dev",
-      "user_email": "paid@example.com",
-      "team_id": "team-paid",
-      "team_alias": "Paid Providers",
+      "api_key": "sk-dev-ds-user-001",
+      "key_name": "data-science-dev-user",
+      "user_id": "ds-user-001",
+      "user_email": "ds@company.com",
+      "dept_id": "data-science",
       "models": [
-        "local-qwen3.5-9b",
-        "local-gpt-oss-20b",
-        "gpt-4o-mini",
-        "gemini-2.0-flash"
+        "reasoning-qwen",
+        "fast-qwen",
+        "embed-qwen",
+        "rerank-qwen"
       ],
-      "rpm_limit": 120,
-      "tpm_limit": 300000,
-      "metadata": {
-        "source": "users.json",
-        "environment": "local"
-      }
+      "rpm_limit": 60,
+      "tpm_limit": 200000,
+      "blocked": false
     },
     {
-      "api_key": "dev-rate-limit-key-001",
-      "key_name": "rate-limit-test-user",
-      "user_id": "user-rate-limit-test",
-      "user_email": "rate-limit@example.com",
-      "team_id": "team-local",
-      "team_alias": "Local Development",
-      "models": [
-        "local-qwen3.5-9b"
-      ],
+      "api_key": "sk-rate-limit-test-001",
+      "key_name": "rate-limit-test",
+      "user_id": "rate-test-001",
+      "dept_id": "engineering",
+      "models": ["reasoning-qwen", "fast-qwen"],
       "rpm_limit": 2,
-      "tpm_limit": 100000,
-      "metadata": {
-        "source": "users.json",
-        "environment": "local",
-        "purpose": "rate-limit-test"
-      }
+      "tpm_limit": 10000,
+      "blocked": false
     }
   ]
 }
