@@ -361,7 +361,7 @@ def run_tests(
         r = admin.post("/api/v1/departments", {
             "dept_id": test_dept_id,
             "dept_name": f"Sync Test ({test_dept_id})",
-            "allowed_models": ["fast-qwen"],
+            "allowed_models": ["gemma-4-26B-A4B-it"],
             "dept_rpm_limit": 60,
             "dept_tpm_limit": 100000,
         })

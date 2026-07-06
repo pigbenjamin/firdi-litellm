@@ -152,7 +152,7 @@ TEST_DEPT_CREATED=false
 
 setup_test_dept() {
     call_admin POST "/api/v1/departments" \
-        "{\"dept_id\":\"${TEST_DEPT_ID}\",\"dept_name\":\"Sync Test Dept\",\"allowed_models\":[\"fast-qwen\"],\"dept_rpm_limit\":60,\"dept_tpm_limit\":100000}"
+        "{\"dept_id\":\"${TEST_DEPT_ID}\",\"dept_name\":\"Sync Test Dept\",\"allowed_models\":[\"gemma-4-26B-A4B-it\"],\"dept_rpm_limit\":60,\"dept_tpm_limit\":100000}"
     if [[ "$LAST_RESPONSE" == "201" ]]; then
         TEST_DEPT_CREATED=true
         info "建立測試部門 ${TEST_DEPT_ID}"

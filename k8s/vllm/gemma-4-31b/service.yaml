@@ -1,13 +1,13 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: reasoning-vllm-service
+  name: gemma-4-31b-vllm-service
   namespace: ai-platform
   labels:
-    app: reasoning-vllm
+    app: gemma-4-31b-vllm
 spec:
   selector:
-    app: reasoning-vllm
+    app: gemma-4-31b-vllm
   ports:
     - name: http
       port: 8000

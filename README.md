@@ -13,8 +13,8 @@ LiteLLM Proxy (K8s, :30400)
   ├─ custom_logger.py — 呼叫 log + OpenRouter API key 動態注入
   │    └─ SQLite (PVC: users-db-pvc) ◄── Admin API (K8s, :30408)
   │
-  ├─► reasoning-vllm-service  (GPU 0+1, TP=2) — Qwen/Qwen3.6-27B（思考型）
-  ├─► fast-vllm-service       (GPU 2,    TP=1) — Qwen/Qwen3.6-35B-A3B-FP8（快捷型）
+  ├─► gemma-4-31b-vllm-service (GPU 0+1, TP=2) — google/gemma-4-31B-it（思考型）
+  ├─► gemma-4-26b-vllm-service (GPU 2,    TP=1) — google/gemma-4-26B-A4B-it（快捷型）
   ├─► embed-vllm-service      (GPU 3,  :8000)  — Qwen/Qwen3-Embedding-8B
   ├─► rerank-vllm-service     (GPU 3,  :8001)  — Qwen/Qwen3-Reranker-8B
   ├─► ollama-service          (可選，臨時需求)
@@ -31,8 +31,8 @@ LiteLLM Proxy (K8s, :30400)
 │   ├── shared-storage/
 │   │   └── pvc.yaml             — PVC: users-db-pvc（SQLite 共享儲存）
 │   ├── vllm/
-│   │   ├── reasoning/           — deployment.yaml, service.yaml（GPU 0+1, TP=2）
-│   │   ├── fast/                — deployment.yaml, service.yaml（GPU 2, TP=1）
+│   │   ├── gemma-4-31b/         — deployment.yaml, service.yaml（GPU 0+1, TP=2）
+│   │   ├── gemma-4-26b/         — deployment.yaml, service.yaml（GPU 2, TP=1）
 │   │   └── embed-rerank/        — deployment.yaml, service-embed.yaml, service-rerank.yaml（GPU 3）
 │   ├── litellm/
 │   │   ├── deployment.yaml
@@ -41,7 +41,7 @@ LiteLLM Proxy (K8s, :30400)
 │   ├── admin-api/
 │   │   ├── deployment.yaml      — Admin API Pod
 │   │   ├── service.yaml         — NodePort 30408
-│   │   └── secret.yaml          — ADMIN_API_KEY Secret（需替換真實值）
+│   │   └── cronjob-pull-sync.yaml — OpenWebUI → DB 權限 pull 同步（每 2 分鐘）
 │   └── ollama/                  — 可選
 ├── admin-api/                   ← 管理 API 原始碼（FastAPI）
 │   ├── main.py
@@ -52,7 +52,8 @@ LiteLLM Proxy (K8s, :30400)
 │   │   ├── departments.py       — 部門 CRUD
 │   │   ├── users.py             — 使用者 CRUD + block/unblock + regenerate-key
 │   │   ├── models.py            — 可用模型清單（代理 LiteLLM /models）
-│   │   └── sync.py              — Keycloak webhook 接收
+│   │   ├── openwebui.py         — OpenWebUI ↔ DB 模型權限 pull/push 同步
+│   │   └── sync.py              — Keycloak webhook 接收 + bulk 同步
 │   ├── requirements.txt
 │   └── Dockerfile
 ├── keycloak/
@@ -68,7 +69,11 @@ LiteLLM Proxy (K8s, :30400)
 │   ├── custom_logger.py
 │   └── users.json               — 舊格式保留，供 migrate 腳本使用
 ├── scripts/
-│   └── migrate_users_json.py    — 一次性將 users.json 匯入 SQLite
+│   ├── deploy.sh                — 一鍵部署（all / 單一元件，見檔頭用法）
+│   ├── migrate_users_json.py    — 一次性將 users.json 匯入 SQLite
+│   ├── migrate_model_names.sh   — 換模型時遷移 DB 權限中的模型名稱（自動備份 + bump db_version）
+│   ├── show_db.sh               — 快速檢視 users.db 內容
+│   └── test*.sh / test_sync.py  — auth / admin-api / 同步 測試腳本
 └── docker-compose/              ← 舊架構保留（參考用）
 ```
 
@@ -76,12 +81,18 @@ LiteLLM Proxy (K8s, :30400)
 
 | GPU | 服務 | 模型 | 定位 | 關鍵 vLLM 參數 |
 |-----|------|------|------|----------------|
-| GPU 0+1 | reasoning-vllm | Qwen/Qwen3.6-27B | 思考型：長 CoT、深度推理 | TP=2, max-model-len=65536, max-num-seqs=2 |
-| GPU 2 | fast-vllm | Qwen/Qwen3.6-35B-A3B-FP8 | 快捷型：快速問答、高並發 | TP=1, max-model-len=32768, max-num-seqs=256 |
+| GPU 0+1 | gemma-4-31b-vllm | google/gemma-4-31B-it | 思考型：長 CoT、深度推理 | TP=2, max-model-len=65536, max-num-seqs=2, thinking 預設**開** |
+| GPU 2 | gemma-4-26b-vllm | google/gemma-4-26B-A4B-it（MoE 25.2B/A3.8B） | 快捷型：快速問答、高並發 | TP=1, max-model-len=32768, max-num-seqs=256, thinking 預設**關** |
 | GPU 3 | embed-rerank-vllm | Qwen3-Embedding-8B + Qwen3-Reranker-8B | 向量化 + 重排序（同一 Pod） | 各 gpu-mem-util=0.45（合計 ~86GB < 96GB） |
 
 GPU 由 NVIDIA Device Plugin 自動分配，不需手動指定 GPU index。
 embed-rerank Pod 內運行兩個 vLLM 進程（port 8000 + 8001），由 startup script 控制啟動順序（embed 先，待 /health 後再啟 rerank）。
+
+### vLLM 部署要點（Gemma 4）
+
+- **冷啟動很慢是正常的**：首次啟動要下載權重 + torch.compile + CUDA graph 編譯，26B 實測約 15 分鐘、31B（TP=2）更久。startup probe 已放寬到 21 分鐘預算（`failureThreshold: 40`），不要調回去——預算不足會在快編完時被 kubelet 殺掉，陷入重編循環。
+- **編譯快取已持久化**：`VLLM_CACHE_ROOT` 指到 HF cache hostPath（`vllm-compile-cache/`），暖重啟約 2~4 分鐘。升級 vLLM 版本或改模型參數後第一次啟動仍會全額重編。
+- **更新 deployment 用 Recreate**：單副本 GPU 工作負載已設 `strategy: Recreate`（先殺舊 pod 釋放 GPU 再起新 pod）；RollingUpdate 在 GPU 佔滿時會死鎖。
 
 ## 快速部署
 
@@ -189,14 +200,16 @@ Admin API 啟動後在 `http://<node-ip>:30408`，API 文件在 `/docs`。
 ### 6. 部署 vLLM 服務
 
 ```bash
-# 依序部署（第一次啟動需下載模型，可能需要 5~20 分鐘）
-kubectl apply -f k8s/vllm/reasoning/
-kubectl apply -f k8s/vllm/fast/
+# 依序部署（首次啟動需下載模型 + 編譯，Gemma 4 約 15~25 分鐘，見「vLLM 部署要點」）
+kubectl apply -f k8s/vllm/gemma-4-31b/
+kubectl apply -f k8s/vllm/gemma-4-26b/
 kubectl apply -f k8s/vllm/embed-rerank/
 
 # 觀察 Pod 狀態
 kubectl get pods -n ai-platform -w
 ```
+
+> 以上步驟 2~7 也可以直接用 `./scripts/deploy.sh`（讀取 `.env`）一鍵完成，或用 `./scripts/deploy.sh gemma-4-31b` 等指令部署單一元件。
 
 ### 7. 部署 LiteLLM
 
@@ -207,12 +220,23 @@ kubectl apply -f k8s/litellm/service.yaml
 
 LiteLLM 對外服務在 `http://<node-ip>:30400`。
 
+### 更換模型 SOP
+
+換模型（如本次 Qwen → Gemma 4）牽涉多處，依序處理：
+
+1. `k8s/vllm/<model>/deployment.yaml` — 模型名、`--reasoning-parser`、thinking 預設、資源需求
+2. `config/litellm_config.yaml` — `model_name`（對外名稱）與 `api_base`
+3. 先刪舊 deployment/service 釋放 GPU，再部署新的（改名部署 K8s 不會自動取代同功能舊資源）
+4. `./scripts/deploy.sh litellm && kubectl rollout restart deployment/litellm -n ai-platform`
+5. `./scripts/migrate_model_names.sh` — 把 DB 權限（departments.allowed_models / users.models）中的舊模型名換成新名，自動備份並 bump db_version（30 秒內生效）；OpenWebUI 側的模型授權也要跟著補（pull 同步以 OpenWebUI 為權威）
+6. 磁碟空間：新模型下載前確認餘裕（大模型下載可能觸發節點 DiskPressure，造成全 namespace 驅逐）
+
 ## 可用模型
 
 | 模型名稱 | 實際模型 | 定位 | 位置 |
 |---------|---------|------|------|
-| `reasoning-qwen` | Qwen/Qwen3.6-27B | 思考型（深度推理、長 CoT） | reasoning-vllm-service:8000 |
-| `fast-qwen` | Qwen/Qwen3.6-35B-A3B-FP8 | 快捷型（快速問答、高並發） | fast-vllm-service:8000 |
+| `gemma-4-31B-it` | google/gemma-4-31B-it | 思考型（深度推理、長 CoT） | gemma-4-31b-vllm-service:8000 |
+| `gemma-4-26B-A4B-it` | google/gemma-4-26B-A4B-it | 快捷型（快速問答、高並發） | gemma-4-26b-vllm-service:8000 |
 | `embed-qwen` | Qwen/Qwen3-Embedding-8B | 向量化 | embed-vllm-service:8000 |
 | `rerank-qwen` | Qwen/Qwen3-Reranker-8B | 重排序 | rerank-vllm-service:8001 |
 | `openrouter/<provider>/<model>` | 各家雲端模型 | 雲端 | OpenRouter API |
@@ -222,21 +246,47 @@ LiteLLM 對外服務在 `http://<node-ip>:30400`。
 
 ### 思考型 LLM（深度推理、長 CoT）
 
+`gemma-4-31B-it` 預設**開啟** thinking，適合深度推理任務：
+
 ```bash
 curl http://<node-ip>:30400/v1/chat/completions \
   -H "Authorization: Bearer sk-dev-eng-user-001" \
   -H "Content-Type: application/json" \
-  -d '{"model": "reasoning-qwen", "messages": [{"role": "user", "content": "請分析以下程式碼的時間複雜度..."}]}'
+  -d '{"model": "gemma-4-31B-it", "messages": [{"role": "user", "content": "請分析以下程式碼的時間複雜度..."}]}'
 ```
 
 ### 快捷型 LLM（快速問答）
 
+`gemma-4-26B-A4B-it` 預設**關閉** thinking，直接回答：
+
 ```bash
 curl http://<node-ip>:30400/v1/chat/completions \
   -H "Authorization: Bearer sk-dev-eng-user-001" \
   -H "Content-Type: application/json" \
-  -d '{"model": "fast-qwen", "messages": [{"role": "user", "content": "你好"}]}'
+  -d '{"model": "gemma-4-26B-A4B-it", "messages": [{"role": "user", "content": "你好"}]}'
 ```
+
+### Thinking 模式控制（兩顆 Gemma 4 通用）
+
+每個請求可用 `chat_template_kwargs` 覆寫預設值，例如讓快捷型也思考：
+
+```bash
+curl http://<node-ip>:30400/v1/chat/completions \
+  -H "Authorization: Bearer sk-dev-eng-user-001" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemma-4-26B-A4B-it",
+    "messages": [{"role": "user", "content": "9.11 和 9.9 哪個大?"}],
+    "max_tokens": 2000,
+    "chat_template_kwargs": {"enable_thinking": true}
+  }'
+```
+
+注意事項：
+
+- 思考內容在回應的 **`message.reasoning`** 欄位（不是 `reasoning_content`），`message.content` 只含最終答案
+- 開 thinking 時 `max_tokens` 要給足（思考本身可能耗數百 token）；太小會導致 content 空白
+- 思考 token 一樣計入用量與 TPM 限額
 
 ### Embedding
 
@@ -310,7 +360,7 @@ curl -X POST http://<node-ip>:30408/api/v1/departments \
     "dept_id": "data-science",
     "dept_name": "資料科學部",
     "openrouter_api_key": "sk-or-...",
-    "allowed_models": ["reasoning-qwen", "fast-qwen", "openrouter/anthropic/claude-sonnet-4-5"],
+    "allowed_models": ["gemma-4-31B-it", "gemma-4-26B-A4B-it", "openrouter/anthropic/claude-sonnet-4-5"],
     "dept_rpm_limit": 300,
     "dept_tpm_limit": 1000000
   }'
@@ -327,7 +377,7 @@ curl -X POST http://<node-ip>:30408/api/v1/users \
     "user_id": "ds-alice",
     "user_email": "alice@company.com",
     "dept_id": "data-science",
-    "models": ["reasoning-qwen", "fast-qwen"],
+    "models": ["gemma-4-31B-it", "gemma-4-26B-A4B-it"],
     "rpm_limit": 60,
     "tpm_limit": 200000
   }'
@@ -354,14 +404,14 @@ curl -X POST http://<node-ip>:30408/api/v1/users/ds-alice/regenerate-key \
 curl -X PATCH http://<node-ip>:30408/api/v1/departments/data-science \
   -H "Authorization: Bearer <admin-api-key>" \
   -H "Content-Type: application/json" \
-  -d '{"allowed_models": ["reasoning-qwen", "fast-qwen"]}'
+  -d '{"allowed_models": ["gemma-4-31B-it", "gemma-4-26B-A4B-it"]}'
 ```
 
 **查詢系統可用模型清單**（UI 選取時使用）
 ```bash
 curl http://<node-ip>:30408/api/v1/models \
   -H "Authorization: Bearer <admin-api-key>"
-# {"models": ["embed-qwen", "fast-qwen", "reasoning-qwen", "rerank-qwen"]}
+# {"models": ["embed-qwen", "gemma-4-26B-A4B-it", "gemma-4-31B-it", "rerank-qwen"]}
 ```
 
 變更**即時生效**（custom_auth.py 在下一次 auth check 時會偵測到 db_version 變化並重載快取，最慢 30 秒）。
@@ -420,7 +470,7 @@ Admin API
 Log 格式（JSON Lines）位於 LiteLLM Pod 內 `/app/logs/usage.jsonl`，包含 `dept_id` 欄位：
 
 ```json
-{"timestamp": "...", "event": "llm_call", "status": "success", "user_id": "eng-user-001", "key_name": "engineering-dev-user", "dept_id": "engineering", "model": "reasoning-qwen", "prompt_tokens": 20, "completion_tokens": 50, "total_tokens": 70, "latency_ms": 1234}
+{"timestamp": "...", "event": "llm_call", "status": "success", "user_id": "eng-user-001", "key_name": "engineering-dev-user", "dept_id": "engineering", "model": "gemma-4-31B-it", "prompt_tokens": 20, "completion_tokens": 50, "total_tokens": 70, "latency_ms": 1234}
 ```
 
 查看 log：

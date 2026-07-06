@@ -1,19 +1,22 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: fast-vllm
+  name: gemma-4-31b-vllm
   namespace: ai-platform
   labels:
-    app: fast-vllm
+    app: gemma-4-31b-vllm
 spec:
   replicas: 1
+  # 單副本 GPU 工作負載：先殺舊 pod 釋放 GPU 再起新 pod，避免 RollingUpdate 死鎖
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
-      app: fast-vllm
+      app: gemma-4-31b-vllm
   template:
     metadata:
       labels:
-        app: fast-vllm
+        app: gemma-4-31b-vllm
       annotations:
         prometheus.io/scrape: "true"
         prometheus.io/port: "8000"
@@ -25,14 +28,18 @@ spec:
           image: vllm/vllm-openai:v0.23.0
           imagePullPolicy: IfNotPresent
           args:
-            - "--model=Qwen/Qwen3.6-35B-A3B-FP8"
-            - "--tensor-parallel-size=1"
-            - "--max-model-len=32768"
+            - "--model=google/gemma-4-31B-it"
+            - "--tensor-parallel-size=2"
+            - "--max-model-len=65536"
             - "--gpu-memory-utilization=0.85"
-            - "--max-num-seqs=256"
-            - "--max-num-batched-tokens=32768"
-            - "--reasoning-parser=qwen3"
-            - "--served-model-name=Qwen/Qwen3.6-35B-A3B-FP8"
+            - "--max-num-seqs=2"
+            - "--max-num-batched-tokens=8192"
+            - "--reasoning-parser=gemma4"
+            - "--tool-call-parser=gemma4"
+            - "--enable-auto-tool-choice"
+            # 思考型:預設開啟 thinking(<|think|>),client 可用 chat_template_kwargs 覆寫
+            - '--default-chat-template-kwargs={"enable_thinking": true}'
+            - "--served-model-name=google/gemma-4-31B-it"
             - "--host=0.0.0.0"
             - "--port=8000"
             - "--trust-remote-code"
@@ -51,11 +58,14 @@ spec:
                   optional: true
             - name: HF_HOME
               value: /cache/huggingface
+            # torch.compile 快取持久化到 hostPath，重啟免全額重編（vLLM 依模型+設定雜湊分目錄，可多模型共用）
+            - name: VLLM_CACHE_ROOT
+              value: /cache/huggingface/vllm-compile-cache
           resources:
             limits:
-              nvidia.com/gpu: "1"
+              nvidia.com/gpu: "2"
             requests:
-              nvidia.com/gpu: "1"
+              nvidia.com/gpu: "2"
           volumeMounts:
             - name: hf-cache
               mountPath: /cache/huggingface
@@ -67,7 +77,8 @@ spec:
               port: 8000
             initialDelaySeconds: 60
             periodSeconds: 30
-            failureThreshold: 20
+            # Gemma4 冷啟動（權重載入 + torch.compile + CUDA graph）實測可超過 11 分鐘
+            failureThreshold: 40
           livenessProbe:
             httpGet:
               path: /health
@@ -88,7 +99,7 @@ spec:
         - name: shm
           emptyDir:
             medium: Memory
-            sizeLimit: 16Gi
+            sizeLimit: 32Gi
       tolerations:
         - key: nvidia.com/gpu
           operator: Exists

@@ -100,16 +100,16 @@ test_auth() {
     section "Auth 測試"
 
     info "有效 key（工程部）→ 應 200"
-    call_api "工程部 user → reasoning-qwen" "200" \
-        "sk-dev-eng-user-001" "reasoning-qwen"
+    call_api "工程部 user → gemma-4-31B-it" "200" \
+        "sk-dev-eng-user-001" "gemma-4-31B-it"
 
     info "有效 key（資料科學部）→ 應 200"
-    call_api "資料科學部 user → reasoning-qwen" "200" \
-        "sk-dev-ds-user-001" "reasoning-qwen"
+    call_api "資料科學部 user → gemma-4-31B-it" "200" \
+        "sk-dev-ds-user-001" "gemma-4-31B-it"
 
     info "無效 key → 應 401"
     call_api "無效 API key → 401" "401" \
-        "sk-invalid-key-9999" "reasoning-qwen"
+        "sk-invalid-key-9999" "gemma-4-31B-it"
 }
 
 # ── Model 權限測試 ────────────────────────────────────────────────────────────
@@ -137,9 +137,9 @@ test_model_permissions() {
     call_api "資料科學部 user → openrouter/claude → 403" "403" \
         "sk-dev-ds-user-001" "openrouter/anthropic/claude-sonnet-4-5"
 
-    info "工程部 → fast-qwen → 應 200"
-    call_api "工程部 user → fast-qwen → 200" "200" \
-        "sk-dev-eng-user-001" "fast-qwen"
+    info "工程部 → gemma-4-26B-A4B-it → 應 200"
+    call_api "工程部 user → gemma-4-26B-A4B-it → 200" "200" \
+        "sk-dev-eng-user-001" "gemma-4-26B-A4B-it"
 
     info "工程部 → embed-qwen → 應 200"
     call_api "工程部 user → embed-qwen → 200" "200" \
@@ -158,7 +158,7 @@ test_rate_limit() {
             -X POST "$BASE_URL/v1/chat/completions" \
             -H "Authorization: Bearer sk-rate-limit-test-001" \
             -H "Content-Type: application/json" \
-            -d '{"model":"reasoning-qwen","messages":[{"role":"user","content":"hi"}],"max_tokens":5}' \
+            -d '{"model":"gemma-4-31B-it","messages":[{"role":"user","content":"hi"}],"max_tokens":5}' \
             --max-time 30 2>/dev/null || echo "000")
         results+=("$code")
         info "Request $i → HTTP $code"
@@ -183,7 +183,7 @@ test_reasoning() {
         -H "Authorization: Bearer sk-dev-eng-user-001" \
         -H "Content-Type: application/json" \
         -d '{
-          "model": "reasoning-qwen",
+          "model": "gemma-4-31B-it",
           "messages": [{"role": "user", "content": "What is 15 * 7? Think step by step."}],
           "max_tokens": 512
         }' \
@@ -194,15 +194,15 @@ test_reasoning() {
     body_out=$(echo "$resp" | head -n -1)
 
     if [[ "$http_status" == "200" ]]; then
-        pass "reasoning-qwen 回應正常 (HTTP 200)"
-        # 顯示 reasoning_content（若有）
+        pass "gemma-4-31B-it 回應正常 (HTTP 200)"
+        # 顯示思考內容（若有；vLLM gemma4 parser 放在 message.reasoning）
         local reasoning
         reasoning=$(echo "$body_out" | python3 -c "
 import json, sys
 try:
     d = json.load(sys.stdin)
     msg = d['choices'][0]['message']
-    rc = msg.get('reasoning_content') or msg.get('thinking') or ''
+    rc = msg.get('reasoning') or msg.get('reasoning_content') or msg.get('thinking') or ''
     content = msg.get('content','')
     if rc:
         print('  [reasoning] ' + rc[:150] + ('...' if len(rc)>150 else ''))
@@ -212,7 +212,7 @@ except:
 " 2>/dev/null || true)
         [[ -n "$reasoning" ]] && echo "$reasoning"
     else
-        fail "reasoning-qwen 回應失敗 (HTTP $http_status)"
+        fail "gemma-4-31B-it 回應失敗 (HTTP $http_status)"
         echo "       Response: $(echo "$body_out" | head -c 300)"
     fi
 }

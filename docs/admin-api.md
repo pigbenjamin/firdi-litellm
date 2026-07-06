@@ -96,7 +96,7 @@ Authorization: Bearer <ADMIN_API_KEY>
   "dept_id": "engineering",
   "dept_name": "工程部",
   "openrouter_api_key": "sk-or-...",
-  "allowed_models": ["reasoning-qwen", "fast-qwen"],
+  "allowed_models": ["gemma-4-31B-it", "gemma-4-26B-A4B-it"],
   "dept_rpm_limit": 300,
   "dept_tpm_limit": 1000000,
   "created_at": "2025-01-01T00:00:00",
@@ -139,7 +139,7 @@ curl http://<host>:30408/api/v1/departments \
   "dept_id": "data-science",
   "dept_name": "資料科學部",
   "openrouter_api_key": "sk-or-...",
-  "allowed_models": ["reasoning-qwen", "fast-qwen", "embed-qwen"],
+  "allowed_models": ["gemma-4-31B-it", "gemma-4-26B-A4B-it", "embed-qwen"],
   "dept_rpm_limit": 200,
   "dept_tpm_limit": 500000
 }
@@ -175,7 +175,7 @@ curl http://<host>:30408/api/v1/departments \
 
 ```json
 {
-  "allowed_models": ["reasoning-qwen"],
+  "allowed_models": ["gemma-4-31B-it"],
   "dept_rpm_limit": 100
 }
 ```
@@ -207,7 +207,7 @@ curl http://<host>:30408/api/v1/departments \
   "user_id": "keycloak-uuid-...",
   "user_email": "alice@company.com",
   "dept_id": "engineering",
-  "models": ["reasoning-qwen", "fast-qwen"],
+  "models": ["gemma-4-31B-it", "gemma-4-26B-A4B-it"],
   "rpm_limit": 60,
   "tpm_limit": 200000,
   "aliases": {},
@@ -278,7 +278,7 @@ curl "http://<host>:30408/api/v1/users?account_type=service" \
   "user_email": null,
   "dept_id": "engineering",
   "account_type": "service",
-  "models": ["fast-qwen", "embed-qwen"],
+  "models": ["gemma-4-26B-A4B-it", "embed-qwen"],
   "rpm_limit": 120,
   "tpm_limit": 500000,
   "aliases": {},
@@ -408,8 +408,8 @@ curl -X POST "http://<host>:30408/api/v1/users/alice-unique-id/regenerate-key" \
 {
   "models": [
     "embed-qwen",
-    "fast-qwen",
-    "reasoning-qwen",
+    "gemma-4-26B-A4B-it",
+    "gemma-4-31B-it",
     "rerank-qwen"
   ]
 }
@@ -597,7 +597,7 @@ curl -X POST http://<host>:30408/api/v1/users \
     "user_email": null,
     "dept_id": "engineering",
     "account_type": "service",
-    "models": ["fast-qwen", "embed-qwen"],
+    "models": ["gemma-4-26B-A4B-it", "embed-qwen"],
     "rpm_limit": 120,
     "tpm_limit": 500000,
     "metadata": {"description": "RAG 文件摘要排程服務", "owner": "backend-team"}

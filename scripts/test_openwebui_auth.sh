@@ -42,7 +42,7 @@ done
 
 section "路線一：api_key 模式"
 
-# 有效 api_key（c31f90f3, dept A, fast-qwen, unblocked）
+# 有效 api_key（c31f90f3, dept A, gemma-4-26B-A4B-it, unblocked）
 code=$(curl -s -o /dev/null -w "%{http_code}" "$LITELLM_URL/models" \
   -H "Authorization: Bearer $TEST_API_KEY")
 check_status "有效 api_key → /models" "200" "$code"
@@ -54,7 +54,7 @@ check_status "無效 api_key → 401" "401" "$code"
 
 section "路線二：OpenWebUI 模式（SERVICE_KEY + X-OpenWebUI-User-Id）"
 
-# 正常：service key + 有效 openwebui_id（對應 dept A，有 fast-qwen 權限）
+# 正常：service key + 有效 openwebui_id（對應 dept A，有 gemma-4-26B-A4B-it 權限）
 code=$(curl -s -o /dev/null -w "%{http_code}" "$LITELLM_URL/models" \
   -H "Authorization: Bearer $SERVICE_KEY" \
   -H "X-OpenWebUI-User-Id: openwebui-test-user-aaa")
@@ -85,18 +85,18 @@ check_status "dept B 使用者（無 models）→ /models 仍應通過 auth" "20
 
 section "路線二：模型權限驗證"
 
-# dept A 使用者請求 fast-qwen → 應允許（實際轉發失敗也 OK，auth 層通過即可）
+# dept A 使用者請求 gemma-4-26B-A4B-it → 應允許（實際轉發失敗也 OK，auth 層通過即可）
 resp=$(curl -s -w "\n%{http_code}" "$LITELLM_URL/v1/chat/completions" \
   -H "Authorization: Bearer $SERVICE_KEY" \
   -H "X-OpenWebUI-User-Id: openwebui-test-user-aaa" \
   -H "Content-Type: application/json" \
-  -d '{"model":"fast-qwen","messages":[{"role":"user","content":"ping"}]}' 2>/dev/null || true)
+  -d '{"model":"gemma-4-26B-A4B-it","messages":[{"role":"user","content":"ping"}]}' 2>/dev/null || true)
 code=$(echo "$resp" | tail -1)
 # auth 通過後轉發可能 502/500（vllm 沒啟動），但不應是 401/403
 if [[ "$code" != "401" && "$code" != "403" ]]; then
-    pass "dept A + fast-qwen → auth 通過 (HTTP $code，非 401/403)"
+    pass "dept A + gemma-4-26B-A4B-it → auth 通過 (HTTP $code，非 401/403)"
 else
-    fail "dept A + fast-qwen → auth 拒絕 (HTTP $code)"
+    fail "dept A + gemma-4-26B-A4B-it → auth 拒絕 (HTTP $code)"
 fi
 
 # dept A 使用者請求不在清單的模型
@@ -104,9 +104,9 @@ resp=$(curl -s -w "\n%{http_code}" "$LITELLM_URL/v1/chat/completions" \
   -H "Authorization: Bearer $SERVICE_KEY" \
   -H "X-OpenWebUI-User-Id: openwebui-test-user-aaa" \
   -H "Content-Type: application/json" \
-  -d '{"model":"reasoning-qwen","messages":[{"role":"user","content":"ping"}]}' 2>/dev/null || true)
+  -d '{"model":"gemma-4-31B-it","messages":[{"role":"user","content":"ping"}]}' 2>/dev/null || true)
 code=$(echo "$resp" | tail -1)
-check_status "dept A 請求 reasoning-qwen（不在 user.models）→ 403" "403" "$code"
+check_status "dept A 請求 gemma-4-31B-it（不在 user.models）→ 403" "403" "$code"
 
 # ── 結果 ────────────────────────────────────────────────────────────────────
 echo ""

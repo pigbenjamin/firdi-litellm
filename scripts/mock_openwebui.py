@@ -15,8 +15,8 @@ from urllib.parse import urlparse
 
 # openwebui_uuid → keycloak_sub (must match user_id in users.db)
 OPENWEBUI_USERS = {
-    #"openwebui-test-user-aaa": "c31f90f3-b99f-4c2e-91e4-4e7776e2b995",  # dept A, fast-qwen (unblocked)
-    "openwebui-test-user-aaa": "9c16b010-466e-46bc-a979-03db4c3161dd",  # dept A, fast-qwen (unblocked)
+    #"openwebui-test-user-aaa": "c31f90f3-b99f-4c2e-91e4-4e7776e2b995",  # dept A, gemma-4-26B-A4B-it (unblocked)
+    "openwebui-test-user-aaa": "9c16b010-466e-46bc-a979-03db4c3161dd",  # dept A, gemma-4-26B-A4B-it (unblocked)
     #"openwebui-test-user-bbb": "ff3eb1bd-ba66-42b4-82ff-166895108c03",  # dept B, no models (unblocked)
     "openwebui-test-user-bbb": "7236a7ed-59e1-4851-b2c5-19e2a22f95a7",  # dept B, no models (unblocked)
     "openwebui-unknown-user":  None,  # user exists in OpenWebUI but not in LiteLLM DB

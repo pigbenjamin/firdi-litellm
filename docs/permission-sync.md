@@ -72,7 +72,7 @@ curl -X POST ".../api/v1/sync/openwebui/pull-models" -H "Authorization: Bearer <
 
 # 2. PATCH：改 DB
 curl -X PATCH ".../api/v1/departments/PM" -H "Authorization: Bearer <KEY>" \
-  -H "Content-Type: application/json" -d '{"allowed_models":["fast-qwen"]}'
+  -H "Content-Type: application/json" -d '{"allowed_models":["gemma-4-26B-A4B-it"]}'
 
 # 3. push：立刻鏡像回 OpenWebUI
 curl -X POST ".../api/v1/sync/openwebui/models" -H "Authorization: Bearer <KEY>"

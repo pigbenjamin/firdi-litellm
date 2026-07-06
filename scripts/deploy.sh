@@ -4,8 +4,8 @@
 # 用法：
 #   ./scripts/deploy.sh              # 部署全部（storage → vllm → litellm）
 #   ./scripts/deploy.sh storage      # 只建立 PV/PVC 與 users.db
-#   ./scripts/deploy.sh reasoning    # 只部署 reasoning-vllm
-#   ./scripts/deploy.sh fast         # 只部署 fast-vllm
+#   ./scripts/deploy.sh gemma-4-31b  # 只部署 gemma-4-31b-vllm（思考型）
+#   ./scripts/deploy.sh gemma-4-26b  # 只部署 gemma-4-26b-vllm（快捷型）
 #   ./scripts/deploy.sh embed-rerank # 只部署 embed-rerank-vllm
 #   ./scripts/deploy.sh litellm      # 只部署 litellm（含 ConfigMap）
 #   ./scripts/deploy.sh admin-api    # 只部署 admin-api
@@ -123,7 +123,7 @@ deploy_litellm_configmaps() {
 
 # ── vLLM 部署 helper ──────────────────────────────────────────────────────────
 deploy_vllm() {
-    local name="$1"   # reasoning / fast / embed-rerank
+    local name="$1"   # gemma-4-31b / gemma-4-26b / embed-rerank
     local dir="$REPO_ROOT/k8s/vllm/$name"
     info "部署 $name vLLM..."
     export K8S_HF_CACHE_HOST_PATH="${K8S_HF_CACHE_HOST_PATH:-/opt/firdi/hf-cache}"
@@ -193,8 +193,8 @@ show_status() {
 deploy_all() {
     deploy_secrets
     deploy_storage
-    deploy_vllm reasoning
-    deploy_vllm fast
+    deploy_vllm gemma-4-31b
+    deploy_vllm gemma-4-26b
     deploy_vllm embed-rerank
     deploy_litellm
     deploy_admin_api
@@ -202,7 +202,7 @@ deploy_all() {
     ok "=== 全部部署完成 ==="
     show_status
     echo ""
-    warn "vLLM 模型載入需要 5~15 分鐘，監看狀態："
+    warn "vLLM 首次啟動需下載模型 + torch.compile 編譯（Gemma 4 約 15~25 分鐘；有編譯快取的暖重啟約 2~4 分鐘），監看狀態："
     echo "  kubectl get pods -n $NS -w"
 }
 
@@ -219,14 +219,14 @@ main() {
         all)          deploy_all ;;
         storage)      deploy_storage ;;
         secrets)      deploy_secrets ;;
-        reasoning)    deploy_vllm reasoning ;;
-        fast)         deploy_vllm fast ;;
+        gemma-4-31b)  deploy_vllm gemma-4-31b ;;
+        gemma-4-26b)  deploy_vllm gemma-4-26b ;;
         embed-rerank) deploy_vllm embed-rerank ;;
         litellm)      deploy_litellm ;;
         admin-api)    deploy_admin_api ;;
         status)       show_status ;;
         *)
-            echo "用法: $0 [all|storage|secrets|reasoning|fast|embed-rerank|litellm|admin-api|status]"
+            echo "用法: $0 [all|storage|secrets|gemma-4-31b|gemma-4-26b|embed-rerank|litellm|admin-api|status]"
             exit 1
             ;;
     esac

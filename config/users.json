@@ -5,8 +5,8 @@
       "dept_name": "工程部",
       "openrouter_api_key": "sk-or-CHANGE-ME",
       "allowed_models": [
-        "reasoning-qwen",
-        "fast-qwen",
+        "gemma-4-31B-it",
+        "gemma-4-26B-A4B-it",
         "embed-qwen",
         "rerank-qwen",
         "openrouter/anthropic/claude-sonnet-4-5",
@@ -21,8 +21,8 @@
       "dept_name": "資料科學部",
       "openrouter_api_key": "sk-or-CHANGE-ME-2",
       "allowed_models": [
-        "reasoning-qwen",
-        "fast-qwen",
+        "gemma-4-31B-it",
+        "gemma-4-26B-A4B-it",
         "embed-qwen",
         "rerank-qwen",
         "openrouter/anthropic/claude-sonnet-4-5"
@@ -39,8 +39,8 @@
       "user_email": "dev@company.com",
       "dept_id": "engineering",
       "models": [
-        "reasoning-qwen",
-        "fast-qwen",
+        "gemma-4-31B-it",
+        "gemma-4-26B-A4B-it",
         "embed-qwen",
         "rerank-qwen",
         "openrouter/anthropic/claude-sonnet-4-5"
@@ -56,8 +56,8 @@
       "user_email": "ds@company.com",
       "dept_id": "data-science",
       "models": [
-        "reasoning-qwen",
-        "fast-qwen",
+        "gemma-4-31B-it",
+        "gemma-4-26B-A4B-it",
         "embed-qwen",
         "rerank-qwen"
       ],
@@ -70,7 +70,7 @@
       "key_name": "rate-limit-test",
       "user_id": "rate-test-001",
       "dept_id": "engineering",
-      "models": ["reasoning-qwen", "fast-qwen"],
+      "models": ["gemma-4-31B-it", "gemma-4-26B-A4B-it"],
       "rpm_limit": 2,
       "tpm_limit": 10000,
       "blocked": false

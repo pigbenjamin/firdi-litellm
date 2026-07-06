@@ -228,13 +228,13 @@ test_dept() {
     # D1: 新增部門（正常）
     info "D1: 新增 test-dept-alpha → 201"
     call_admin POST "/api/v1/departments" \
-        '{"dept_id":"test-dept-alpha","dept_name":"測試部門 Alpha","allowed_models":["reasoning-qwen"],"dept_rpm_limit":100,"dept_tpm_limit":500000}' \
+        '{"dept_id":"test-dept-alpha","dept_name":"測試部門 Alpha","allowed_models":["gemma-4-31B-it"],"dept_rpm_limit":100,"dept_tpm_limit":500000}' \
         "201" "D1: 新增部門（正常）"
 
     # 建立 test-dept-beta 供 D7 使用
     info "前置: 建立 test-dept-beta（D7 刪除用）"
     call_admin POST "/api/v1/departments" \
-        '{"dept_id":"test-dept-beta","dept_name":"測試部門 Beta","allowed_models":["fast-qwen"]}' \
+        '{"dept_id":"test-dept-beta","dept_name":"測試部門 Beta","allowed_models":["gemma-4-26B-A4B-it"]}' \
         "201" "前置: 建立 test-dept-beta"
 
     # D2: dept_id 重複 → 409
@@ -261,15 +261,15 @@ test_dept() {
     # D5: PATCH 更新 allowed_models
     info "D5: PATCH allowed_models → 200"
     call_admin PATCH "/api/v1/departments/test-dept-alpha" \
-        '{"allowed_models":["reasoning-qwen","fast-qwen"]}' \
+        '{"allowed_models":["gemma-4-31B-it","gemma-4-26B-A4B-it"]}' \
         "200" "D5: PATCH 部門 allowed_models"
-    _check_resp "D5b: 確認 allowed_models 已包含 fast-qwen" \
-        "import json,sys; d=json.load(sys.stdin); m=d.get('allowed_models',[]); print('ok' if 'fast-qwen' in m else f'got: {m}')"
+    _check_resp "D5b: 確認 allowed_models 已包含 gemma-4-26B-A4B-it" \
+        "import json,sys; d=json.load(sys.stdin); m=d.get('allowed_models',[]); print('ok' if 'gemma-4-26B-A4B-it' in m else f'got: {m}')"
 
     # D6: 刪除有 user 的部門 → 409（先建一個 user）
     info "前置: 建立 test-user-d6（D6 用）"
     call_admin POST "/api/v1/users" \
-        '{"api_key":"sk-test-d6-001","key_name":"test-d6","user_id":"test-user-d6","dept_id":"test-dept-alpha","models":["reasoning-qwen"]}' \
+        '{"api_key":"sk-test-d6-001","key_name":"test-d6","user_id":"test-user-d6","dept_id":"test-dept-alpha","models":["gemma-4-31B-it"]}' \
         "201" "前置: 建立 test-user-d6"
 
     info "D6: 刪除有 user 的部門 → 409"
@@ -293,7 +293,7 @@ test_user() {
     if [[ "$s" != "200" ]]; then
         info "前置: 建立 test-dept-alpha"
         call_admin POST "/api/v1/departments" \
-            '{"dept_id":"test-dept-alpha","dept_name":"測試部門 Alpha","allowed_models":["reasoning-qwen","fast-qwen"]}' \
+            '{"dept_id":"test-dept-alpha","dept_name":"測試部門 Alpha","allowed_models":["gemma-4-31B-it","gemma-4-26B-A4B-it"]}' \
             "201" "前置: test-dept-alpha"
     fi
     # 確保 test-dept-beta 存在（用於 U10 轉移）
@@ -301,7 +301,7 @@ test_user() {
     if [[ "$s" != "200" ]]; then
         info "前置: 建立 test-dept-beta"
         call_admin POST "/api/v1/departments" \
-            '{"dept_id":"test-dept-beta","dept_name":"測試部門 Beta","allowed_models":["fast-qwen"]}' \
+            '{"dept_id":"test-dept-beta","dept_name":"測試部門 Beta","allowed_models":["gemma-4-26B-A4B-it"]}' \
             "201" "前置: test-dept-beta"
     fi
     # 確保 test-user-alpha 不存在（防止上次殘留）
@@ -310,7 +310,7 @@ test_user() {
     # U1: 新增使用者（正常）
     info "U1: 新增 test-user-alpha → 201"
     call_admin POST "/api/v1/users" \
-        '{"api_key":"sk-test-alpha-001","key_name":"test-alpha","user_id":"test-user-alpha","user_email":"alpha@test.com","dept_id":"test-dept-alpha","models":["reasoning-qwen"],"rpm_limit":60,"tpm_limit":100000}' \
+        '{"api_key":"sk-test-alpha-001","key_name":"test-alpha","user_id":"test-user-alpha","user_email":"alpha@test.com","dept_id":"test-dept-alpha","models":["gemma-4-31B-it"],"rpm_limit":60,"tpm_limit":100000}' \
         "201" "U1: 新增使用者（正常）"
 
     # U2: dept_id 不存在 → 404
@@ -356,25 +356,25 @@ test_user() {
     # U9: PATCH 更新 models
     info "U9: PATCH models → 200"
     call_admin PATCH "/api/v1/users/test-user-alpha" \
-        '{"models":["reasoning-qwen","fast-qwen"]}' \
+        '{"models":["gemma-4-31B-it","gemma-4-26B-A4B-it"]}' \
         "200" "U9: PATCH 使用者 models"
-    _check_resp "U9b: 確認 models 已包含 fast-qwen" \
-        "import json,sys; d=json.load(sys.stdin); m=d.get('models',[]); print('ok' if 'fast-qwen' in m else f'got: {m}')"
+    _check_resp "U9b: 確認 models 已包含 gemma-4-26B-A4B-it" \
+        "import json,sys; d=json.load(sys.stdin); m=d.get('models',[]); print('ok' if 'gemma-4-26B-A4B-it' in m else f'got: {m}')"
 
     # U10: PATCH 轉移 dept_id
     info "U10: PATCH dept_id 轉移 → 200"
     call_admin PATCH "/api/v1/users/test-user-alpha" \
-        '{"dept_id":"test-dept-beta","models":["fast-qwen"]}' \
+        '{"dept_id":"test-dept-beta","models":["gemma-4-26B-A4B-it"]}' \
         "200" "U10: PATCH 轉移使用者到 test-dept-beta"
     # 轉回 alpha（後續測試需要）
     call_admin PATCH "/api/v1/users/test-user-alpha" \
-        '{"dept_id":"test-dept-alpha","models":["reasoning-qwen"]}' \
+        '{"dept_id":"test-dept-alpha","models":["gemma-4-31B-it"]}' \
         "200" "U10b: 轉回 test-dept-alpha"
 
     # U11: PUT 整體替換
     info "U11: PUT 整體替換 → 200"
     call_admin PUT "/api/v1/users/test-user-alpha" \
-        '{"api_key":"sk-test-alpha-001","key_name":"test-alpha-v2","user_id":"test-user-alpha","user_email":"alpha-v2@test.com","dept_id":"test-dept-alpha","models":["reasoning-qwen"],"rpm_limit":30,"tpm_limit":50000,"blocked":false}' \
+        '{"api_key":"sk-test-alpha-001","key_name":"test-alpha-v2","user_id":"test-user-alpha","user_email":"alpha-v2@test.com","dept_id":"test-dept-alpha","models":["gemma-4-31B-it"],"rpm_limit":30,"tpm_limit":50000,"blocked":false}' \
         "200" "U11: PUT 整體替換使用者"
 
     # U12: 封鎖使用者
@@ -413,8 +413,8 @@ test_perms() {
 
     # M1: 現有使用者 + 有效 model → 200（不需改 DB）
     info "M1: 現有使用者 + 有效 model → 200"
-    call_llm "sk-dev-eng-user-001" "reasoning-qwen" "200" \
-        "M1: eng-user-001 → reasoning-qwen → 200"
+    call_llm "sk-dev-eng-user-001" "gemma-4-31B-it" "200" \
+        "M1: eng-user-001 → gemma-4-31B-it → 200"
 
     # M2: user.models 不含此 model → 403（ds user 無 claude 權限）
     info "M2: user.models 不含此 model → 403"
@@ -423,54 +423,54 @@ test_perms() {
 
     # M7: 完全不存在的 api_key → 401（不需改 DB）
     info "M7: 不存在的 api_key → 401"
-    call_llm "sk-nonexistent-key-xyz-999" "reasoning-qwen" "401" \
+    call_llm "sk-nonexistent-key-xyz-999" "gemma-4-31B-it" "401" \
         "M7: 無效 api_key → 401"
 
     # ── 建立測試用 dept + users ────────────────────────────────────────────────
-    info "前置: 建立 test-dept-perms（只允許 reasoning-qwen）"
+    info "前置: 建立 test-dept-perms（只允許 gemma-4-31B-it）"
     local s
     s=$(call_admin_silent GET "/api/v1/departments/test-dept-perms")
     if [[ "$s" != "200" ]]; then
         call_admin POST "/api/v1/departments" \
-            '{"dept_id":"test-dept-perms","dept_name":"權限測試部門","allowed_models":["reasoning-qwen"]}' \
+            '{"dept_id":"test-dept-perms","dept_name":"權限測試部門","allowed_models":["gemma-4-31B-it"]}' \
             "201" "前置: 建立 test-dept-perms"
     fi
 
-    # test-user-perms1: models 有 fast-qwen，但 dept 只允許 reasoning-qwen（M3/M4/M5/M6 用）
+    # test-user-perms1: models 有 gemma-4-26B-A4B-it，但 dept 只允許 gemma-4-31B-it（M3/M4/M5/M6 用）
     call_admin_silent DELETE "/api/v1/users/test-user-perms1" > /dev/null
     call_admin POST "/api/v1/users" \
-        '{"api_key":"sk-test-perms1-001","key_name":"test-perms1","user_id":"test-user-perms1","dept_id":"test-dept-perms","models":["reasoning-qwen","fast-qwen"]}' \
+        '{"api_key":"sk-test-perms1-001","key_name":"test-perms1","user_id":"test-user-perms1","dept_id":"test-dept-perms","models":["gemma-4-31B-it","gemma-4-26B-A4B-it"]}' \
         "201" "前置: 建立 test-user-perms1 (models: reasoning+fast)"
 
     # test-user-perms2: 正常 user（M8 用）
     call_admin_silent DELETE "/api/v1/users/test-user-perms2" > /dev/null
     call_admin POST "/api/v1/users" \
-        '{"api_key":"sk-test-perms2-001","key_name":"test-perms2","user_id":"test-user-perms2","dept_id":"test-dept-perms","models":["reasoning-qwen"]}' \
+        '{"api_key":"sk-test-perms2-001","key_name":"test-perms2","user_id":"test-user-perms2","dept_id":"test-dept-perms","models":["gemma-4-31B-it"]}' \
         "201" "前置: 建立 test-user-perms2 (M8 用)"
 
     wait_cache 5 "等待 cache 刷新（新 user/dept 建立）"
 
-    # M3: user 有 fast-qwen，dept 沒有 → 403（dept 層擋）
-    info "M3: user 有 fast-qwen，dept 無 → 403"
-    call_llm "sk-test-perms1-001" "fast-qwen" "403" \
-        "M3: user 有 fast-qwen 但 dept 無 → 403（dept 層擋）"
+    # M3: user 有 gemma-4-26B-A4B-it，dept 沒有 → 403（dept 層擋）
+    info "M3: user 有 gemma-4-26B-A4B-it，dept 無 → 403"
+    call_llm "sk-test-perms1-001" "gemma-4-26B-A4B-it" "403" \
+        "M3: user 有 gemma-4-26B-A4B-it 但 dept 無 → 403（dept 層擋）"
 
     # M8: 新建 user 後呼叫有效 model → 200
     info "M8: 新建 user 呼叫有效 model → 200"
-    call_llm "sk-test-perms2-001" "reasoning-qwen" "200" \
-        "M8: 新建 test-user-perms2 → reasoning-qwen → 200"
+    call_llm "sk-test-perms2-001" "gemma-4-31B-it" "200" \
+        "M8: 新建 test-user-perms2 → gemma-4-31B-it → 200"
 
-    # M4: PATCH dept 新增 fast-qwen → 等待 → 200
-    info "M4: PATCH dept 新增 fast-qwen..."
+    # M4: PATCH dept 新增 gemma-4-26B-A4B-it → 等待 → 200
+    info "M4: PATCH dept 新增 gemma-4-26B-A4B-it..."
     call_admin PATCH "/api/v1/departments/test-dept-perms" \
-        '{"allowed_models":["reasoning-qwen","fast-qwen"]}' \
-        "200" "M4a: PATCH dept allowed_models 加入 fast-qwen"
+        '{"allowed_models":["gemma-4-31B-it","gemma-4-26B-A4B-it"]}' \
+        "200" "M4a: PATCH dept allowed_models 加入 gemma-4-26B-A4B-it"
 
     wait_cache 5 "等待 cache 刷新（dept 更新）"
 
-    info "M4: dept+user 都有 fast-qwen → 200"
-    call_llm "sk-test-perms1-001" "fast-qwen" "200" \
-        "M4: dept 更新後 → fast-qwen → 200"
+    info "M4: dept+user 都有 gemma-4-26B-A4B-it → 200"
+    call_llm "sk-test-perms1-001" "gemma-4-26B-A4B-it" "200" \
+        "M4: dept 更新後 → gemma-4-26B-A4B-it → 200"
 
     # M5: 封鎖 user → 等待 → 401
     info "M5: 封鎖 test-user-perms1..."
@@ -480,7 +480,7 @@ test_perms() {
     wait_cache 5 "等待 cache 刷新（user blocked）"
 
     info "M5: 封鎖後舊 api_key → 401"
-    call_llm "sk-test-perms1-001" "reasoning-qwen" "401" \
+    call_llm "sk-test-perms1-001" "gemma-4-31B-it" "401" \
         "M5: blocked user → 401"
 
     # M6: 刪除 user → 等待 → 401（blocked user 仍可刪除，不需先解封）
@@ -491,7 +491,7 @@ test_perms() {
     wait_cache 5 "等待 cache 刷新（user deleted）"
 
     info "M6: 刪除後舊 api_key → 401"
-    call_llm "sk-test-perms1-001" "reasoning-qwen" "401" \
+    call_llm "sk-test-perms1-001" "gemma-4-31B-it" "401" \
         "M6: deleted user → 401"
 }
 
@@ -532,7 +532,7 @@ test_edge() {
     if [[ "$s" != "200" ]]; then
         info "前置: 建立 test-dept-alpha"
         call_admin POST "/api/v1/departments" \
-            '{"dept_id":"test-dept-alpha","dept_name":"測試部門 Alpha","allowed_models":["reasoning-qwen","fast-qwen"]}' \
+            '{"dept_id":"test-dept-alpha","dept_name":"測試部門 Alpha","allowed_models":["gemma-4-31B-it","gemma-4-26B-A4B-it"]}' \
             "201" "前置: test-dept-alpha"
     fi
     # 確保 test-dept-empty 存在
@@ -550,7 +550,7 @@ test_edge() {
         '{"api_key":"sk-test-empty-001","key_name":"test-empty","user_id":"test-user-empty","dept_id":"test-dept-alpha","models":[]}' \
         "201" "E2a: 建立 models=[] 的 user"
     wait_cache 5 "等待 cache（E2 user 建立）"
-    call_llm "sk-test-empty-001" "reasoning-qwen" "403" \
+    call_llm "sk-test-empty-001" "gemma-4-31B-it" "403" \
         "E2: models=[] → 403（user 層全封）"
 
     # E3: models=["*"] 的 user → 任意 model → 200
@@ -560,29 +560,29 @@ test_edge() {
         '{"api_key":"sk-test-wild-001","key_name":"test-wild","user_id":"test-user-wild","dept_id":"test-dept-alpha","models":["*"]}' \
         "201" "E3a: 建立 models=[\"*\"] 的 user"
     wait_cache 5 "等待 cache（E3 user 建立）"
-    call_llm "sk-test-wild-001" "reasoning-qwen" "200" \
+    call_llm "sk-test-wild-001" "gemma-4-31B-it" "200" \
         "E3: models=[\"*\"] → 200（wildcard 全開）"
 
     # E4: dept allowed_models=[] → 該部門所有 user 呼叫 → 403
     info "E4: dept allowed_models=[] → user 呼叫 → 403"
     call_admin_silent DELETE "/api/v1/users/test-user-gamma" > /dev/null
     call_admin POST "/api/v1/users" \
-        '{"api_key":"sk-test-gamma-001","key_name":"test-gamma","user_id":"test-user-gamma","dept_id":"test-dept-empty","models":["reasoning-qwen"]}' \
+        '{"api_key":"sk-test-gamma-001","key_name":"test-gamma","user_id":"test-user-gamma","dept_id":"test-dept-empty","models":["gemma-4-31B-it"]}' \
         "201" "E4a: 建立 user（dept 無 allowed_models）"
     wait_cache 5 "等待 cache（E4 user 建立）"
-    call_llm "sk-test-gamma-001" "reasoning-qwen" "403" \
+    call_llm "sk-test-gamma-001" "gemma-4-31B-it" "403" \
         "E4: dept allowed_models=[] → 403（dept 層全封）"
 
     # E5: 轉移 user 到新 dept，model 不在新 dept allowed_models → 403
-    # test-user-gamma（models: reasoning-qwen）轉移到 test-dept-empty（allowed: []）
+    # test-user-gamma（models: gemma-4-31B-it）轉移到 test-dept-empty（allowed: []）
     # 實際上 test-user-gamma 已在 test-dept-empty，就直接用
     info "E5: user 已在 allowed_models=[] 的 dept → 403（同 E4，確認轉移生效）"
     call_admin PATCH "/api/v1/departments/test-dept-empty" \
-        '{"allowed_models":["fast-qwen"]}' \
-        "200" "E5a: PATCH test-dept-empty 只允許 fast-qwen"
+        '{"allowed_models":["gemma-4-26B-A4B-it"]}' \
+        "200" "E5a: PATCH test-dept-empty 只允許 gemma-4-26B-A4B-it"
     wait_cache 5 "等待 cache（E5 dept 更新）"
-    call_llm "sk-test-gamma-001" "reasoning-qwen" "403" \
-        "E5: user 有 reasoning-qwen，dept 只允許 fast-qwen → 403"
+    call_llm "sk-test-gamma-001" "gemma-4-31B-it" "403" \
+        "E5: user 有 gemma-4-31B-it，dept 只允許 gemma-4-26B-A4B-it → 403"
 }
 
 # ── Summary ───────────────────────────────────────────────────────────────────
