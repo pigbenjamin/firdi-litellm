@@ -1,0 +1,99 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: embed-vllm
+  namespace: ai-platform
+  labels:
+    app: embed-vllm
+spec:
+  replicas: 1
+  # 單副本 GPU 工作負載：先殺舊 pod 釋放 GPU 再起新 pod，避免 RollingUpdate 死鎖
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: embed-vllm
+  template:
+    metadata:
+      labels:
+        app: embed-vllm
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      runtimeClassName: nvidia
+      containers:
+        - name: vllm
+          image: vllm/vllm-openai:v0.23.0
+          imagePullPolicy: IfNotPresent
+          args:
+            - "--model=google/embeddinggemma-300m"
+            - "--task=embed"
+            # 300M 小模型，0.15（~14GB）已綽綽有餘；GPU 3 其餘容量留作未來擴充
+            - "--gpu-memory-utilization=0.15"
+            - "--max-num-seqs=512"
+            - "--served-model-name=google/embeddinggemma-300m"
+            - "--host=0.0.0.0"
+            - "--port=8000"
+            - "--disable-custom-all-reduce"
+          ports:
+            - containerPort: 8000
+              name: http
+          env:
+            - name: NCCL_P2P_DISABLE
+              value: "1"
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: token
+                  optional: true
+            - name: HF_HOME
+              value: /cache/huggingface
+            # torch.compile 快取持久化到 hostPath，重啟免全額重編（vLLM 依模型+設定雜湊分目錄，可多模型共用）
+            - name: VLLM_CACHE_ROOT
+              value: /cache/huggingface/vllm-compile-cache
+          resources:
+            limits:
+              nvidia.com/gpu: "1"
+            requests:
+              nvidia.com/gpu: "1"
+          volumeMounts:
+            - name: hf-cache
+              mountPath: /cache/huggingface
+            - name: shm
+              mountPath: /dev/shm
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            # 300M 模型啟動快，5 分鐘預算已寬裕
+            failureThreshold: 20
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            periodSeconds: 30
+            failureThreshold: 5
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            periodSeconds: 15
+            failureThreshold: 3
+      volumes:
+        - name: hf-cache
+          hostPath:
+            path: ${K8S_HF_CACHE_HOST_PATH}
+            type: DirectoryOrCreate
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 4Gi
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule

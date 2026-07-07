@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# 模型名稱遷移：Qwen → Gemma 4（fast/reasoning 換模型後，同步 users.db 的權限名單）
+# 模型名稱遷移：Qwen → Gemma（換模型後，同步 users.db 的權限名單）
 #
 #   reasoning-qwen → gemma-4-31B-it
 #   fast-qwen      → gemma-4-26B-A4B-it
+#   embed-qwen     → embeddinggemma-300m
+#   rerank-qwen    → （移除；獨立 rerank 服務已下線，需要時改用 LLM rerank）
 #
 # 用法：
 #   ./scripts/migrate_model_names.sh                  # 用 .env 的 K8S_DATA_HOST_PATH/users.db
@@ -42,19 +44,32 @@ info "已備份：$BACKUP"
 
 sqlite3 "$DB" <<'SQL'
 BEGIN;
+-- 先改名，再把 rerank-qwen 從 JSON 陣列移除（依序處理「中/尾、頭、單獨」三種位置與有無空格）
 UPDATE departments SET
-    allowed_models = replace(replace(allowed_models,
+    allowed_models = replace(replace(replace(replace(replace(replace(replace(allowed_models,
         '"reasoning-qwen"', '"gemma-4-31B-it"'),
         '"fast-qwen"', '"gemma-4-26B-A4B-it"'),
+        '"embed-qwen"', '"embeddinggemma-300m"'),
+        ', "rerank-qwen"', ''),
+        ',"rerank-qwen"', ''),
+        '"rerank-qwen", ', ''),
+        '"rerank-qwen"', ''),
     updated_at = datetime('now')
-WHERE allowed_models LIKE '%reasoning-qwen%' OR allowed_models LIKE '%fast-qwen%';
+WHERE allowed_models LIKE '%reasoning-qwen%' OR allowed_models LIKE '%fast-qwen%'
+   OR allowed_models LIKE '%embed-qwen%' OR allowed_models LIKE '%rerank-qwen%';
 
 UPDATE users SET
-    models = replace(replace(models,
+    models = replace(replace(replace(replace(replace(replace(replace(models,
         '"reasoning-qwen"', '"gemma-4-31B-it"'),
         '"fast-qwen"', '"gemma-4-26B-A4B-it"'),
+        '"embed-qwen"', '"embeddinggemma-300m"'),
+        ', "rerank-qwen"', ''),
+        ',"rerank-qwen"', ''),
+        '"rerank-qwen", ', ''),
+        '"rerank-qwen"', ''),
     updated_at = datetime('now')
-WHERE models LIKE '%reasoning-qwen%' OR models LIKE '%fast-qwen%';
+WHERE models LIKE '%reasoning-qwen%' OR models LIKE '%fast-qwen%'
+   OR models LIKE '%embed-qwen%' OR models LIKE '%rerank-qwen%';
 
 UPDATE db_version SET version = version + 1 WHERE id = 1;
 COMMIT;

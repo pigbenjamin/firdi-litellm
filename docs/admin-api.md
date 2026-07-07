@@ -139,7 +139,7 @@ curl http://<host>:30408/api/v1/departments \
   "dept_id": "data-science",
   "dept_name": "資料科學部",
   "openrouter_api_key": "sk-or-...",
-  "allowed_models": ["gemma-4-31B-it", "gemma-4-26B-A4B-it", "embed-qwen"],
+  "allowed_models": ["gemma-4-31B-it", "gemma-4-26B-A4B-it", "embeddinggemma-300m"],
   "dept_rpm_limit": 200,
   "dept_tpm_limit": 500000
 }
@@ -278,7 +278,7 @@ curl "http://<host>:30408/api/v1/users?account_type=service" \
   "user_email": null,
   "dept_id": "engineering",
   "account_type": "service",
-  "models": ["gemma-4-26B-A4B-it", "embed-qwen"],
+  "models": ["gemma-4-26B-A4B-it", "embeddinggemma-300m"],
   "rpm_limit": 120,
   "tpm_limit": 500000,
   "aliases": {},
@@ -407,10 +407,9 @@ curl -X POST "http://<host>:30408/api/v1/users/alice-unique-id/regenerate-key" \
 ```json
 {
   "models": [
-    "embed-qwen",
+    "embeddinggemma-300m",
     "gemma-4-26B-A4B-it",
-    "gemma-4-31B-it",
-    "rerank-qwen"
+    "gemma-4-31B-it"
   ]
 }
 ```
@@ -597,7 +596,7 @@ curl -X POST http://<host>:30408/api/v1/users \
     "user_email": null,
     "dept_id": "engineering",
     "account_type": "service",
-    "models": ["gemma-4-26B-A4B-it", "embed-qwen"],
+    "models": ["gemma-4-26B-A4B-it", "embeddinggemma-300m"],
     "rpm_limit": 120,
     "tpm_limit": 500000,
     "metadata": {"description": "RAG 文件摘要排程服務", "owner": "backend-team"}

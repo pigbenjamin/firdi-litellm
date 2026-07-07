@@ -4,10 +4,10 @@ metadata:
   name: embed-vllm-service
   namespace: ai-platform
   labels:
-    app: embed-rerank-vllm
+    app: embed-vllm
 spec:
   selector:
-    app: embed-rerank-vllm
+    app: embed-vllm
   ports:
     - name: http
       port: 8000

@@ -12,16 +12,10 @@ model_list:
       api_base: http://gemma-4-26b-vllm-service:8000/v1
       api_key: EMPTY
 
-  - model_name: embed-qwen
+  - model_name: embeddinggemma-300m
     litellm_params:
-      model: hosted_vllm/Qwen/Qwen3-Embedding-8B
+      model: hosted_vllm/google/embeddinggemma-300m
       api_base: http://embed-vllm-service:8000/v1
-      api_key: EMPTY
-
-  - model_name: rerank-qwen
-    litellm_params:
-      model: hosted_vllm/Qwen/Qwen3-Reranker-8B
-      api_base: http://rerank-vllm-service:8001
       api_key: EMPTY
 
   # 臨時地端（Ollama，應急短期需求）

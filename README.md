@@ -15,8 +15,7 @@ LiteLLM Proxy (K8s, :30400)
   │
   ├─► gemma-4-31b-vllm-service (GPU 0+1, TP=2) — google/gemma-4-31B-it（思考型）
   ├─► gemma-4-26b-vllm-service (GPU 2,    TP=1) — google/gemma-4-26B-A4B-it（快捷型）
-  ├─► embed-vllm-service      (GPU 3,  :8000)  — Qwen/Qwen3-Embedding-8B
-  ├─► rerank-vllm-service     (GPU 3,  :8001)  — Qwen/Qwen3-Reranker-8B
+  ├─► embed-vllm-service      (GPU 3,  :8000)  — google/embeddinggemma-300m
   ├─► ollama-service          (可選，臨時需求)
   └─► OpenRouter API          (雲端，各部門各自的 API key)
 ```
@@ -33,7 +32,7 @@ LiteLLM Proxy (K8s, :30400)
 │   ├── vllm/
 │   │   ├── gemma-4-31b/         — deployment.yaml, service.yaml（GPU 0+1, TP=2）
 │   │   ├── gemma-4-26b/         — deployment.yaml, service.yaml（GPU 2, TP=1）
-│   │   └── embed-rerank/        — deployment.yaml, service-embed.yaml, service-rerank.yaml（GPU 3）
+│   │   └── embed/               — deployment.yaml, service.yaml（GPU 3）
 │   ├── litellm/
 │   │   ├── deployment.yaml
 │   │   ├── service.yaml         — NodePort 30400
@@ -83,10 +82,10 @@ LiteLLM Proxy (K8s, :30400)
 |-----|------|------|------|----------------|
 | GPU 0+1 | gemma-4-31b-vllm | google/gemma-4-31B-it | 思考型：長 CoT、深度推理 | TP=2, max-model-len=65536, max-num-seqs=2, thinking 預設**開** |
 | GPU 2 | gemma-4-26b-vllm | google/gemma-4-26B-A4B-it（MoE 25.2B/A3.8B） | 快捷型：快速問答、高並發 | TP=1, max-model-len=32768, max-num-seqs=256, thinking 預設**關** |
-| GPU 3 | embed-rerank-vllm | Qwen3-Embedding-8B + Qwen3-Reranker-8B | 向量化 + 重排序（同一 Pod） | 各 gpu-mem-util=0.45（合計 ~86GB < 96GB） |
+| GPU 3 | embed-vllm | google/embeddinggemma-300m | 向量化 | gpu-mem-util=0.15（300M 小模型；卡上餘裕留作未來擴充） |
 
 GPU 由 NVIDIA Device Plugin 自動分配，不需手動指定 GPU index。
-embed-rerank Pod 內運行兩個 vLLM 進程（port 8000 + 8001），由 startup script 控制啟動順序（embed 先，待 /health 後再啟 rerank）。
+獨立 rerank 服務（Qwen3-Reranker-8B）已於 2026-07 移除：無實際流量、且依去中國模型政策無乾淨替代品；需要重排序時改以一般 LLM（如 gemma-4-26B-A4B-it）做 listwise rerank。
 
 ### vLLM 部署要點（Gemma 4）
 
@@ -203,7 +202,7 @@ Admin API 啟動後在 `http://<node-ip>:30408`，API 文件在 `/docs`。
 # 依序部署（首次啟動需下載模型 + 編譯，Gemma 4 約 15~25 分鐘，見「vLLM 部署要點」）
 kubectl apply -f k8s/vllm/gemma-4-31b/
 kubectl apply -f k8s/vllm/gemma-4-26b/
-kubectl apply -f k8s/vllm/embed-rerank/
+kubectl apply -f k8s/vllm/embed/
 
 # 觀察 Pod 狀態
 kubectl get pods -n ai-platform -w
@@ -237,8 +236,7 @@ LiteLLM 對外服務在 `http://<node-ip>:30400`。
 |---------|---------|------|------|
 | `gemma-4-31B-it` | google/gemma-4-31B-it | 思考型（深度推理、長 CoT） | gemma-4-31b-vllm-service:8000 |
 | `gemma-4-26B-A4B-it` | google/gemma-4-26B-A4B-it | 快捷型（快速問答、高並發） | gemma-4-26b-vllm-service:8000 |
-| `embed-qwen` | Qwen/Qwen3-Embedding-8B | 向量化 | embed-vllm-service:8000 |
-| `rerank-qwen` | Qwen/Qwen3-Reranker-8B | 重排序 | rerank-vllm-service:8001 |
+| `embeddinggemma-300m` | google/embeddinggemma-300m | 向量化 | embed-vllm-service:8000 |
 | `openrouter/<provider>/<model>` | 各家雲端模型 | 雲端 | OpenRouter API |
 | `ollama/<model>` | 任意 Ollama 模型 | 臨時地端 | ollama-service:11434 |
 
@@ -294,20 +292,7 @@ curl http://<node-ip>:30400/v1/chat/completions \
 curl http://<node-ip>:30400/v1/embeddings \
   -H "Authorization: Bearer sk-dev-eng-user-001" \
   -H "Content-Type: application/json" \
-  -d '{"model": "embed-qwen", "input": "這是要 embed 的文字"}'
-```
-
-### Reranking
-
-```bash
-curl http://<node-ip>:30400/v1/rerank \
-  -H "Authorization: Bearer sk-dev-eng-user-001" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "rerank-qwen",
-    "query": "什麼是機器學習",
-    "documents": ["機器學習是一種 AI 技術", "深度學習是機器學習的子集", "今天天氣很好"]
-  }'
+  -d '{"model": "embeddinggemma-300m", "input": "這是要 embed 的文字"}'
 ```
 
 ### 雲端模型（OpenRouter）
@@ -411,7 +396,7 @@ curl -X PATCH http://<node-ip>:30408/api/v1/departments/data-science \
 ```bash
 curl http://<node-ip>:30408/api/v1/models \
   -H "Authorization: Bearer <admin-api-key>"
-# {"models": ["embed-qwen", "gemma-4-26B-A4B-it", "gemma-4-31B-it", "rerank-qwen"]}
+# {"models": ["embeddinggemma-300m", "gemma-4-26B-A4B-it", "gemma-4-31B-it"]}
 ```
 
 變更**即時生效**（custom_auth.py 在下一次 auth check 時會偵測到 db_version 變化並重載快取，最慢 30 秒）。
@@ -492,12 +477,12 @@ kubectl exec -n ai-platform deploy/litellm -- tail -f /app/logs/usage.jsonl
 
 ## Ollama 臨時使用
 
-4 張 GPU 已全數分配。若需臨時使用 Ollama，手動釋放 embed-rerank：
+4 張 GPU 已全數分配。若需臨時使用 Ollama，手動釋放 embed：
 
 ```bash
-kubectl scale deploy/embed-rerank-vllm --replicas=0 -n ai-platform
+kubectl scale deploy/embed-vllm --replicas=0 -n ai-platform
 # ... 使用 Ollama ...
-kubectl scale deploy/embed-rerank-vllm --replicas=1 -n ai-platform
+kubectl scale deploy/embed-vllm --replicas=1 -n ai-platform
 ```
 
 ## 舊有架構

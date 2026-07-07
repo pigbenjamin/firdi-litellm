@@ -141,9 +141,9 @@ test_model_permissions() {
     call_api "工程部 user → gemma-4-26B-A4B-it → 200" "200" \
         "sk-dev-eng-user-001" "gemma-4-26B-A4B-it"
 
-    info "工程部 → embed-qwen → 應 200"
-    call_api "工程部 user → embed-qwen → 200" "200" \
-        "sk-dev-eng-user-001" "embed-qwen"
+    info "工程部 → embeddinggemma-300m → 應 200"
+    call_api "工程部 user → embeddinggemma-300m → 200" "200" \
+        "sk-dev-eng-user-001" "embeddinggemma-300m"
 }
 
 # ── Rate Limit 測試 ───────────────────────────────────────────────────────────

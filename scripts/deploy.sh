@@ -6,7 +6,7 @@
 #   ./scripts/deploy.sh storage      # 只建立 PV/PVC 與 users.db
 #   ./scripts/deploy.sh gemma-4-31b  # 只部署 gemma-4-31b-vllm（思考型）
 #   ./scripts/deploy.sh gemma-4-26b  # 只部署 gemma-4-26b-vllm（快捷型）
-#   ./scripts/deploy.sh embed-rerank # 只部署 embed-rerank-vllm
+#   ./scripts/deploy.sh embed        # 只部署 embed-vllm（embedding）
 #   ./scripts/deploy.sh litellm      # 只部署 litellm（含 ConfigMap）
 #   ./scripts/deploy.sh admin-api    # 只部署 admin-api
 #   ./scripts/deploy.sh secrets      # 只建立 Secrets
@@ -123,7 +123,7 @@ deploy_litellm_configmaps() {
 
 # ── vLLM 部署 helper ──────────────────────────────────────────────────────────
 deploy_vllm() {
-    local name="$1"   # gemma-4-31b / gemma-4-26b / embed-rerank
+    local name="$1"   # gemma-4-31b / gemma-4-26b / embed
     local dir="$REPO_ROOT/k8s/vllm/$name"
     info "部署 $name vLLM..."
     export K8S_HF_CACHE_HOST_PATH="${K8S_HF_CACHE_HOST_PATH:-/opt/firdi/hf-cache}"
@@ -195,7 +195,7 @@ deploy_all() {
     deploy_storage
     deploy_vllm gemma-4-31b
     deploy_vllm gemma-4-26b
-    deploy_vllm embed-rerank
+    deploy_vllm embed
     deploy_litellm
     deploy_admin_api
     echo ""
@@ -221,12 +221,12 @@ main() {
         secrets)      deploy_secrets ;;
         gemma-4-31b)  deploy_vllm gemma-4-31b ;;
         gemma-4-26b)  deploy_vllm gemma-4-26b ;;
-        embed-rerank) deploy_vllm embed-rerank ;;
+        embed) deploy_vllm embed ;;
         litellm)      deploy_litellm ;;
         admin-api)    deploy_admin_api ;;
         status)       show_status ;;
         *)
-            echo "用法: $0 [all|storage|secrets|gemma-4-31b|gemma-4-26b|embed-rerank|litellm|admin-api|status]"
+            echo "用法: $0 [all|storage|secrets|gemma-4-31b|gemma-4-26b|embed|litellm|admin-api|status]"
             exit 1
             ;;
     esac

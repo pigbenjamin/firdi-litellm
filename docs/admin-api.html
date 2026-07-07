@@ -552,7 +552,7 @@ class="sourceCode json"><code class="sourceCode json"><span id="cb5-1"><a href="
 <span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;dept_id&quot;</span><span class="fu">:</span> <span class="st">&quot;data-science&quot;</span><span class="fu">,</span></span>
 <span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;dept_name&quot;</span><span class="fu">:</span> <span class="st">&quot;資料科學部&quot;</span><span class="fu">,</span></span>
 <span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;openrouter_api_key&quot;</span><span class="fu">:</span> <span class="st">&quot;sk-or-...&quot;</span><span class="fu">,</span></span>
-<span id="cb5-5"><a href="#cb5-5" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;allowed_models&quot;</span><span class="fu">:</span> <span class="ot">[</span><span class="st">&quot;gemma-4-31B-it&quot;</span><span class="ot">,</span> <span class="st">&quot;gemma-4-26B-A4B-it&quot;</span><span class="ot">,</span> <span class="st">&quot;embed-qwen&quot;</span><span class="ot">]</span><span class="fu">,</span></span>
+<span id="cb5-5"><a href="#cb5-5" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;allowed_models&quot;</span><span class="fu">:</span> <span class="ot">[</span><span class="st">&quot;gemma-4-31B-it&quot;</span><span class="ot">,</span> <span class="st">&quot;gemma-4-26B-A4B-it&quot;</span><span class="ot">,</span> <span class="st">&quot;embeddinggemma-300m&quot;</span><span class="ot">]</span><span class="fu">,</span></span>
 <span id="cb5-6"><a href="#cb5-6" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;dept_rpm_limit&quot;</span><span class="fu">:</span> <span class="dv">200</span><span class="fu">,</span></span>
 <span id="cb5-7"><a href="#cb5-7" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;dept_tpm_limit&quot;</span><span class="fu">:</span> <span class="dv">500000</span></span>
 <span id="cb5-8"><a href="#cb5-8" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
@@ -745,7 +745,7 @@ class="sourceCode json"><code class="sourceCode json"><span id="cb9-1"><a href="
 <span id="cb9-5"><a href="#cb9-5" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;user_email&quot;</span><span class="fu">:</span> <span class="kw">null</span><span class="fu">,</span></span>
 <span id="cb9-6"><a href="#cb9-6" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;dept_id&quot;</span><span class="fu">:</span> <span class="st">&quot;engineering&quot;</span><span class="fu">,</span></span>
 <span id="cb9-7"><a href="#cb9-7" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;account_type&quot;</span><span class="fu">:</span> <span class="st">&quot;service&quot;</span><span class="fu">,</span></span>
-<span id="cb9-8"><a href="#cb9-8" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;models&quot;</span><span class="fu">:</span> <span class="ot">[</span><span class="st">&quot;gemma-4-26B-A4B-it&quot;</span><span class="ot">,</span> <span class="st">&quot;embed-qwen&quot;</span><span class="ot">]</span><span class="fu">,</span></span>
+<span id="cb9-8"><a href="#cb9-8" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;models&quot;</span><span class="fu">:</span> <span class="ot">[</span><span class="st">&quot;gemma-4-26B-A4B-it&quot;</span><span class="ot">,</span> <span class="st">&quot;embeddinggemma-300m&quot;</span><span class="ot">]</span><span class="fu">,</span></span>
 <span id="cb9-9"><a href="#cb9-9" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;rpm_limit&quot;</span><span class="fu">:</span> <span class="dv">120</span><span class="fu">,</span></span>
 <span id="cb9-10"><a href="#cb9-10" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;tpm_limit&quot;</span><span class="fu">:</span> <span class="dv">500000</span><span class="fu">,</span></span>
 <span id="cb9-11"><a href="#cb9-11" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;aliases&quot;</span><span class="fu">:</span> <span class="fu">{},</span></span>
@@ -857,10 +857,9 @@ deployment 已設定）</p>
 <div class="sourceCode" id="cb14"><pre
 class="sourceCode json"><code class="sourceCode json"><span id="cb14-1"><a href="#cb14-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
 <span id="cb14-2"><a href="#cb14-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;models&quot;</span><span class="fu">:</span> <span class="ot">[</span></span>
-<span id="cb14-3"><a href="#cb14-3" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;embed-qwen&quot;</span><span class="ot">,</span></span>
+<span id="cb14-3"><a href="#cb14-3" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;embeddinggemma-300m&quot;</span><span class="ot">,</span></span>
 <span id="cb14-4"><a href="#cb14-4" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;gemma-4-26B-A4B-it&quot;</span><span class="ot">,</span></span>
-<span id="cb14-5"><a href="#cb14-5" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;gemma-4-31B-it&quot;</span><span class="ot">,</span></span>
-<span id="cb14-6"><a href="#cb14-6" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;rerank-qwen&quot;</span></span>
+<span id="cb14-5"><a href="#cb14-5" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;gemma-4-31B-it&quot;</span></span>
 <span id="cb14-7"><a href="#cb14-7" aria-hidden="true" tabindex="-1"></a>  <span class="ot">]</span></span>
 <span id="cb14-8"><a href="#cb14-8" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
 <p>模型清單直接反映 <code>litellm_config.yaml</code> 的
@@ -1072,7 +1071,7 @@ class="sourceCode bash"><code class="sourceCode bash"><span id="cb25-1"><a href=
 <span id="cb25-13"><a href="#cb25-13" aria-hidden="true" tabindex="-1"></a><span class="st">    &quot;user_email&quot;: null,</span></span>
 <span id="cb25-14"><a href="#cb25-14" aria-hidden="true" tabindex="-1"></a><span class="st">    &quot;dept_id&quot;: &quot;engineering&quot;,</span></span>
 <span id="cb25-15"><a href="#cb25-15" aria-hidden="true" tabindex="-1"></a><span class="st">    &quot;account_type&quot;: &quot;service&quot;,</span></span>
-<span id="cb25-16"><a href="#cb25-16" aria-hidden="true" tabindex="-1"></a><span class="st">    &quot;models&quot;: [&quot;gemma-4-26B-A4B-it&quot;, &quot;embed-qwen&quot;],</span></span>
+<span id="cb25-16"><a href="#cb25-16" aria-hidden="true" tabindex="-1"></a><span class="st">    &quot;models&quot;: [&quot;gemma-4-26B-A4B-it&quot;, &quot;embeddinggemma-300m&quot;],</span></span>
 <span id="cb25-17"><a href="#cb25-17" aria-hidden="true" tabindex="-1"></a><span class="st">    &quot;rpm_limit&quot;: 120,</span></span>
 <span id="cb25-18"><a href="#cb25-18" aria-hidden="true" tabindex="-1"></a><span class="st">    &quot;tpm_limit&quot;: 500000,</span></span>
 <span id="cb25-19"><a href="#cb25-19" aria-hidden="true" tabindex="-1"></a><span class="st">    &quot;metadata&quot;: {&quot;description&quot;: &quot;RAG 文件摘要排程服務&quot;, &quot;owner&quot;: &quot;backend-team&quot;}</span></span>

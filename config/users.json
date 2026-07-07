@@ -7,8 +7,7 @@
       "allowed_models": [
         "gemma-4-31B-it",
         "gemma-4-26B-A4B-it",
-        "embed-qwen",
-        "rerank-qwen",
+        "embeddinggemma-300m",
         "openrouter/anthropic/claude-sonnet-4-5",
         "openrouter/google/gemini-2.0-flash-001",
         "openrouter/openai/gpt-4o-mini"
@@ -23,8 +22,7 @@
       "allowed_models": [
         "gemma-4-31B-it",
         "gemma-4-26B-A4B-it",
-        "embed-qwen",
-        "rerank-qwen",
+        "embeddinggemma-300m",
         "openrouter/anthropic/claude-sonnet-4-5"
       ],
       "dept_rpm_limit": 300,
@@ -41,8 +39,7 @@
       "models": [
         "gemma-4-31B-it",
         "gemma-4-26B-A4B-it",
-        "embed-qwen",
-        "rerank-qwen",
+        "embeddinggemma-300m",
         "openrouter/anthropic/claude-sonnet-4-5"
       ],
       "rpm_limit": 60,
@@ -58,8 +55,7 @@
       "models": [
         "gemma-4-31B-it",
         "gemma-4-26B-A4B-it",
-        "embed-qwen",
-        "rerank-qwen"
+        "embeddinggemma-300m"
       ],
       "rpm_limit": 60,
       "tpm_limit": 200000,
