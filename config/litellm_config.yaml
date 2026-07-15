@@ -15,8 +15,19 @@ model_list:
   - model_name: embeddinggemma-300m
     litellm_params:
       model: hosted_vllm/google/embeddinggemma-300m
-      api_base: http://embed-vllm-service:8000/v1
+      api_base: http://light-models-vllm-service:8000/v1
       api_key: EMPTY
+
+  # marker-service：跑在 light-models 同一個 pod（同一張 GPU），見 k8s/vllm/light-models/。
+  # 轉檔可能長達 30 分鐘，per-model timeout 蓋掉全域 request_timeout（600s），
+  # num_retries=0 蓋掉全域重試設定，避免對已經逾時的長任務重打一次。
+  - model_name: marker/pdf-to-md
+    litellm_params:
+      model: openai/marker-pdf-to-md
+      api_base: http://light-models-vllm-service:8766/v1
+      api_key: "none"
+      timeout: 1860
+      num_retries: 0
 
   # 臨時地端（Ollama，應急短期需求）
   - model_name: ollama/*
@@ -33,7 +44,7 @@ model_list:
       api_key: os.environ/OPENROUTER_API_KEY_PLACEHOLDER
 
 litellm_settings:
-  callbacks: ["custom_logger.proxy_handler_config"]
+  callbacks: ["custom_logger.proxy_handler_config", "langfuse"]
   drop_params: true
   request_timeout: 600
   num_retries: 2

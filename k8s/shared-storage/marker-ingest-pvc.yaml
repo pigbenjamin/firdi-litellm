@@ -1,0 +1,41 @@
+# marker-service (running in the light-models pod, ai-platform namespace) needs
+# to read/write the same PDF/markdown files as docblock-rag-platform's
+# ingest-worker (docblock namespace). PVCs are namespace-scoped, so this is a
+# second PV/PVC pointing at the SAME hostPath as docblock-rag-platform's
+# `docblock-ingest-pv` (deployments/k8s/03-pv-pvc.yaml in that repo) — on this
+# single-node k3s cluster that hostPath is the shared filesystem view across
+# both namespaces. If that path ever changes on the docblock side, update it
+# here too or marker-service will silently write to a directory ingest-worker
+# never reads paths from.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: marker-ingest-pv
+spec:
+  capacity:
+    storage: 50Gi
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  hostPath:
+    path: /home/ai-x/data/docblock/ingest
+    type: DirectoryOrCreate
+  claimRef:
+    name: marker-ingest-pvc
+    namespace: ai-platform
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: marker-ingest-pvc
+  namespace: ai-platform
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 50Gi
+  storageClassName: ""
+  volumeName: marker-ingest-pv

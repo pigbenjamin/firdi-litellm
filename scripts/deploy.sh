@@ -6,7 +6,7 @@
 #   ./scripts/deploy.sh storage      # 只建立 PV/PVC 與 users.db
 #   ./scripts/deploy.sh gemma-4-31b  # 只部署 gemma-4-31b-vllm（思考型）
 #   ./scripts/deploy.sh gemma-4-26b  # 只部署 gemma-4-26b-vllm（快捷型）
-#   ./scripts/deploy.sh embed        # 只部署 embed-vllm（embedding）
+#   ./scripts/deploy.sh light-models # 只部署 light-models（embedding + marker，同一張 GPU）
 #   ./scripts/deploy.sh litellm      # 只部署 litellm（含 ConfigMap）
 #   ./scripts/deploy.sh admin-api    # 只部署 admin-api
 #   ./scripts/deploy.sh secrets      # 只建立 Secrets
@@ -49,6 +49,9 @@ deploy_secrets() {
         --from-literal=openwebui-url="${OPENWEBUI_URL:-}" \
         --from-literal=openwebui-admin-key="${OPENWEBUI_ADMIN_KEY:-}" \
         --from-literal=openwebui-service-key="${OPENWEBUI_SERVICE_KEY:-}" \
+        --from-literal=langfuse-public-key="${LANGFUSE_PUBLIC_KEY:-}" \
+        --from-literal=langfuse-secret-key="${LANGFUSE_SECRET_KEY:-}" \
+        --from-literal=langfuse-host="${LANGFUSE_HOST:-}" \
         --namespace="$NS" \
         --dry-run=client -o yaml | kubectl apply -f -
 
@@ -123,13 +126,34 @@ deploy_litellm_configmaps() {
 
 # ── vLLM 部署 helper ──────────────────────────────────────────────────────────
 deploy_vllm() {
-    local name="$1"   # gemma-4-31b / gemma-4-26b / embed
+    local name="$1"   # gemma-4-31b / gemma-4-26b / light-models
     local dir="$REPO_ROOT/k8s/vllm/$name"
+
+    if [[ "$name" == "light-models" ]]; then
+        info "Build light-models combo image (firdi-light-models:latest)..."
+        docker build -f "$REPO_ROOT/marker-service/Dockerfile" -t firdi-light-models:latest "$REPO_ROOT"
+        if command -v k3s &>/dev/null; then
+            info "匯入 image 到 k3s containerd..."
+            # 不能用 `docker save | sudo ...` 管線：sudo 在管線裡拿不到終端機控制權要密碼，
+            # 會整條卡死（docker save 也會因為 pipe buffer 滿了被塞住）。改成先存檔再 import。
+            TMP_IMAGE_TAR="$(mktemp --suffix=.tar)"
+            docker save firdi-light-models:latest -o "$TMP_IMAGE_TAR"
+            sudo k3s ctr images import "$TMP_IMAGE_TAR"
+            rm -f "$TMP_IMAGE_TAR"
+            ok "Image 匯入完成"
+        fi
+        info "套用 marker 共用 ingest-data PV/PVC..."
+        kubectl apply -f "$REPO_ROOT/k8s/shared-storage/marker-ingest-pvc.yaml"
+    fi
+
     info "部署 $name vLLM..."
     export K8S_HF_CACHE_HOST_PATH="${K8S_HF_CACHE_HOST_PATH:-/opt/firdi/hf-cache}"
     for f in "$dir"/*.yaml; do
         envsubst < "$f" | kubectl apply -f -
     done
+    if [[ "$name" == "light-models" ]]; then
+        kubectl rollout restart deployment/light-models-vllm -n "$NS"
+    fi
     ok "$name vLLM 套用完成（HF cache hostPath: $K8S_HF_CACHE_HOST_PATH）"
 }
 
@@ -160,7 +184,12 @@ deploy_admin_api() {
     # k3s 用 containerd，需要將 docker image 導入才能讓 pod 使用
     if command -v k3s &>/dev/null; then
         info "匯入 image 到 k3s containerd..."
-        docker save "$img" | sudo k3s ctr images import -
+        # 不能用 `docker save | sudo ...` 管線：sudo 在管線裡拿不到終端機控制權要密碼，
+        # 會整條卡死。改成先存檔再 import。
+        TMP_IMAGE_TAR="$(mktemp --suffix=.tar)"
+        docker save "$img" -o "$TMP_IMAGE_TAR"
+        sudo k3s ctr images import "$TMP_IMAGE_TAR"
+        rm -f "$TMP_IMAGE_TAR"
         ok "Image 匯入完成"
     fi
 
@@ -195,7 +224,7 @@ deploy_all() {
     deploy_storage
     deploy_vllm gemma-4-31b
     deploy_vllm gemma-4-26b
-    deploy_vllm embed
+    deploy_vllm light-models
     deploy_litellm
     deploy_admin_api
     echo ""
@@ -221,12 +250,12 @@ main() {
         secrets)      deploy_secrets ;;
         gemma-4-31b)  deploy_vllm gemma-4-31b ;;
         gemma-4-26b)  deploy_vllm gemma-4-26b ;;
-        embed) deploy_vllm embed ;;
+        light-models) deploy_vllm light-models ;;
         litellm)      deploy_litellm ;;
         admin-api)    deploy_admin_api ;;
         status)       show_status ;;
         *)
-            echo "用法: $0 [all|storage|secrets|gemma-4-31b|gemma-4-26b|embed|litellm|admin-api|status]"
+            echo "用法: $0 [all|storage|secrets|gemma-4-31b|gemma-4-26b|light-models|litellm|admin-api|status]"
             exit 1
             ;;
     esac

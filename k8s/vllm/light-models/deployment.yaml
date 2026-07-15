@@ -1,0 +1,126 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: light-models-vllm
+  namespace: ai-platform
+  labels:
+    app: light-models-vllm
+spec:
+  replicas: 1
+  # 單副本 GPU 工作負載：先殺舊 pod 釋放 GPU 再起新 pod，避免 RollingUpdate 死鎖
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: light-models-vllm
+  template:
+    metadata:
+      labels:
+        app: light-models-vllm
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      runtimeClassName: nvidia
+      containers:
+        # 單一 container 同時跑 embed-vllm（port 8000）與 marker-service（port 8766），
+        # 共用同一份 nvidia.com/gpu: 1 配額 — 這個叢集的 device plugin 是整張 GPU
+        # 配一顆 container，兩個各自 request GPU 的 pod 會落在兩張不同實體卡上，
+        # 無法共用。啟動順序與 wait -n 見 marker-service/entrypoint.sh。
+        - name: vllm
+          image: firdi-light-models:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+              name: embed
+            - containerPort: 8766
+              name: marker
+          env:
+            - name: EMBED_MODEL
+              value: google/embeddinggemma-300m
+            # 300M 小模型，0.15（~14GB）已綽綽有餘；卡上其餘容量留給 marker 與未來擴充
+            - name: EMBED_GPU_MEM_UTIL
+              value: "0.15"
+            - name: EMBED_MAX_NUM_SEQS
+              value: "512"
+            - name: EMBED_PORT
+              value: "8000"
+            - name: MARKER_PORT
+              value: "8766"
+            # marker 單一 worker 處理一份 PDF 的逾時上限；watchdog 會在這之後
+            # 再等一段 grace 才強制重啟整個 pod（見 marker_worker.py）
+            - name: MARKER_TIMEOUT
+              value: "1800"
+            # 與下方 ingest-data 掛載點一致；請求的 pdf_path/out_dir 必須落在此目錄下
+            - name: MARKER_ALLOWED_BASE_DIR
+              value: /data
+            - name: NCCL_P2P_DISABLE
+              value: "1"
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: token
+                  optional: true
+            - name: HF_HOME
+              value: /cache/huggingface
+            # torch.compile 快取持久化到 hostPath，重啟免全額重編（vLLM 依模型+設定雜湊分目錄，可多模型共用）
+            - name: VLLM_CACHE_ROOT
+              value: /cache/huggingface/vllm-compile-cache
+          resources:
+            limits:
+              nvidia.com/gpu: "1"
+            requests:
+              nvidia.com/gpu: "1"
+          volumeMounts:
+            - name: hf-cache
+              mountPath: /cache/huggingface
+            - name: shm
+              mountPath: /dev/shm
+            # docblock-rag-platform 的 ingest-worker 寫入的 PDF / 讀取的 md 輸出，
+            # 與 docblock namespace 的 docblock-ingest-pvc 指向同一個 hostPath
+            - name: ingest-data
+              mountPath: /data
+          startupProbe:
+            exec:
+              command:
+                - /bin/bash
+                - -c
+                - "curl -sf http://localhost:8000/health && curl -sf http://localhost:8766/healthz"
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            # embed 啟動快，但 marker 首次要載入/下載 surya 系列模型，給足夠預算
+            failureThreshold: 40
+          livenessProbe:
+            exec:
+              command:
+                - /bin/bash
+                - -c
+                - "curl -sf http://localhost:8000/health && curl -sf http://localhost:8766/healthz"
+            periodSeconds: 30
+            failureThreshold: 5
+          readinessProbe:
+            exec:
+              command:
+                - /bin/bash
+                - -c
+                - "curl -sf http://localhost:8000/health && curl -sf http://localhost:8766/healthz"
+            periodSeconds: 15
+            failureThreshold: 3
+      volumes:
+        - name: hf-cache
+          hostPath:
+            path: ${K8S_HF_CACHE_HOST_PATH}
+            type: DirectoryOrCreate
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 4Gi
+        - name: ingest-data
+          persistentVolumeClaim:
+            claimName: marker-ingest-pvc
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule

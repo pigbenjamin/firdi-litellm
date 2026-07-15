@@ -1,15 +1,18 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: embed-vllm-service
+  name: light-models-vllm-service
   namespace: ai-platform
   labels:
-    app: embed-vllm
+    app: light-models-vllm
 spec:
   selector:
-    app: embed-vllm
+    app: light-models-vllm
   ports:
     - name: http
       port: 8000
       targetPort: 8000
+    - name: marker
+      port: 8766
+      targetPort: 8766
   type: ClusterIP
