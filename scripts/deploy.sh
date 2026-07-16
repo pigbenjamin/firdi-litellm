@@ -165,6 +165,12 @@ deploy_storage() {
         info "建立目錄 $data_path"
         mkdir -p "$data_path" || sudo mkdir -p "$data_path"
     fi
+    if [[ ! -w "$data_path" ]]; then
+        # 上面用 sudo 建立（或目錄本來就是 root 擁有）時會沒有寫入權限，
+        # 之後 migrate_users_json.py 是用目前使用者身份執行，需要能寫入。
+        info "修正目錄擁有者：$data_path"
+        sudo chown "$(id -u):$(id -g)" "$data_path"
+    fi
 
     export K8S_DATA_HOST_PATH="$data_path"
     export K8S_STORAGE_NODE_HOSTNAME="${K8S_STORAGE_NODE_HOSTNAME:-$(hostname)}"
