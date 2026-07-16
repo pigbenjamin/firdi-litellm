@@ -112,6 +112,9 @@ apply_image_pull_secret() {
 #   - 未設定 REGISTRY 但本機是 k3s：直接 import 進 k3s 內建 containerd（僅限單節點，
 #     image 只會在這台機器上，pod 排到別的節點會抓不到）
 #   - 都不是：只在本機 docker，僅供單節點測試
+# 本機沒有 docker（例如純 worker 節點）但有設定 REGISTRY 時：跳過 build+push，直接
+# 沿用其他機器先前已經 push 上去的同名 image（同一個 REGISTRY + local_tag），只做
+# kubectl 部署。沒有 docker 又沒設 REGISTRY 就真的無法取得 image，直接報錯。
 # 結果透過全域變數 IMAGE_REF / IMAGE_PULL_POLICY 回傳（不用 command substitution，
 # 避免 info/warn 訊息被一起截進回傳值）。
 IMAGE_REF=""
@@ -120,6 +123,14 @@ build_and_publish_image() {
     local local_tag="$1"        # 例如 firdi-admin-api:latest
     local build_context="$2"
     local dockerfile="${3:-}"   # 可選；預設用 build_context 下的 Dockerfile
+
+    if ! command -v docker &>/dev/null; then
+        [[ -n "${REGISTRY:-}" ]] || die "本機沒有 docker，且未設定 REGISTRY，無法取得 image（請安裝 docker，或在 .env 設定 REGISTRY 並先在其他機器 build+push 過同一個 tag）"
+        warn "本機沒有 docker，跳過 build+push，直接沿用 registry 上既有的 image（需已由其他機器 build+push 過同一個 tag）"
+        IMAGE_REF="${REGISTRY}/${local_tag}"
+        IMAGE_PULL_POLICY="Always"
+        return 0
+    fi
 
     if [[ -n "$dockerfile" ]]; then
         docker build -f "$dockerfile" -t "$local_tag" "$build_context"
