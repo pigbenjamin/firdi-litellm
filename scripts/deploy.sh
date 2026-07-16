@@ -11,6 +11,9 @@
 #   ./scripts/deploy.sh admin-api    # 只部署 admin-api
 #   ./scripts/deploy.sh secrets      # 只建立 Secrets
 #   ./scripts/deploy.sh status       # 顯示所有 Pod/Service 狀態
+#
+# 多節點叢集：.env 設定 REGISTRY（推送 image 用）與 K8S_STORAGE_NODE_HOSTNAME /
+# K8S_GPU_NODE_HOSTNAME（釘選 hostPath 相關 Pod 的節點），單節點 k3s 可全部留空。
 
 set -euo pipefail
 
@@ -76,7 +79,81 @@ deploy_secrets() {
         --namespace="$NS" \
         --dry-run=client -o yaml | kubectl apply -f -
 
+    if [[ -n "${K8S_IMAGE_PULL_SECRET:-}" ]]; then
+        if [[ -z "${REGISTRY:-}" || -z "${REGISTRY_USERNAME:-}" || -z "${REGISTRY_PASSWORD:-}" ]]; then
+            warn "K8S_IMAGE_PULL_SECRET 已設定，但 REGISTRY / REGISTRY_USERNAME / REGISTRY_PASSWORD 有缺，跳過建立 imagePullSecret"
+        else
+            kubectl create secret docker-registry "$K8S_IMAGE_PULL_SECRET" \
+                --docker-server="${REGISTRY%%/*}" \
+                --docker-username="$REGISTRY_USERNAME" \
+                --docker-password="$REGISTRY_PASSWORD" \
+                --namespace="$NS" \
+                --dry-run=client -o yaml | kubectl apply -f -
+            ok "imagePullSecret「$K8S_IMAGE_PULL_SECRET」已建立"
+        fi
+    fi
+
     ok "Secrets 完成"
+}
+
+# 若設定 K8S_IMAGE_PULL_SECRET，掛到指定 Deployment 的 imagePullSecrets（私有 registry
+# 才需要）。用 kubectl patch 而非模板變數：envsubst 沒辦法在留空時讓整段 imagePullSecrets
+# 乾淨消失，patch 則單純不執行，deployment.yaml 本身完全不受影響。
+apply_image_pull_secret() {
+    local deploy_name="$1"
+    [[ -n "${K8S_IMAGE_PULL_SECRET:-}" ]] || return 0
+    kubectl patch deployment "$deploy_name" -n "$NS" --type=strategic \
+        -p "{\"spec\":{\"template\":{\"spec\":{\"imagePullSecrets\":[{\"name\":\"${K8S_IMAGE_PULL_SECRET}\"}]}}}}"
+}
+
+# ── Image 建置與發佈 ───────────────────────────────────────────────────────────
+# 本機 build 好的 image 要讓目標節點的 kubelet 抓得到：
+#   - 設定 REGISTRY：tag + push 到該 registry（多節點必須，任何節點都能 pull）
+#   - 未設定 REGISTRY 但本機是 k3s：直接 import 進 k3s 內建 containerd（僅限單節點，
+#     image 只會在這台機器上，pod 排到別的節點會抓不到）
+#   - 都不是：只在本機 docker，僅供單節點測試
+# 結果透過全域變數 IMAGE_REF / IMAGE_PULL_POLICY 回傳（不用 command substitution，
+# 避免 info/warn 訊息被一起截進回傳值）。
+IMAGE_REF=""
+IMAGE_PULL_POLICY=""
+build_and_publish_image() {
+    local local_tag="$1"        # 例如 firdi-admin-api:latest
+    local build_context="$2"
+    local dockerfile="${3:-}"   # 可選；預設用 build_context 下的 Dockerfile
+
+    if [[ -n "$dockerfile" ]]; then
+        docker build -f "$dockerfile" -t "$local_tag" "$build_context"
+    else
+        docker build -t "$local_tag" "$build_context"
+    fi
+
+    if [[ -n "${REGISTRY:-}" ]]; then
+        if [[ -n "${REGISTRY_USERNAME:-}" && -n "${REGISTRY_PASSWORD:-}" ]]; then
+            # docker-server 只取 host 部分（REGISTRY 可能是 "ghcr.io/org" 這種含路徑的形式）
+            echo "$REGISTRY_PASSWORD" | docker login "${REGISTRY%%/*}" -u "$REGISTRY_USERNAME" --password-stdin
+        fi
+        IMAGE_REF="${REGISTRY}/${local_tag}"
+        info "推送 image 到 registry: $IMAGE_REF"
+        docker tag "$local_tag" "$IMAGE_REF"
+        docker push "$IMAGE_REF"
+        IMAGE_PULL_POLICY="Always"
+    elif command -v k3s &>/dev/null; then
+        info "匯入 image 到 k3s containerd..."
+        # 不能用 `docker save | sudo ...` 管線：sudo 在管線裡拿不到終端機控制權要密碼，
+        # 會整條卡死（docker save 也會因為 pipe buffer 滿了被塞住）。改成先存檔再 import。
+        local tmp_tar
+        tmp_tar="$(mktemp --suffix=.tar)"
+        docker save "$local_tag" -o "$tmp_tar"
+        sudo k3s ctr images import "$tmp_tar"
+        rm -f "$tmp_tar"
+        ok "Image 匯入完成"
+        IMAGE_REF="$local_tag"
+        IMAGE_PULL_POLICY="IfNotPresent"
+    else
+        warn "非 k3s 且未設定 REGISTRY：image 只在本機 docker，多節點叢集請在 .env 設定 REGISTRY"
+        IMAGE_REF="$local_tag"
+        IMAGE_PULL_POLICY="IfNotPresent"
+    fi
 }
 
 # ── Storage（PV / PVC / users.db）─────────────────────────────────────────────
@@ -90,8 +167,10 @@ deploy_storage() {
     fi
 
     export K8S_DATA_HOST_PATH="$data_path"
+    export K8S_STORAGE_NODE_HOSTNAME="${K8S_STORAGE_NODE_HOSTNAME:-$(hostname)}"
+    info "users-db-pv 將釘選於節點: $K8S_STORAGE_NODE_HOSTNAME（多節點叢集請確認與 kubectl get nodes 的 NAME 一致）"
     envsubst < "$REPO_ROOT/k8s/shared-storage/pvc.yaml" | kubectl apply -f -
-    ok "PV/PVC 完成（hostPath: $data_path）"
+    ok "PV/PVC 完成（hostPath: $data_path，node: $K8S_STORAGE_NODE_HOSTNAME）"
 
     info "Migrate users.json → users.db..."
     local db_path="$data_path/users.db"
@@ -129,29 +208,26 @@ deploy_vllm() {
     local name="$1"   # gemma-4-31b / gemma-4-26b / light-models
     local dir="$REPO_ROOT/k8s/vllm/$name"
 
+    export K8S_GPU_NODE_HOSTNAME="${K8S_GPU_NODE_HOSTNAME:-$(hostname)}"
+
     if [[ "$name" == "light-models" ]]; then
-        info "Build light-models combo image (firdi-light-models:latest)..."
-        docker build -f "$REPO_ROOT/marker-service/Dockerfile" -t firdi-light-models:latest "$REPO_ROOT"
-        if command -v k3s &>/dev/null; then
-            info "匯入 image 到 k3s containerd..."
-            # 不能用 `docker save | sudo ...` 管線：sudo 在管線裡拿不到終端機控制權要密碼，
-            # 會整條卡死（docker save 也會因為 pipe buffer 滿了被塞住）。改成先存檔再 import。
-            TMP_IMAGE_TAR="$(mktemp --suffix=.tar)"
-            docker save firdi-light-models:latest -o "$TMP_IMAGE_TAR"
-            sudo k3s ctr images import "$TMP_IMAGE_TAR"
-            rm -f "$TMP_IMAGE_TAR"
-            ok "Image 匯入完成"
-        fi
+        info "Build light-models combo image..."
+        build_and_publish_image "firdi-light-models:latest" "$REPO_ROOT" "$REPO_ROOT/marker-service/Dockerfile"
+        export LIGHT_MODELS_IMAGE="$IMAGE_REF"
+        export LIGHT_MODELS_IMAGE_PULL_POLICY="$IMAGE_PULL_POLICY"
+
         info "套用 marker 共用 ingest-data PV/PVC..."
-        kubectl apply -f "$REPO_ROOT/k8s/shared-storage/marker-ingest-pvc.yaml"
+        export K8S_MARKER_INGEST_HOST_PATH="${K8S_MARKER_INGEST_HOST_PATH:-/home/ai-x/data/docblock/ingest}"
+        envsubst < "$REPO_ROOT/k8s/shared-storage/marker-ingest-pvc.yaml" | kubectl apply -f -
     fi
 
-    info "部署 $name vLLM..."
+    info "部署 $name vLLM（GPU node: $K8S_GPU_NODE_HOSTNAME）..."
     export K8S_HF_CACHE_HOST_PATH="${K8S_HF_CACHE_HOST_PATH:-/opt/firdi/hf-cache}"
     for f in "$dir"/*.yaml; do
         envsubst < "$f" | kubectl apply -f -
     done
     if [[ "$name" == "light-models" ]]; then
+        apply_image_pull_secret light-models-vllm
         kubectl rollout restart deployment/light-models-vllm -n "$NS"
     fi
     ok "$name vLLM 套用完成（HF cache hostPath: $K8S_HF_CACHE_HOST_PATH）"
@@ -170,34 +246,17 @@ deploy_litellm() {
 # ── Admin API ─────────────────────────────────────────────────────────────────
 deploy_admin_api() {
     info "部署 Admin API..."
-    local img
-    img=$(grep 'image:' "$REPO_ROOT/k8s/admin-api/deployment.yaml" | awk '{print $2}')
-    if [[ "$img" == *"<registry>"* ]]; then
-        warn "admin-api image 尚未設定（仍為 <registry> placeholder），跳過部署"
-        warn "請先 build image 並更新 k8s/admin-api/deployment.yaml"
-        return 0
-    fi
+    info "Build admin-api image..."
+    build_and_publish_image "firdi-admin-api:latest" "$REPO_ROOT/admin-api"
+    export ADMIN_API_IMAGE="$IMAGE_REF"
+    export ADMIN_API_IMAGE_PULL_POLICY="$IMAGE_PULL_POLICY"
 
-    info "Build admin-api image: $img"
-    docker build -t "$img" "$REPO_ROOT/admin-api"
-
-    # k3s 用 containerd，需要將 docker image 導入才能讓 pod 使用
-    if command -v k3s &>/dev/null; then
-        info "匯入 image 到 k3s containerd..."
-        # 不能用 `docker save | sudo ...` 管線：sudo 在管線裡拿不到終端機控制權要密碼，
-        # 會整條卡死。改成先存檔再 import。
-        TMP_IMAGE_TAR="$(mktemp --suffix=.tar)"
-        docker save "$img" -o "$TMP_IMAGE_TAR"
-        sudo k3s ctr images import "$TMP_IMAGE_TAR"
-        rm -f "$TMP_IMAGE_TAR"
-        ok "Image 匯入完成"
-    fi
-
-    kubectl apply -f "$REPO_ROOT/k8s/admin-api/deployment.yaml"
+    envsubst < "$REPO_ROOT/k8s/admin-api/deployment.yaml" | kubectl apply -f -
     kubectl apply -f "$REPO_ROOT/k8s/admin-api/service.yaml"
+    apply_image_pull_secret admin-api
     kubectl rollout restart deployment/admin-api -n "$NS"
     kubectl rollout status deployment/admin-api -n "$NS" --timeout=90s
-    ok "Admin API 部署完成"
+    ok "Admin API 部署完成（image: $ADMIN_API_IMAGE）"
 }
 
 # ── Status ────────────────────────────────────────────────────────────────────

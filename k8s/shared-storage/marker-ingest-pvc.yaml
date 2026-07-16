@@ -2,11 +2,18 @@
 # to read/write the same PDF/markdown files as docblock-rag-platform's
 # ingest-worker (docblock namespace). PVCs are namespace-scoped, so this is a
 # second PV/PVC pointing at the SAME hostPath as docblock-rag-platform's
-# `docblock-ingest-pv` (deployments/k8s/03-pv-pvc.yaml in that repo) — on this
-# single-node k3s cluster that hostPath is the shared filesystem view across
-# both namespaces. If that path ever changes on the docblock side, update it
-# here too or marker-service will silently write to a directory ingest-worker
-# never reads paths from.
+# `docblock-ingest-pv` (deployments/k8s/03-pv-pvc.yaml in that repo) — that
+# hostPath is the shared filesystem view across both namespaces. If that path
+# ever changes on the docblock side, update K8S_MARKER_INGEST_HOST_PATH in
+# .env here too or marker-service will silently write to a directory
+# ingest-worker never reads paths from.
+#
+# nodeAffinity pins this PV to the node that actually has the GPU + that
+# hostPath (K8S_GPU_NODE_HOSTNAME in .env) — required on multi-node clusters
+# so the light-models pod (and this PV) never get scheduled/bound to a node
+# where the directory doesn't exist.
+# 套用前請先 source .env，再用 envsubst 展開變數（deploy.sh 的 light-models 步驟已處理）：
+#   source .env && envsubst < k8s/shared-storage/marker-ingest-pvc.yaml | kubectl apply -f -
 apiVersion: v1
 kind: PersistentVolume
 metadata:
@@ -19,8 +26,16 @@ spec:
   persistentVolumeReclaimPolicy: Retain
   storageClassName: ""
   hostPath:
-    path: /home/ai-x/data/docblock/ingest
+    path: ${K8S_MARKER_INGEST_HOST_PATH}
     type: DirectoryOrCreate
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values:
+                - ${K8S_GPU_NODE_HOSTNAME}
   claimRef:
     name: marker-ingest-pvc
     namespace: ai-platform

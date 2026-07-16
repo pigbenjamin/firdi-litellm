@@ -23,6 +23,9 @@ spec:
         prometheus.io/path: "/metrics"
     spec:
       runtimeClassName: nvidia
+      # 多節點叢集：釘選到有 GPU 的節點（同時也是 hf-cache hostPath 所在節點）
+      nodeSelector:
+        kubernetes.io/hostname: ${K8S_GPU_NODE_HOSTNAME}
       containers:
         - name: vllm
           image: vllm/vllm-openai:v0.23.0

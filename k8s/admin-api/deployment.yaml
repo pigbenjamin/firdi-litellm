@@ -17,8 +17,8 @@ spec:
     spec:
       containers:
         - name: admin-api
-          image: firdi-admin-api:latest
-          imagePullPolicy: IfNotPresent
+          image: ${ADMIN_API_IMAGE}
+          imagePullPolicy: ${ADMIN_API_IMAGE_PULL_POLICY}
           ports:
             - containerPort: 8080
               name: http

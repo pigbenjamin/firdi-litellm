@@ -184,17 +184,10 @@ kubectl delete pod tmp-pod -n ai-platform
 
 ### 5. 部署 Admin API
 
-先 build 並推送 image（替換 `<registry>` 為實際 registry 位址）：
+`k8s/admin-api/deployment.yaml` 的 `image` 欄位是 `${ADMIN_API_IMAGE}` 模板變數，需要 `envsubst` 展開，不能直接 `kubectl apply -f`。用 `./scripts/deploy.sh admin-api` 部署（會自動 build image，單節點 k3s 直接 import，設定 `.env` 的 `REGISTRY` 則 push 到 registry，多節點叢集見 [docs/deploy.md](docs/deploy.md) 第 4 節）：
 
 ```bash
-docker build -t <registry>/firdi-admin-api:latest admin-api/
-docker push <registry>/firdi-admin-api:latest
-```
-
-更新 `k8s/admin-api/deployment.yaml` 中的 `image` 欄位後部署：
-
-```bash
-kubectl apply -f k8s/admin-api/
+./scripts/deploy.sh admin-api
 ```
 
 Admin API 啟動後在 `http://<node-ip>:30408`，API 文件在 `/docs`。

@@ -23,14 +23,17 @@ spec:
         prometheus.io/path: "/metrics"
     spec:
       runtimeClassName: nvidia
+      # 多節點叢集：釘選到有 GPU 的節點（同時也是 hf-cache / marker-ingest hostPath 所在節點）
+      nodeSelector:
+        kubernetes.io/hostname: ${K8S_GPU_NODE_HOSTNAME}
       containers:
         # 單一 container 同時跑 embed-vllm（port 8000）與 marker-service（port 8766），
         # 共用同一份 nvidia.com/gpu: 1 配額 — 這個叢集的 device plugin 是整張 GPU
         # 配一顆 container，兩個各自 request GPU 的 pod 會落在兩張不同實體卡上，
         # 無法共用。啟動順序與 wait -n 見 marker-service/entrypoint.sh。
         - name: vllm
-          image: firdi-light-models:latest
-          imagePullPolicy: IfNotPresent
+          image: ${LIGHT_MODELS_IMAGE}
+          imagePullPolicy: ${LIGHT_MODELS_IMAGE_PULL_POLICY}
           ports:
             - containerPort: 8000
               name: embed

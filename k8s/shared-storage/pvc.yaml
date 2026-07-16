@@ -2,6 +2,11 @@
 #   source .env && envsubst < k8s/shared-storage/pvc.yaml | kubectl apply -f -
 # 並確認 Node 上目錄已存在：
 #   mkdir -p ${K8S_DATA_HOST_PATH}
+#
+# nodeAffinity 把這個 PV 釘選在 K8S_STORAGE_NODE_HOSTNAME 指定的節點上——多節點叢集
+# 必須要有，否則 admin-api / litellm（兩者都掛這個 PVC）可能被排到沒有此 hostPath
+# 目錄的節點，導致 Pending 或讀不到資料。litellm 的 K8S_LOGS_HOST_PATH（純 hostPath，
+# 沒有走 PVC）也要建在同一個節點上，才會跟著這個 nodeAffinity 一起被排程過去。
 
 apiVersion: v1
 kind: PersistentVolume
@@ -15,6 +20,14 @@ spec:
   persistentVolumeReclaimPolicy: Retain
   hostPath:
     path: ${K8S_DATA_HOST_PATH}
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values:
+                - ${K8S_STORAGE_NODE_HOSTNAME}
   claimRef:
     name: users-db-pvc
     namespace: ai-platform
