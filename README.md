@@ -60,6 +60,7 @@ LiteLLM Proxy (K8s, :30400)
 │   └── plugins/
 │       └── keycloak-user-sync-listener/  — 使用者事件 webhook 轉發插件（Java/Maven）
 ├── docs/
+│   ├── deploy.md                — 新機器部署完整 checklist
 │   ├── admin-api.md             — Admin API 完整接口文件
 │   └── permission-sync.md       — 模型權限同步架構與 SOP（OpenWebUI 主導）
 ├── config/                      ← LiteLLM + auth 設定（K8s 版）
@@ -94,6 +95,8 @@ GPU 由 NVIDIA Device Plugin 自動分配，不需手動指定 GPU index。
 - **更新 deployment 用 Recreate**：單副本 GPU 工作負載已設 `strategy: Recreate`（先殺舊 pod 釋放 GPU 再起新 pod）；RollingUpdate 在 GPU 佔滿時會死鎖。
 
 ## 快速部署
+
+> 在同一台機器上重新部署／換模型時可直接照本節操作。若是把整個平台搬到一台全新機器，請改用 [docs/deploy.md](docs/deploy.md)，裡面補了 `.env`／`data/` 重建、既有資料搬遷、GPU 規格核對等新機器才會遇到的步驟。
 
 ### 1. 確認 K8s GPU 環境
 
