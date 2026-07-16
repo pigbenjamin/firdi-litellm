@@ -8,6 +8,7 @@
 
 - k8s 叢集（k3s 或標準 k8s 皆可，見第 4 節「單節點 vs 多節點」的差異）
 - NVIDIA GPU + Device Plugin，`nvidia.com/gpu` 資源可被排程到
+- **`RuntimeClass "nvidia"`**（見下方說明，三個 vLLM deployment 的 yaml 都指定 `runtimeClassName: nvidia`，沒有這個物件 Pod 會在建立階段就被拒絕，`kubectl get pods` 甚至不會看到任何 Pod）
 - `docker`、`kubectl`、`python3`、`envsubst`（`gettext` 套件）
 - 一組已接受 `google/gemma-4-*` 授權的 HuggingFace 帳號 token（gated model，沒接受授權會下載失敗）
 
@@ -15,11 +16,43 @@
 kubectl get nodes -o json | jq '.items[].status.capacity."nvidia.com/gpu"'
 ```
 
-若無 GPU 資源，先裝 NVIDIA GPU Operator：
+若無 GPU 資源，先裝 NVIDIA GPU Operator（Helm 版會自動連 device plugin 跟 `RuntimeClass nvidia` 一起裝好）：
 
 ```bash
 helm repo add nvidia https://helm.ngc.nvidia.com/nvidia
 helm install gpu-operator nvidia/gpu-operator -n gpu-operator --create-namespace
+```
+
+### RuntimeClass "nvidia" 檢查與手動建立
+
+`nvidia.com/gpu` capacity 能上報，只代表 driver + device plugin 有裝；`RuntimeClass nvidia` 是另一層，containerd 要知道怎麼用 nvidia-container-runtime 起容器，兩者不會互相帶動。**k3s 單節點叢集通常內建就有這個 RuntimeClass**（`kube-system` 裡一個叫 `runtimes` 的 addon，非 GPU Operator 建的）；**標準 kubeadm 叢集完全不會自動生成**，要手動處理。先檢查：
+
+```bash
+kubectl get runtimeclass nvidia
+```
+
+沒有的話，且沒有裝 GPU Operator，需要**在每一台會跑 GPU workload 的節點各自執行**（containerd 設定是各節點獨立的，這步不能只做一次）：
+
+```bash
+# nvidia-container-toolkit 常常已經隨 driver 安裝腳本裝過，可以先確認
+dpkg -l nvidia-container-toolkit 2>/dev/null || sudo apt-get install -y nvidia-container-toolkit
+
+sudo nvidia-ctk runtime configure --runtime=containerd
+sudo systemctl restart containerd
+```
+
+> 新版 containerd（config version 3）`nvidia-ctk` 會把設定寫到 `/etc/containerd/conf.d/99-nvidia.toml` 這種 drop-in 檔案，不是直接改 `/etc/containerd/config.toml`；用 `sudo containerd config dump | grep -A8 'runtimes\.nvidia'` 看合併後的實際生效設定，比直接 `grep config.toml` 準。
+
+每台節點都設定好之後，`RuntimeClass` 物件本身是**叢集層級只需要建一次**：
+
+```bash
+kubectl apply -f - <<'EOF'
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: nvidia
+handler: nvidia
+EOF
 ```
 
 ## 1. Clone 專案
@@ -104,6 +137,8 @@ K8S_GPU_NODE_HOSTNAME=node-b       # 承載 K8S_HF_CACHE_HOST_PATH / K8S_MARKER_
 - `K8S_GPU_NODE_HOSTNAME`：寫進 3 個 vLLM deployment 的 `nodeSelector`，以及 `marker-ingest-pv` 的 `nodeAffinity`。理論上 GPU 資源請求（`nvidia.com/gpu`）本身就會把這些 pod 排到有 GPU 的節點，但叢集若有多台 GPU 節點、且 hostPath 目錄只存在其中一台時，明確指定 `nodeSelector` 才不會排錯台。
 
 單節點 k3s 這兩個變數留空即可，`deploy.sh` 會自動帶入 `$(hostname)`。
+
+> 多台 GPU 節點（例如切換 `K8S_GPU_NODE_HOSTNAME` 在 gpu01/gpu02 之間）時，第 0 節「RuntimeClass "nvidia"」那步要**在每一台 GPU 節點各自確認/安裝過**——containerd 設定是每台機器獨立的，gpu01 裝好不代表 gpu02 也好了；`RuntimeClass` 物件本身才是叢集層級只需要建一次。同理 `K8S_HF_CACHE_HOST_PATH` 這類 hostPath 快取，內容也是每台節點各自獨立，換節點等於換一份全新（或要手動搬過去）的快取。
 
 ## 5. GPU 資源核對
 

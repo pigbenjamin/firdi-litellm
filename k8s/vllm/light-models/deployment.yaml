@@ -127,3 +127,9 @@ spec:
         - key: nvidia.com/gpu
           operator: Exists
           effect: NoSchedule
+        # 部分叢集會給 GPU 節點額外加 node-pool=compute:NoSchedule taint（防一般 workload
+        # 排進來）；沒有這個 taint 的叢集加這條 toleration 是 no-op，不影響排程。
+        - key: node-pool
+          operator: Equal
+          value: compute
+          effect: NoSchedule
