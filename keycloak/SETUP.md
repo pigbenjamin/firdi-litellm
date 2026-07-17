@@ -200,7 +200,7 @@ curl -X POST http://localhost:8080/api/v1/sync/keycloak \
 
 ## 注意事項
 
-- 部門（dept_id）必須先在 admin-api 建立，使用者同步才會成功（否則回傳 `skipped`）
+- 使用者必須至少屬於一個 Keycloak 群組才會同步（否則回傳 `skipped`）；dept_id 對應的部門不存在時會自動建立
 - Keycloak Group path level 1 會對應到 `dept_id`，例如 `/Engineering/Backend` → `dept_id = Engineering`
 - `api_key` 在使用者首次建立時自動產生，之後更新不會改變
 - DELETE 事件只做 `blocked=true`（軟刪除），不移除資料

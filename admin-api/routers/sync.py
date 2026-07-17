@@ -244,19 +244,23 @@ async def keycloak_sync(
     dept_id = kc_user["dept_id"]
     blocked = int(not kc_user["enabled"])
 
+    # 與 bulk 一致：無群組（推不出 dept_id）的使用者不匯入也不更新，
+    # 否則 INSERT/UPDATE 會撞 users.dept_id 的 NOT NULL
+    if not dept_id:
+        return {"status": "skipped", "user_id": user_id, "reason": "user has no group in Keycloak"}
+
     with get_conn(DB_PATH) as conn:
-        if dept_id:
-            dept_exists = conn.execute(
-                "SELECT 1 FROM departments WHERE dept_id = ?", (dept_id,)
-            ).fetchone()
-            if not dept_exists:
-                conn.execute(
-                    """INSERT INTO departments
-                       (dept_id, dept_name, allowed_models, dept_rpm_limit, dept_tpm_limit)
-                       VALUES (?, ?, '[]', NULL, NULL)""",
-                    (dept_id, dept_id),
-                )
-                bump_version(conn)
+        dept_exists = conn.execute(
+            "SELECT 1 FROM departments WHERE dept_id = ?", (dept_id,)
+        ).fetchone()
+        if not dept_exists:
+            conn.execute(
+                """INSERT INTO departments
+                   (dept_id, dept_name, allowed_models, dept_rpm_limit, dept_tpm_limit)
+                   VALUES (?, ?, '[]', NULL, NULL)""",
+                (dept_id, dept_id),
+            )
+            bump_version(conn)
 
         existing = conn.execute(
             "SELECT * FROM users WHERE user_id = ?", (user_id,)
