@@ -19,6 +19,10 @@ __pycache__/
 
 # Java / Maven build 產物（keycloak plugin）
 target/
+# 例外：keycloak-user-sync-listener 編譯好的 jar 要進 git，方便部署到其他機器
+!keycloak/plugins/keycloak-user-sync-listener/target/
+keycloak/plugins/keycloak-user-sync-listener/target/*
+!keycloak/plugins/keycloak-user-sync-listener/target/keycloak-user-sync-listener-1.0.0.jar
 
 # macOS
 .DS_Store
