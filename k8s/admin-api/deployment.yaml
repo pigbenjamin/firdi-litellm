@@ -15,6 +15,16 @@ spec:
       labels:
         app: admin-api
     spec:
+      # users-db-pvc 是 ReadWriteOnce，litellm 也掛同一顆——RWO 同一時間只能掛在一個
+      # 節點，用 podAffinity 把這個 Pod 釘住 litellm Pod 所在節點，兩者才能同時掛上。
+      # litellm 在 deploy_all 裡先部署，這裡才會有現成的 litellm Pod 可以 affine。
+      affinity:
+        podAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: litellm
+              topologyKey: kubernetes.io/hostname
       containers:
         - name: admin-api
           image: ${ADMIN_API_IMAGE}

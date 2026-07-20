@@ -2,8 +2,9 @@
 # 快速部署腳本：將 firdi-litellm 所有 K8s 資源部署到 ai-platform namespace
 #
 # 用法：
-#   ./scripts/deploy.sh              # 部署全部（storage → vllm → litellm）
-#   ./scripts/deploy.sh storage      # 只建立 PV/PVC 與 users.db
+#   ./scripts/deploy.sh              # 部署全部（storage → vllm → litellm → admin-api）
+#   ./scripts/deploy.sh storage      # 只建立 users-db-pvc / litellm-logs-pvc
+#   ./scripts/deploy.sh users-db     # 只檢查/初始化 users.db（灌進 users-db-pvc）
 #   ./scripts/deploy.sh gemma-4-31b  # 只部署 gemma-4-31b-vllm（思考型）
 #   ./scripts/deploy.sh gemma-4-26b  # 只部署 gemma-4-26b-vllm（快捷型）
 #   ./scripts/deploy.sh light-models # 只部署 light-models（embedding + marker，同一張 GPU）
@@ -12,8 +13,12 @@
 #   ./scripts/deploy.sh secrets      # 只建立 Secrets
 #   ./scripts/deploy.sh status       # 顯示所有 Pod/Service 狀態
 #
-# 多節點叢集：.env 設定 REGISTRY（推送 image 用）與 K8S_STORAGE_NODE_HOSTNAME /
-# K8S_GPU_NODE_HOSTNAME（釘選 hostPath 相關 Pod 的節點），單節點 k3s 可全部留空。
+# users-db-pvc / litellm-logs-pvc 走 storageClassName 動態佈建（.env 的
+# K8S_PVC_STORAGE_CLASS，單節點 k3s 預設 local-path，公司 Ceph 叢集設
+# rook-ceph-block），不再是 hostPath，admin-api 用 podAffinity 釘住 litellm 所在
+# 節點才能兩者都掛上同一顆 RWO PVC。hf-cache / marker-ingest 仍是 hostPath，多節點
+# 叢集：.env 設定 REGISTRY（推送 image 用）與 K8S_GPU_NODE_HOSTNAME（釘選這兩個
+# hostPath 相關 Pod 的節點），單節點 k3s 可全部留空。
 
 set -euo pipefail
 
@@ -167,34 +172,53 @@ build_and_publish_image() {
     fi
 }
 
-# ── Storage（PV / PVC / users.db）─────────────────────────────────────────────
+# ── Storage（PVC）─────────────────────────────────────────────────────────────
 deploy_storage() {
-    info "建立 PV / PVC..."
-    local data_path="${K8S_DATA_HOST_PATH:-/opt/firdi/data}"
-
-    if [[ ! -d "$data_path" ]]; then
-        info "建立目錄 $data_path"
-        mkdir -p "$data_path" || sudo mkdir -p "$data_path"
-    fi
-    if [[ ! -w "$data_path" ]]; then
-        # 上面用 sudo 建立（或目錄本來就是 root 擁有）時會沒有寫入權限，
-        # 之後 migrate_users_json.py 是用目前使用者身份執行，需要能寫入。
-        info "修正目錄擁有者：$data_path"
-        sudo chown "$(id -u):$(id -g)" "$data_path"
-    fi
-
-    export K8S_DATA_HOST_PATH="$data_path"
-    export K8S_STORAGE_NODE_HOSTNAME="${K8S_STORAGE_NODE_HOSTNAME:-$(hostname)}"
-    info "users-db-pv 將釘選於節點: $K8S_STORAGE_NODE_HOSTNAME（多節點叢集請確認與 kubectl get nodes 的 NAME 一致）"
+    info "建立 PVC..."
+    export K8S_PVC_STORAGE_CLASS="${K8S_PVC_STORAGE_CLASS:-local-path}"
     envsubst < "$REPO_ROOT/k8s/shared-storage/pvc.yaml" | kubectl apply -f -
-    ok "PV/PVC 完成（hostPath: $data_path，node: $K8S_STORAGE_NODE_HOSTNAME）"
+    ok "PVC 完成（storageClassName: $K8S_PVC_STORAGE_CLASS）"
+}
 
-    info "Migrate users.json → users.db..."
-    local db_path="$data_path/users.db"
-    python3 "$REPO_ROOT/scripts/migrate_users_json.py" \
-        --json "$REPO_ROOT/config/users.json" \
-        --db  "$db_path"
-    ok "users.db 已建立：$db_path"
+# users-db-pvc 是動態佈建（Ceph/local-path），host 端不再能像過去 hostPath 那樣
+# 直接寫檔案進 PV 內容，改成本機準備一份 users.db，用 kubectl cp 灌進已經掛載
+# users-db-pvc 的 litellm Pod。只在 PVC 內還沒有 users.db 時才動手，避免每次重跑
+# deploy.sh 都拿 config/users.json 這份範本資料蓋掉正式環境已經在跑的使用者資料
+# （users.db 是活資料庫，換模型名稱請用 scripts/migrate_model_names.sh，不要直接改）。
+seed_users_db() {
+    info "檢查 users.db..."
+    local pod
+    pod=$(kubectl get pod -n "$NS" -l app=litellm -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+    if [[ -z "$pod" ]]; then
+        warn "找不到 litellm Pod，略過 users.db 初始化（litellm 部署好之後執行 ./scripts/deploy.sh users-db 手動補上）"
+        return 0
+    fi
+    if ! kubectl wait -n "$NS" "pod/$pod" --for=condition=Ready --timeout=120s >/dev/null 2>&1; then
+        warn "litellm Pod 尚未 Ready，略過 users.db 初始化（稍後執行 ./scripts/deploy.sh users-db 手動補上）"
+        return 0
+    fi
+
+    if kubectl exec -n "$NS" "$pod" -- test -f /app/data/users.db 2>/dev/null; then
+        ok "users.db 已存在於 PVC，略過初始化"
+        return 0
+    fi
+
+    local tmp_db legacy_db
+    tmp_db="$(mktemp --suffix=.db)"
+    legacy_db="${K8S_DATA_HOST_PATH:-}/users.db"
+    if [[ -n "${K8S_DATA_HOST_PATH:-}" && -f "$legacy_db" ]]; then
+        info "偵測到舊 hostPath 遺留的 users.db（$legacy_db），搬進 PVC..."
+        cp "$legacy_db" "$tmp_db"
+    else
+        info "PVC 內尚無 users.db，且無舊資料可搬，用 config/users.json 範本產生..."
+        python3 "$REPO_ROOT/scripts/migrate_users_json.py" \
+            --json "$REPO_ROOT/config/users.json" \
+            --db "$tmp_db"
+    fi
+
+    kubectl cp "$tmp_db" "$NS/$pod:/app/data/users.db"
+    rm -f "$tmp_db"
+    ok "users.db 已寫入 PVC"
 }
 
 # ── LiteLLM ConfigMaps ────────────────────────────────────────────────────────
@@ -254,10 +278,9 @@ deploy_vllm() {
 deploy_litellm() {
     deploy_litellm_configmaps
     info "部署 LiteLLM..."
-    export K8S_LOGS_HOST_PATH="${K8S_LOGS_HOST_PATH:-/opt/firdi/logs}"
     envsubst < "$REPO_ROOT/k8s/litellm/deployment.yaml" | kubectl apply -f -
     kubectl apply -f "$REPO_ROOT/k8s/litellm/service.yaml"
-    ok "LiteLLM 套用完成（logs hostPath: $K8S_LOGS_HOST_PATH）"
+    ok "LiteLLM 套用完成"
 }
 
 # ── Admin API ─────────────────────────────────────────────────────────────────
@@ -302,6 +325,7 @@ deploy_all() {
     deploy_vllm gemma-4-26b
     deploy_vllm light-models
     deploy_litellm
+    seed_users_db
     deploy_admin_api
     echo ""
     ok "=== 全部部署完成 ==="
@@ -323,6 +347,7 @@ main() {
     case "$cmd" in
         all)          deploy_all ;;
         storage)      deploy_storage ;;
+        users-db)     seed_users_db ;;
         secrets)      deploy_secrets ;;
         gemma-4-31b)  deploy_vllm gemma-4-31b ;;
         gemma-4-26b)  deploy_vllm gemma-4-26b ;;
@@ -331,7 +356,7 @@ main() {
         admin-api)    deploy_admin_api ;;
         status)       show_status ;;
         *)
-            echo "用法: $0 [all|storage|secrets|gemma-4-31b|gemma-4-26b|light-models|litellm|admin-api|status]"
+            echo "用法: $0 [all|storage|users-db|secrets|gemma-4-31b|gemma-4-26b|light-models|litellm|admin-api|status]"
             exit 1
             ;;
     esac

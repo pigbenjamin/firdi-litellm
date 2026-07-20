@@ -1,38 +1,12 @@
+# 02-pvcs.yaml（公司叢集慣例）風格：交由 storageClassName 動態佈建
+# （例如公司 Ceph 叢集的 rook-ceph-block），不再靠 hostPath + nodeAffinity 手動釘節點。
 # 套用前請先 source .env，再用 envsubst 展開變數：
 #   source .env && envsubst < k8s/shared-storage/pvc.yaml | kubectl apply -f -
-# 並確認 Node 上目錄已存在：
-#   mkdir -p ${K8S_DATA_HOST_PATH}
 #
-# nodeAffinity 把這個 PV 釘選在 K8S_STORAGE_NODE_HOSTNAME 指定的節點上——多節點叢集
-# 必須要有，否則 admin-api / litellm（兩者都掛這個 PVC）可能被排到沒有此 hostPath
-# 目錄的節點，導致 Pending 或讀不到資料。litellm 的 K8S_LOGS_HOST_PATH（純 hostPath，
-# 沒有走 PVC）也要建在同一個節點上，才會跟著這個 nodeAffinity 一起被排程過去。
-
-apiVersion: v1
-kind: PersistentVolume
-metadata:
-  name: users-db-pv
-spec:
-  capacity:
-    storage: 1Gi
-  accessModes:
-    - ReadWriteOnce
-  persistentVolumeReclaimPolicy: Retain
-  hostPath:
-    path: ${K8S_DATA_HOST_PATH}
-  nodeAffinity:
-    required:
-      nodeSelectorTerms:
-        - matchExpressions:
-            - key: kubernetes.io/hostname
-              operator: In
-              values:
-                - ${K8S_STORAGE_NODE_HOSTNAME}
-  claimRef:
-    name: users-db-pvc
-    namespace: ai-platform
-
----
+# users-db-pvc 同時被 admin-api、litellm 兩個 Deployment 掛 ReadWriteOnce——RWO 同一
+# 時間只能掛在一個節點，兩個 Pod 必須排到同一節點才能都掛得上。做法是在
+# k8s/admin-api/deployment.yaml 用 podAffinity 把 admin-api 釘住 litellm 所在節點，
+# 這裡不需要再處理。
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -41,6 +15,20 @@ metadata:
 spec:
   accessModes:
     - ReadWriteOnce
+  storageClassName: ${K8S_PVC_STORAGE_CLASS}
   resources:
     requests:
       storage: 1Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: litellm-logs-pvc
+  namespace: ai-platform
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: ${K8S_PVC_STORAGE_CLASS}
+  resources:
+    requests:
+      storage: 5Gi

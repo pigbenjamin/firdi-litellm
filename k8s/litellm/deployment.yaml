@@ -135,6 +135,5 @@ spec:
           configMap:
             name: litellm-custom-logger
         - name: logs
-          hostPath:
-            path: ${K8S_LOGS_HOST_PATH}
-            type: DirectoryOrCreate
+          persistentVolumeClaim:
+            claimName: litellm-logs-pvc

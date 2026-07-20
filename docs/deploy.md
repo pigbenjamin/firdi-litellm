@@ -77,19 +77,22 @@ cp .env.example .env
 | OpenWebUI | `OPENWEBUI_URL` / `_ADMIN_KEY` / `_SERVICE_KEY` | 若接同一個 OpenWebUI，從舊機器複製 |
 | HuggingFace | `HF_TOKEN` | 新機器自己的 token，需先在 HF 網站接受 Gemma 授權 |
 | Langfuse | `LANGFUSE_PUBLIC_KEY` / `_SECRET_KEY` / `_HOST` | 要觀測性才需要，可留空 |
-| K8s hostPath | `K8S_DATA_HOST_PATH` / `K8S_LOGS_HOST_PATH` / `K8S_HF_CACHE_HOST_PATH` / `K8S_MARKER_INGEST_HOST_PATH` | 改成這台機器上要用的路徑；不用預先 `mkdir`，`deploy.sh` 會自動建立 |
-| 多節點（單節點可留空） | `REGISTRY` / `K8S_STORAGE_NODE_HOSTNAME` / `K8S_GPU_NODE_HOSTNAME` | 見第 4 節 |
+| K8s PVC / hostPath | `K8S_PVC_STORAGE_CLASS`（users-db-pvc/litellm-logs-pvc 用）、`K8S_HF_CACHE_HOST_PATH` / `K8S_MARKER_INGEST_HOST_PATH`（仍是 hostPath，改成這台機器要用的路徑；不用預先 `mkdir`，`deploy.sh` 會自動建立） | 見下方說明 |
+| 多節點（單節點可留空） | `REGISTRY` / `K8S_GPU_NODE_HOSTNAME` | 見第 4 節 |
 
-## 3. 使用者資料庫（`data/` 也不在 git 裡）
+## 3. 使用者資料庫（`users-db-pvc`，動態佈建）
 
-`data/*` 被 gitignore 排除，git 只帶來 `.gitkeep`。`deploy.sh storage` 預設會用 `config/users.json`（模板資料）跑 `migrate_users_json.py`，產生一個**全新空白**的 `users.db`。
+`users-db-pvc` 是 storageClassName 動態佈建的 PVC（見 `k8s/shared-storage/pvc.yaml`），不是 hostPath，本機沒有檔案可以直接對應到裡面的內容。`deploy.sh users-db`（`deploy.sh all` 也會在 litellm 部署完後自動跑一次）邏輯是：
 
-- **全新環境**：直接用預設流程，之後靠 Admin API / Keycloak 同步建立使用者。
-- **要延續舊機器既有使用者/部門**：先從舊機器複製 `data/users.db`（實際路徑是舊機器 `.env` 裡的 `K8S_DATA_HOST_PATH/users.db`），放到新機器對應的 `K8S_DATA_HOST_PATH` 目錄下，蓋掉 `deploy.sh` 產生的空 db；或部署完 storage 後用 `kubectl cp` 覆蓋 PVC 內的檔案。
+1. 找 litellm Pod，檢查 `/app/data/users.db` 是否已存在（存在就跳過，不會覆蓋正式資料）。
+2. 不存在的話：若 `.env` 的 `K8S_DATA_HOST_PATH` 指到的目錄下有既有 `users.db`（舊機器 hostPath 時代遺留、或手動搬過來的），直接用 `kubectl cp` 灌那份既有資料；否則才退回用 `config/users.json`（模板資料）跑 `migrate_users_json.py` 產生一個全新空白的 `users.db` 再灌進去。
+
+- **全新環境**：`K8S_DATA_HOST_PATH` 留空或指到不存在的路徑即可，直接用預設流程，之後靠 Admin API / Keycloak 同步建立使用者。
+- **要延續舊機器既有使用者/部門**：先把舊機器的 `users.db` 複製到新機器 `.env` 的 `K8S_DATA_HOST_PATH` 目錄下（檔名固定 `users.db`），再跑 `deploy.sh users-db`（或整套 `deploy.sh all`）即可自動搬進 PVC；也可以自己手動 `kubectl cp <本機路徑> ai-platform/<litellm-pod>:/app/data/users.db`。
 
 ## 4. 單節點 vs 多節點
 
-所有 K8s 資源用的 SQLite / logs / HF cache / marker-ingest 都是 **hostPath**，本質上綁定在某一台實體節點的本地磁碟上。單節點 k3s 沒有這個問題（叢集只有一個節點，pod 不可能排到別的地方）；換成真正的多節點 k8s 叢集後，兩件事一定要處理，否則 pod 可能被排到沒有該 hostPath 目錄的節點：
+hf-cache（模型快取）與 marker-ingest（PDF 共用目錄）這兩塊仍是 **hostPath**，本質上綁定在某一台實體節點的本地磁碟上。單節點 k3s 沒有這個問題（叢集只有一個節點，pod 不可能排到別的地方）；換成真正的多節點 k8s 叢集後，兩件事一定要處理，否則 pod 可能被排到沒有該 hostPath 目錄的節點。（`users-db-pvc` / `litellm-logs-pvc` 已經是動態佈建的 PVC，不受這節影響；admin-api 改用 `podAffinity` 釘住 litellm 所在節點來滿足 RWO 限制，見 `k8s/admin-api/deployment.yaml`。）
 
 ### 4.1 Image 分發
 
@@ -124,19 +127,19 @@ K8S_IMAGE_PULL_SECRET=ghcr-pull-secret   # 叢集端 pull 用的 k8s secret 名�
 
 ### 4.2 hostPath 節點釘選（nodeAffinity / nodeSelector）
 
-`.env` 新增兩個變數，指定各 hostPath 實際落在哪個節點（值需與 `kubectl get nodes` 印出的 `NAME` 一致）：
+`.env` 設定 `K8S_GPU_NODE_HOSTNAME`，指定 hf-cache / marker-ingest 這兩個 hostPath 實際落在哪個節點（值需與 `kubectl get nodes` 印出的 `NAME` 一致）：
 
 ```bash
 kubectl get nodes   # 確認節點名稱
 
-K8S_STORAGE_NODE_HOSTNAME=node-a   # 承載 K8S_DATA_HOST_PATH / K8S_LOGS_HOST_PATH 的節點
 K8S_GPU_NODE_HOSTNAME=node-b       # 承載 K8S_HF_CACHE_HOST_PATH / K8S_MARKER_INGEST_HOST_PATH 的節點（有 GPU 的那台）
 ```
 
-- `K8S_STORAGE_NODE_HOSTNAME`：寫進 `users-db-pv` 的 `nodeAffinity`。admin-api、litellm 都掛 `users-db-pvc`，scheduler 會因此自動把兩者都排到這個節點；`K8S_LOGS_HOST_PATH` 是 litellm 直接掛的 hostPath（沒有走 PVC），要記得把該目錄也建在同一個節點上。
-- `K8S_GPU_NODE_HOSTNAME`：寫進 3 個 vLLM deployment 的 `nodeSelector`，以及 `marker-ingest-pv` 的 `nodeAffinity`。理論上 GPU 資源請求（`nvidia.com/gpu`）本身就會把這些 pod 排到有 GPU 的節點，但叢集若有多台 GPU 節點、且 hostPath 目錄只存在其中一台時，明確指定 `nodeSelector` 才不會排錯台。
+`K8S_GPU_NODE_HOSTNAME`：寫進 3 個 vLLM deployment 的 `nodeSelector`，以及 `marker-ingest-pv` 的 `nodeAffinity`。理論上 GPU 資源請求（`nvidia.com/gpu`）本身就會把這些 pod 排到有 GPU 的節點，但叢集若有多台 GPU 節點、且 hostPath 目錄只存在其中一台時，明確指定 `nodeSelector` 才不會排錯台。
 
-單節點 k3s 這兩個變數留空即可，`deploy.sh` 會自動帶入 `$(hostname)`。
+單節點 k3s 這個變數留空即可，`deploy.sh` 會自動帶入 `$(hostname)`。
+
+`users-db-pvc`（admin-api + litellm 共用）不再靠節點釘選，而是 admin-api 用 `podAffinity` 主動釘住 litellm Pod 所在節點（見 `k8s/admin-api/deployment.yaml`），滿足 Ceph RBD / local-path 這類 storageClassName 的 ReadWriteOnce 限制；`litellm-logs-pvc` 只有 litellm 自己掛，沒有跨 Deployment 共用問題，不需要 affinity。
 
 > 多台 GPU 節點（例如切換 `K8S_GPU_NODE_HOSTNAME` 在 gpu01/gpu02 之間）時，第 0 節「RuntimeClass "nvidia"」那步要**在每一台 GPU 節點各自確認/安裝過**——containerd 設定是每台機器獨立的，gpu01 裝好不代表 gpu02 也好了；`RuntimeClass` 物件本身才是叢集層級只需要建一次。同理 `K8S_HF_CACHE_HOST_PATH` 這類 hostPath 快取，內容也是每台節點各自獨立，換節點等於換一份全新（或要手動搬過去）的快取。
 
@@ -163,7 +166,7 @@ kubectl delete pv marker-ingest-pv
 ./scripts/deploy.sh light-models
 ```
 
-換節點前記得確認新節點上已有 `K8S_HF_CACHE_HOST_PATH`（沒有的話會重新下載模型 + 重新 `torch.compile`，首次啟動約 15~25 分鐘）與 `K8S_MARKER_INGEST_HOST_PATH` 目錄；若走 `REGISTRY` 流程，`deploy.sh` 會自動處理 image 分發，不用額外操作。`litellm` / `admin-api` / `secrets` / `storage` 不受影響（storage 用的是 `K8S_STORAGE_NODE_HOSTNAME`，另一個變數）。
+換節點前記得確認新節點上已有 `K8S_HF_CACHE_HOST_PATH`（沒有的話會重新下載模型 + 重新 `torch.compile`，首次啟動約 15~25 分鐘）與 `K8S_MARKER_INGEST_HOST_PATH` 目錄；若走 `REGISTRY` 流程，`deploy.sh` 會自動處理 image 分發，不用額外操作。`litellm` / `admin-api` / `secrets` / `storage` 不受影響（`users-db-pvc` / `litellm-logs-pvc` 是動態佈建的 PVC，跟 `K8S_GPU_NODE_HOSTNAME` 無關）。
 
 ## 5. GPU 資源核對
 
@@ -172,7 +175,7 @@ kubectl delete pv marker-ingest-pv
 ## 6. 一鍵部署
 
 ```bash
-./scripts/deploy.sh          # secrets → storage → 3個 vLLM → litellm → admin-api
+./scripts/deploy.sh          # secrets → storage(PVC) → 3個 vLLM → litellm → users.db 初始化 → admin-api
 ./scripts/deploy.sh status   # 檢查 Pod/Service 狀態、印出 NodeIP + port
 ```
 
@@ -185,6 +188,7 @@ kubectl delete pv marker-ingest-pv
 ./scripts/deploy.sh gemma-4-26b
 ./scripts/deploy.sh light-models
 ./scripts/deploy.sh litellm
+./scripts/deploy.sh users-db     # litellm Pod Ready 後才能執行，見第 3 節
 ./scripts/deploy.sh admin-api
 ```
 

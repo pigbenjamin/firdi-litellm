@@ -1,14 +1,26 @@
 #!/usr/bin/env bash
 # 查看目前 DB（部門、使用者、版本戳記）
 # 用法：
-#   ./scripts/show_db.sh              # 顯示全部
-#   ./scripts/show_db.sh PM           # 只看某部門的使用者
+#   ./scripts/show_db.sh              # 從 K8s users-db-pvc（kubectl cp 出 litellm Pod 的 users.db）讀取
+#   ./scripts/show_db.sh PM           # 只看某部門的使用者（來源同上）
+#   USER_AUTH_DB_PATH=/path/users.db ./scripts/show_db.sh   # 改讀指定的本機 DB 檔案
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DB="${USER_AUTH_DB_PATH:-$(dirname "$SCRIPT_DIR")/data/users.db}"
+NS="ai-platform"
+TMP_DB=""
+cleanup() { [[ -n "$TMP_DB" ]] && rm -f "$TMP_DB"; }
+trap cleanup EXIT
 
-[[ -f "$DB" ]] || { echo "找不到 DB：$DB"; exit 1; }
+if [[ -n "${USER_AUTH_DB_PATH:-}" ]]; then
+    DB="$USER_AUTH_DB_PATH"
+    [[ -f "$DB" ]] || { echo "找不到 DB：$DB"; exit 1; }
+else
+    POD=$(kubectl get pod -n "$NS" -l app=litellm -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+    [[ -n "$POD" ]] || { echo "找不到 litellm Pod，無法從 users-db-pvc 讀取 users.db（也可以設 USER_AUTH_DB_PATH 指到本機 DB 檔案）"; exit 1; }
+    TMP_DB="$(mktemp --suffix=.db)"
+    kubectl cp "$NS/$POD:/app/data/users.db" "$TMP_DB" >/dev/null 2>&1 || { echo "kubectl cp 失敗，讀不到 users.db"; exit 1; }
+    DB="$TMP_DB"
+fi
 
 DEPT_FILTER="${1:-}"
 
