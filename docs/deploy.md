@@ -140,6 +140,31 @@ K8S_GPU_NODE_HOSTNAME=node-b       # 承載 K8S_HF_CACHE_HOST_PATH / K8S_MARKER_
 
 > 多台 GPU 節點（例如切換 `K8S_GPU_NODE_HOSTNAME` 在 gpu01/gpu02 之間）時，第 0 節「RuntimeClass "nvidia"」那步要**在每一台 GPU 節點各自確認/安裝過**——containerd 設定是每台機器獨立的，gpu01 裝好不代表 gpu02 也好了；`RuntimeClass` 物件本身才是叢集層級只需要建一次。同理 `K8S_HF_CACHE_HOST_PATH` 這類 hostPath 快取，內容也是每台節點各自獨立，換節點等於換一份全新（或要手動搬過去）的快取。
 
+#### 事後修改 `K8S_GPU_NODE_HOSTNAME`（叢集已在跑）
+
+單改 `.env` 沒有用——這兩個變數只在 `deploy.sh` 跑 `envsubst` 展開 yaml 時才生效，要重新 apply 受影響的資源：
+
+- 3 個 vLLM deployment 的 `nodeSelector`：直接重跑 `deploy.sh` 對應指令即可（`strategy: Recreate`，pod 會自動重排到新節點）。
+- `marker-ingest-pv` 的 `nodeAffinity`：**建立後不可修改**，`kubectl apply` 會被拒絕，要先刪掉 PVC/PV 再重建（hostPath + `Retain`，磁碟資料不會被動到）。
+
+```bash
+# 1. 先把佔用 marker-ingest-pvc 的 pod 停掉，否則 PVC 會卡在等待釋放
+#    （kubectl scale 只改 replicas，Deployment 本體保留；pod 走正常的優雅終止：
+#     先從 Service endpoints 移除 → SIGTERM → 預設 30 秒 grace period 後才 SIGKILL）
+kubectl scale deployment/light-models-vllm -n ai-platform --replicas=0
+
+# 2. nodeAffinity 不可變，只能刪掉重建
+kubectl delete pvc marker-ingest-pvc -n ai-platform
+kubectl delete pv marker-ingest-pv
+
+# 3. 重新部署（light-models 會順便用新的 K8S_GPU_NODE_HOSTNAME 重建 PV/PVC）
+./scripts/deploy.sh gemma-4-31b
+./scripts/deploy.sh gemma-4-26b
+./scripts/deploy.sh light-models
+```
+
+換節點前記得確認新節點上已有 `K8S_HF_CACHE_HOST_PATH`（沒有的話會重新下載模型 + 重新 `torch.compile`，首次啟動約 15~25 分鐘）與 `K8S_MARKER_INGEST_HOST_PATH` 目錄；若走 `REGISTRY` 流程，`deploy.sh` 會自動處理 image 分發，不用額外操作。`litellm` / `admin-api` / `secrets` / `storage` 不受影響（storage 用的是 `K8S_STORAGE_NODE_HOSTNAME`，另一個變數）。
+
 ## 5. GPU 資源核對
 
 `k8s/vllm/*/deployment.yaml` 目前假設 4× RTX PRO 6000（96GB）：GPU 0+1 給 `gemma-4-31b`（TP=2）、GPU 2 給 `gemma-4-26b`、GPU 3 給 `light-models`。若新機器 GPU 數量或顯存不同，部署前要調整對應 deployment 的 GPU 資源請求、`--tensor-parallel-size`、`--gpu-memory-utilization`，否則會排程失敗或 OOM。
