@@ -15,8 +15,10 @@ LiteLLM Proxy (K8s, :30400)
   │
   ├─► gemma-4-31b-vllm-service (GPU 0+1, TP=2) — google/gemma-4-31B-it（思考型）
   ├─► gemma-4-26b-vllm-service (GPU 2,    TP=1) — google/gemma-4-26B-A4B-it（快捷型）
-  ├─► embed-vllm-service      (GPU 3,  :8000)  — google/embeddinggemma-300m
-  ├─► ollama-service          (可選，臨時需求)
+  ├─► light-models-vllm-service (GPU 3，同一 pod 兩個 process)
+  │     ├─ :8000 embed  — google/embeddinggemma-300m
+  │     └─ :8766 marker — PDF→Markdown 轉檔
+  ├─► ollama-service          (可選，臨時需求，需手動部署，見下方「Ollama 臨時使用」)
   └─► OpenRouter API          (雲端，各部門各自的 API key)
 ```
 
@@ -32,7 +34,7 @@ LiteLLM Proxy (K8s, :30400)
 │   ├── vllm/
 │   │   ├── gemma-4-31b/         — deployment.yaml, service.yaml（GPU 0+1, TP=2）
 │   │   ├── gemma-4-26b/         — deployment.yaml, service.yaml（GPU 2, TP=1）
-│   │   └── embed/               — deployment.yaml, service.yaml（GPU 3）
+│   │   └── light-models/        — deployment.yaml, service.yaml（GPU 3，原名 embed/；同一 pod 跑 embed + marker-service 兩個 process）
 │   ├── litellm/
 │   │   ├── deployment.yaml
 │   │   ├── service.yaml         — NodePort 30400
@@ -41,7 +43,7 @@ LiteLLM Proxy (K8s, :30400)
 │   │   ├── deployment.yaml      — Admin API Pod
 │   │   ├── service.yaml         — NodePort 30408
 │   │   └── cronjob-pull-sync.yaml — OpenWebUI → DB 權限 pull 同步（每 2 分鐘）
-│   └── ollama/                  — 可選
+│   └── ollama/                  — 空目錄（尚無 manifest），臨時需求時參考下方「Ollama 臨時使用」自行部署，非 deploy.sh 管理範圍
 ├── admin-api/                   ← 管理 API 原始碼（FastAPI）
 │   ├── main.py
 │   ├── database.py
@@ -83,7 +85,7 @@ LiteLLM Proxy (K8s, :30400)
 |-----|------|------|------|----------------|
 | GPU 0+1 | gemma-4-31b-vllm | google/gemma-4-31B-it | 思考型：長 CoT、深度推理 | TP=2, max-model-len=65536, max-num-seqs=2, thinking 預設**開** |
 | GPU 2 | gemma-4-26b-vllm | google/gemma-4-26B-A4B-it（MoE 25.2B/A3.8B） | 快捷型：快速問答、高並發 | TP=1, max-model-len=32768, max-num-seqs=256, thinking 預設**關** |
-| GPU 3 | embed-vllm | google/embeddinggemma-300m | 向量化 | gpu-mem-util=0.15（300M 小模型；卡上餘裕留作未來擴充） |
+| GPU 3 | light-models-vllm（同一 pod 兩個 process，共用一張 GPU） | embed: google/embeddinggemma-300m<br>marker: PDF→Markdown（marker-pdf/surya） | embed: 向量化；marker: 文件轉檔 | embed gpu-mem-util=0.15；marker 首次啟動要下載模型，startup probe failureThreshold=40 |
 
 GPU 由 NVIDIA Device Plugin 自動分配，不需手動指定 GPU index。
 獨立 rerank 服務（Qwen3-Reranker-8B）已於 2026-07 移除：無實際流量、且依去中國模型政策無乾淨替代品；需要重排序時改以一般 LLM（如 gemma-4-26B-A4B-it）做 listwise rerank。
@@ -117,9 +119,17 @@ helm install gpu-operator nvidia/gpu-operator -n gpu-operator --create-namespace
 ```bash
 kubectl apply -f k8s/namespace.yaml
 
-# LiteLLM master key（同時供 Admin API 查詢 /models 使用）
+# LiteLLM master key + OpenWebUI/Langfuse 整合（litellm 與 admin-api 的 deployment.yaml
+# 都用 secretKeyRef 讀這幾個 key，除了 *-b 系列外都不是 optional，缺一個都會讓 pod
+# 卡在 CreateContainerConfigError；沒有 Langfuse 也要建空字串，不能整段省略）
 kubectl create secret generic litellm-secrets \
   --from-literal=master-key=sk-firdi-master-CHANGE-ME \
+  --from-literal=openwebui-url=http://<openwebui-host>:<port> \
+  --from-literal=openwebui-admin-key=<openwebui-admin-api-key> \
+  --from-literal=openwebui-service-key=<自訂字串，同時填到 OpenWebUI 後端連線設定> \
+  --from-literal=langfuse-public-key=<langfuse-public-key，不用觀測性可留空字串> \
+  --from-literal=langfuse-secret-key=<langfuse-secret-key> \
+  --from-literal=langfuse-host=http://<langfuse-host>:<port> \
   -n ai-platform
 
 # HuggingFace token（下載 gated 模型用）
@@ -189,18 +199,30 @@ kubectl cp /tmp/users.db "ai-platform/$POD:/app/data/users.db"
 ./scripts/deploy.sh admin-api
 ```
 
-Admin API 啟動後在 `http://<node-ip>:30408`，API 文件在 `/docs`。
+Admin API 啟動後在 `http://<node-ip>:30408`，API 文件在 `/docs`。`./scripts/deploy.sh admin-api` 收尾會自動套用 `k8s/admin-api/cronjob-pull-sync.yaml`（每 2 分鐘從 OpenWebUI pull 模型權限回 DB），不需要另外手動 `kubectl apply`。
 
 ### 6. 部署 vLLM 服務
 
+`k8s/vllm/*/deployment.yaml` 都用了 `${K8S_GPU_NODE_HOSTNAME}` / `${K8S_HF_CACHE_HOST_PATH}` 模板變數，需要 `envsubst` 展開，不能直接 `kubectl apply -f`——否則 nodeSelector / hostPath 會變成字面上的 `${...}` 字串，pod 會卡在 Pending 且找不到明顯錯誤原因：
+
 ```bash
 # 依序部署（首次啟動需下載模型 + 編譯，Gemma 4 約 15~25 分鐘，見「vLLM 部署要點」）
-kubectl apply -f k8s/vllm/gemma-4-31b/
-kubectl apply -f k8s/vllm/gemma-4-26b/
-kubectl apply -f k8s/vllm/embed/
+source .env
+export K8S_GPU_NODE_HOSTNAME="${K8S_GPU_NODE_HOSTNAME:-$(hostname)}"
+export K8S_HF_CACHE_HOST_PATH="${K8S_HF_CACHE_HOST_PATH:-/opt/firdi/hf-cache}"
+
+for f in k8s/vllm/gemma-4-31b/*.yaml k8s/vllm/gemma-4-26b/*.yaml; do
+  envsubst < "$f" | kubectl apply -f -
+done
 
 # 觀察 Pod 狀態
 kubectl get pods -n ai-platform -w
+```
+
+`light-models` 另外還要先 build+push 自訂 image（`${LIGHT_MODELS_IMAGE}` 模板變數）並套用 `k8s/shared-storage/marker-ingest-pvc.yaml`，手動重現這幾步意義不大，直接用單一元件指令（邏輯與 admin-api 相同：自動 build、單節點 k3s 直接 import、設定 `.env` 的 `REGISTRY` 則 push）：
+
+```bash
+./scripts/deploy.sh light-models
 ```
 
 > 以上步驟 2~7 也可以直接用 `./scripts/deploy.sh`（讀取 `.env`）一鍵完成，或用 `./scripts/deploy.sh gemma-4-31b` 等指令部署單一元件。
@@ -231,9 +253,10 @@ LiteLLM 對外服務在 `http://<node-ip>:30400`。
 |---------|---------|------|------|
 | `gemma-4-31B-it` | google/gemma-4-31B-it | 思考型（深度推理、長 CoT） | gemma-4-31b-vllm-service:8000 |
 | `gemma-4-26B-A4B-it` | google/gemma-4-26B-A4B-it | 快捷型（快速問答、高並發） | gemma-4-26b-vllm-service:8000 |
-| `embeddinggemma-300m` | google/embeddinggemma-300m | 向量化 | embed-vllm-service:8000 |
+| `embeddinggemma-300m` | google/embeddinggemma-300m | 向量化 | light-models-vllm-service:8000 |
+| `marker/pdf-to-md` | marker-pdf（surya） | PDF→Markdown 轉檔 | light-models-vllm-service:8766 |
 | `openrouter/<provider>/<model>` | 各家雲端模型 | 雲端 | OpenRouter API |
-| `ollama/<model>` | 任意 Ollama 模型 | 臨時地端 | ollama-service:11434 |
+| `ollama/<model>` | 任意 Ollama 模型 | 臨時地端（需手動部署，非 deploy.sh 管理） | ollama-service:11434 |
 
 ## 使用方式
 
@@ -472,12 +495,12 @@ kubectl exec -n ai-platform deploy/litellm -- tail -f /app/logs/usage.jsonl
 
 ## Ollama 臨時使用
 
-4 張 GPU 已全數分配。若需臨時使用 Ollama，手動釋放 embed：
+4 張 GPU 已全數分配。若需臨時使用 Ollama，手動釋放 GPU 3（會連 marker-service 一起關掉，PDF 轉檔功能暫時不可用）：
 
 ```bash
-kubectl scale deploy/embed-vllm --replicas=0 -n ai-platform
-# ... 使用 Ollama ...
-kubectl scale deploy/embed-vllm --replicas=1 -n ai-platform
+kubectl scale deploy/light-models-vllm --replicas=0 -n ai-platform
+# ... 使用 Ollama（k8s/ollama/ 目前是空目錄，沒有現成 manifest，需自行建立 Deployment/Service）...
+kubectl scale deploy/light-models-vllm --replicas=1 -n ai-platform
 ```
 
 ## 舊有架構
