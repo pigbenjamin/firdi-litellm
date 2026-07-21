@@ -297,6 +297,9 @@ deploy_admin_api() {
     kubectl rollout restart deployment/admin-api -n "$NS"
     kubectl rollout status deployment/admin-api -n "$NS" --timeout=90s
     ok "Admin API 部署完成（image: $ADMIN_API_IMAGE）"
+
+    kubectl apply -f "$REPO_ROOT/k8s/admin-api/cronjob-pull-sync.yaml"
+    ok "openwebui-pull-sync CronJob 已套用"
 }
 
 # ── Status ────────────────────────────────────────────────────────────────────
