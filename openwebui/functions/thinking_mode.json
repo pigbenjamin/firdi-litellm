@@ -1,0 +1,21 @@
+[
+  {
+    "id": "thinking_mode",
+    "user_id": "2abb986b-7cd8-49b0-b86a-5dfd29164824",
+    "name": "Thinking Mode",
+    "type": "filter",
+    "content": "\"\"\"\ntitle: Thinking Mode\ndescription: Toggle thinking mode via reasoning_effort\n\"\"\"\n\nfrom pydantic import BaseModel\nfrom typing import Optional\n\n\nclass Filter:\n    class Valves(BaseModel):\n        pass\n\n    def __init__(self):\n        self.valves = self.Valves()\n        self.toggle = True  # 在聊天輸入區顯示為可點擊按鈕\n        self.icon = \"data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9IiM4ODg4ODgiIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIj48cGF0aCBkPSJNMTIgNWEzIDMgMCAxIDAtNS45OTcuMTI1IDQgNCAwIDAgMC0yLjUyNiA1Ljc3IDQgNCAwIDAgMCAuNTU2IDYuNTg4QTQgNCAwIDEgMCAxMiAxOFoiLz48cGF0aCBkPSJNOSAxM2E0LjUgNC41IDAgMCAwIDMtNCIvPjxwYXRoIGQ9Ik02LjAwMyA1LjEyNUEzIDMgMCAwIDAgNi40MDEgNi41Ii8+PHBhdGggZD0iTTMuNDc3IDEwLjg5NmE0IDQgMCAwIDEgLjU4NS0uMzk2Ii8+PHBhdGggZD0iTTYgMThhNCA0IDAgMCAxLTEuOTY3LS41MTYiLz48cGF0aCBkPSJNMTIgMTNoNCIvPjxwYXRoIGQ9Ik0xMiAxOGg2YTIgMiAwIDAgMSAyIDJ2MSIvPjxwYXRoIGQ9Ik0xMiA4aDgiLz48cGF0aCBkPSJNMTYgOFY1YTIgMiAwIDAgMSAyLTIiLz48Y2lyY2xlIGN4PSIxNiIgY3k9IjEzIiByPSIuNSIvPjxjaXJjbGUgY3g9IjE4IiBjeT0iMyIgcj0iLjUiLz48Y2lyY2xlIGN4PSIyMCIgY3k9IjIxIiByPSIuNSIvPjxjaXJjbGUgY3g9IjIwIiBjeT0iOCIgcj0iLjUiLz48L3N2Zz4=\"  # lucide \"brain-circuit\" icon (ISC), self-contained data URI\n\n    def inlet(self, body: dict, __user__: Optional[dict] = None) -> dict:\n        # 只有使用者點亮按鈕時才會執行到這裡\n        body[\"reasoning_effort\"] = \"high\"  # vLLM 會轉成 enable_thinking=true\n        return body\n",
+    "meta": {
+      "description": "Toggle Gemma 4 thinking mode via reasoning_effort",
+      "manifest": {
+        "title": "Thinking Mode",
+        "description": "Toggle thinking mode via reasoning_effort"
+      },
+      "toggle": true
+    },
+    "is_active": true,
+    "is_global": true,
+    "updated_at": 1783326586,
+    "created_at": 1783309898
+  }
+]
