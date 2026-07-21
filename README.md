@@ -63,7 +63,8 @@ LiteLLM Proxy (K8s, :30400)
 │       └── keycloak-user-sync-listener/  — 使用者事件 webhook 轉發插件（Java/Maven）
 ├── openwebui/
 │   └── functions/
-│       └── thinking_mode.json   — OpenWebUI Function（Filter）匯出檔，聊天輸入區加「思考模式」切換按鈕；由 OpenWebUI 後台 Admin Panel → Functions → Import from JSON 手動匯入，不隨 deploy.sh 部署
+│       ├── thinking_mode.json   — OpenWebUI Function（Filter）匯出檔，聊天輸入區加「思考模式」切換按鈕
+│       └── apply_function.py    — 把上面的匯出檔 create/update 進 OpenWebUI（呼叫 /api/v1/functions API，非 sync 端點，不會動到其他既有 Function）；可手動跑，也可包成 K8s Job 在 OpenWebUI 部署時自動套用（範例見 OpenWebUI 部署所在 repo）
 ├── docs/
 │   ├── deploy.md                — 新機器部署完整 checklist
 │   ├── admin-api.md             — Admin API 完整接口文件
@@ -307,7 +308,7 @@ curl http://<node-ip>:30400/v1/chat/completions \
 - 開 thinking 時 `max_tokens` 要給足（思考本身可能耗數百 token）；太小會導致 content 空白
 - 思考 token 一樣計入用量與 TPM 限額
 
-一般使用者不會自己組 curl，OpenWebUI 介面上可匯入 [openwebui/functions/thinking_mode.json](openwebui/functions/thinking_mode.json)（Admin Panel → Functions → Import from JSON），在聊天輸入區加一顆可點擊的「思考模式」按鈕，開啟後自動幫請求帶上 `reasoning_effort: "high"`（由 LiteLLM 轉換給 vLLM）。
+一般使用者不會自己組 curl，OpenWebUI 介面上可匯入 [openwebui/functions/thinking_mode.json](openwebui/functions/thinking_mode.json)（Admin Panel → Functions → Import from JSON，或用 [apply_function.py](openwebui/functions/apply_function.py) 自動套用），在聊天輸入區加一顆可點擊的「思考模式」按鈕，開啟後自動幫請求帶上 `reasoning_effort: "high"`（由 LiteLLM 轉換給 vLLM）。
 
 ### Embedding
 
