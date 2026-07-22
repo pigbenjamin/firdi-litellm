@@ -43,6 +43,8 @@ LiteLLM Proxy (K8s, :30400)
 │   │   ├── deployment.yaml      — Admin API Pod
 │   │   ├── service.yaml         — NodePort 30408
 │   │   └── cronjob-pull-sync.yaml — OpenWebUI → DB 權限 pull 同步（每 2 分鐘）
+│   ├── openwebui/
+│   │   └── job-apply-functions.yaml — 把 openwebui/functions/*.json 套進 OpenWebUI 的一次性 Job（用 `./scripts/deploy.sh openwebui-functions` 跑，不要單獨 apply）
 │   └── ollama/                  — 空目錄（尚無 manifest），臨時需求時參考下方「Ollama 臨時使用」自行部署，非 deploy.sh 管理範圍
 ├── admin-api/                   ← 管理 API 原始碼（FastAPI）
 │   ├── main.py
@@ -64,7 +66,7 @@ LiteLLM Proxy (K8s, :30400)
 ├── openwebui/
 │   └── functions/
 │       ├── thinking_mode.json   — OpenWebUI Function（Filter）匯出檔，聊天輸入區加「思考模式」切換按鈕
-│       └── apply_function.py    — 把上面的匯出檔 create/update 進 OpenWebUI（呼叫 /api/v1/functions API，非 sync 端點，不會動到其他既有 Function）；可手動跑，也可包成 K8s Job 在 OpenWebUI 部署時自動套用（範例見 OpenWebUI 部署所在 repo）
+│       └── apply_function.py    — 把上面的匯出檔 create/update 進 OpenWebUI（呼叫 /api/v1/functions API，非 sync 端點，不會動到其他既有 Function）；用 `./scripts/deploy.sh openwebui-functions` 跑成叢集內 Job（見 k8s/openwebui/），也可自行帶 WEBUI_URL / OPENWEBUI_ADMIN_KEY 手動執行
 ├── docs/
 │   ├── deploy.md                — 新機器部署完整 checklist
 │   ├── admin-api.md             — Admin API 完整接口文件
@@ -308,7 +310,18 @@ curl http://<node-ip>:30400/v1/chat/completions \
 - 開 thinking 時 `max_tokens` 要給足（思考本身可能耗數百 token）；太小會導致 content 空白
 - 思考 token 一樣計入用量與 TPM 限額
 
-一般使用者不會自己組 curl，OpenWebUI 介面上可匯入 [openwebui/functions/thinking_mode.json](openwebui/functions/thinking_mode.json)（Admin Panel → Functions → Import from JSON，或用 [apply_function.py](openwebui/functions/apply_function.py) 自動套用），在聊天輸入區加一顆可點擊的「思考模式」按鈕，開啟後自動幫請求帶上 `reasoning_effort: "high"`（由 LiteLLM 轉換給 vLLM）。
+一般使用者不會自己組 curl，OpenWebUI 介面上可匯入 [openwebui/functions/thinking_mode.json](openwebui/functions/thinking_mode.json)，在聊天輸入區加一顆可點擊的「思考模式」按鈕，開啟後自動幫請求帶上 `reasoning_effort: "high"`（由 LiteLLM 轉換給 vLLM）。
+
+套用方式二選一：
+
+```bash
+# 建議：跑成叢集內 Job（.env 的 OPENWEBUI_URL 是 *.svc.cluster.local 時，只有這條路走得通）
+./scripts/deploy.sh openwebui-functions
+
+# 或在 OpenWebUI 介面手動匯入：Admin Panel → Functions → Import from JSON
+```
+
+`openwebui/functions/` 底下所有 `*.json` 都會一起套用，新增 Function 只要把匯出檔丟進該目錄再跑一次即可。若 `OPENWEBUI_URL` 是叢集外的位址（如 `http://10.90.20.55:5000`），也可以在 host 上直接跑 `WEBUI_URL="$OPENWEBUI_URL" python3 openwebui/functions/apply_function.py`。
 
 ### Embedding
 

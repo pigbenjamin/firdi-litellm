@@ -1,0 +1,52 @@
+# 把 openwebui/functions/*.json 套用到 OpenWebUI（已存在就 update 內容，不存在就 create 並補開
+# is_active/is_global）。腳本本體是 openwebui/functions/apply_function.py。
+#
+# 為什麼要跑在叢集內而不是 host：.env 的 OPENWEBUI_URL 是 *.svc.cluster.local，只有 CoreDNS 解得開，
+# 在 host 上直接跑 apply_function.py 會解不到 DNS——而且錯誤會被腳本的等待迴圈吞掉，畫面上什麼都不印、
+# 空等滿 READY_TIMEOUT 才吐一行 not ready。跑成 Job 就沒這個問題。
+#
+# 依賴 ConfigMap openwebui-functions：由 ./scripts/deploy.sh openwebui-functions 從
+# openwebui/functions/ 整個目錄動態產生（新增 function 只要把匯出的 json 丟進那個目錄，
+# 不用改這個檔案，也不用改腳本）。所以**不要單獨 kubectl apply 這個檔案**，請用：
+#   ./scripts/deploy.sh openwebui-functions
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: openwebui-apply-functions
+  namespace: ai-platform
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 300
+  ttlSecondsAfterFinished: 600   # 跑完保留 10 分鐘可查 log，之後自動清掉
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: apply-functions
+          image: python:3.12-alpine   # 腳本只用 stdlib（urllib/json/glob），不需要額外套件
+          command: ["python3", "/opt/functions/apply_function.py"]
+          env:
+            # 腳本讀的變數名是 WEBUI_URL，secret 裡的 key 是 openwebui-url，兩者不同名
+            - name: WEBUI_URL
+              valueFrom:
+                secretKeyRef:
+                  name: litellm-secrets
+                  key: openwebui-url
+            - name: OPENWEBUI_ADMIN_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: litellm-secrets
+                  key: openwebui-admin-key
+            - name: FUNCTIONS_DIR
+              value: /opt/functions
+            # 要能在 activeDeadlineSeconds 之內失敗收場：連不到時 60 秒吐錯，不用等預設的 180 秒
+            - name: READY_TIMEOUT
+              value: "60"
+          volumeMounts:
+            - name: functions
+              mountPath: /opt/functions
+              readOnly: true
+      volumes:
+        - name: functions
+          configMap:
+            name: openwebui-functions

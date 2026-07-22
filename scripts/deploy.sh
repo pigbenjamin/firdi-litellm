@@ -12,6 +12,7 @@
 #   ./scripts/deploy.sh admin-api    # 只部署 admin-api
 #   ./scripts/deploy.sh secrets      # 只建立 Secrets
 #   ./scripts/deploy.sh status       # 顯示所有 Pod/Service 狀態
+#   ./scripts/deploy.sh openwebui-functions  # 只套用 OpenWebUI Functions（思考模式按鈕等）
 #
 # users-db-pvc / litellm-logs-pvc 走 storageClassName 動態佈建（.env 的
 # K8S_PVC_STORAGE_CLASS，單節點 k3s 預設 local-path，公司 Ceph 叢集設
@@ -302,6 +303,42 @@ deploy_admin_api() {
     ok "openwebui-pull-sync CronJob 已套用"
 }
 
+# ── OpenWebUI Functions ───────────────────────────────────────────────────────
+# 刻意不納入 deploy_all：OpenWebUI 由另一個 repo 部署（在 default namespace），這步是「對外部系統
+# 做設定」而不是部署本 repo 的元件；OpenWebUI 還沒起來的新環境不該讓 deploy.sh all 卡在這裡。
+deploy_openwebui_functions() {
+    info "套用 OpenWebUI Functions..."
+
+    [[ -z "${OPENWEBUI_URL:-}" ]]       && die "OPENWEBUI_URL 未設定（請檢查 .env）"
+    [[ -z "${OPENWEBUI_ADMIN_KEY:-}" ]] && die "OPENWEBUI_ADMIN_KEY 未設定（請檢查 .env）"
+
+    # ConfigMap 從整個目錄動態產生（子目錄如 __pycache__ 會被 kubectl 略過）：
+    # 新增 function 只要把匯出的 json 丟進 openwebui/functions/，這裡跟 Job yaml 都不用改
+    kubectl create configmap openwebui-functions -n "$NS" \
+        --from-file="$REPO_ROOT/openwebui/functions" \
+        --dry-run=client -o yaml | kubectl apply -f -
+
+    # Job 的 spec 不可變更，重跑前必須先砍掉舊的
+    kubectl delete job openwebui-apply-functions -n "$NS" --ignore-not-found > /dev/null
+    kubectl apply -f "$REPO_ROOT/k8s/openwebui/job-apply-functions.yaml"
+
+    local deadline=$((SECONDS + 300)) result=""
+    while (( SECONDS < deadline )); do
+        [[ $(kubectl get job openwebui-apply-functions -n "$NS" \
+             -o jsonpath='{.status.succeeded}' 2>/dev/null) == "1" ]] && { result=ok; break; }
+        [[ -n $(kubectl get job openwebui-apply-functions -n "$NS" \
+             -o jsonpath='{.status.conditions[?(@.type=="Failed")].status}' 2>/dev/null) ]] && { result=fail; break; }
+        sleep 3
+    done
+
+    kubectl logs job/openwebui-apply-functions -n "$NS" 2>/dev/null | sed 's/^/       /' || true
+    case "$result" in
+        ok)   ok "OpenWebUI Functions 已套用" ;;
+        fail) die "Job 失敗，詳情：kubectl describe job/openwebui-apply-functions -n $NS" ;;
+        *)    die "Job 300 秒內未結束，詳情：kubectl describe job/openwebui-apply-functions -n $NS" ;;
+    esac
+}
+
 # ── Status ────────────────────────────────────────────────────────────────────
 show_status() {
     echo ""
@@ -358,8 +395,9 @@ main() {
         litellm)      deploy_litellm ;;
         admin-api)    deploy_admin_api ;;
         status)       show_status ;;
+        openwebui-functions) deploy_openwebui_functions ;;
         *)
-            echo "用法: $0 [all|storage|users-db|secrets|gemma-4-31b|gemma-4-26b|light-models|litellm|admin-api|status]"
+            echo "用法: $0 [all|storage|users-db|secrets|gemma-4-31b|gemma-4-26b|light-models|litellm|admin-api|openwebui-functions|status]"
             exit 1
             ;;
     esac
