@@ -44,7 +44,7 @@ spec:
             - "--tool-call-parser=gemma4"
             - "--enable-auto-tool-choice"
             # 思考型:預設開啟 thinking(<|think|>),client 可用 chat_template_kwargs 覆寫
-            - '--default-chat-template-kwargs={"enable_thinking": true}'
+            - '--default-chat-template-kwargs={"enable_thinking": false}'
             - "--served-model-name=google/gemma-4-31B-it"
             - "--host=0.0.0.0"
             - "--port=8000"
