@@ -16,7 +16,7 @@ OpenWebUI 自己的連線模型（如 local-ollama.*）與 pipe 一律不碰。
 
 OpenWebUI API 合約（逆向確認）：
   - GET  /api/v1/groups/                    → [{id, name, ...}]，name = dept_id
-  - GET  /api/v1/users/                     → {users:[{id, oauth.oidc.sub, ...}]}
+  - GET  /api/v1/users/all                  → {users:[{id, email, oauth.oidc.sub, ...}]}（不分頁；/api/v1/users/ 每頁僅 30 筆）
   - GET  /api/v1/models/base                → [完整 model 記錄含 access_grants]
   - POST /api/v1/models/model/update?id=X   → 需完整 model 記錄，access_grants 陣列取代式寫入
   - POST /api/v1/models/create              → 建立新 model 記錄
@@ -113,12 +113,30 @@ async def _fetch_groups(client: httpx.AsyncClient, owui: dict) -> dict[str, str]
 
 
 async def _fetch_user_mapping(client: httpx.AsyncClient, owui: dict) -> dict[str, str]:
-    """openwebui_user_id → keycloak_sub（= DB user_id）；無 oidc sub 的不收"""
-    data = await _fetch_owui_json(client, owui, "/api/v1/users/")
+    """openwebui_user_id → keycloak_sub（= DB user_id）。
+
+    解析順序：oauth.oidc.sub 優先；為空時回退用 OpenWebUI 帳號的 email 比對 DB user_email
+    （讓沒 SSO 登入過 OpenWebUI 的帳號也對映得到，與 custom_auth 的回退規則一致）。
+    走 /api/v1/users/all（不分頁）；/api/v1/users/ 每頁只回 30 筆會漏人。
+    """
+    data = await _fetch_owui_json(client, owui, "/api/v1/users/all")
     users = data.get("users", data) if isinstance(data, dict) else data
+
+    # DB email → user_id（email 回退用；只收 human 帳號、email 非空）
+    email2uid: dict[str, str] = {}
+    with get_conn(DB_PATH) as conn:
+        for row in conn.execute(
+            "SELECT user_id, user_email FROM users WHERE account_type='human'"
+        ).fetchall():
+            email = (row["user_email"] or "").strip().lower()
+            if email:
+                email2uid[email] = row["user_id"]
+
     mapping = {}
     for u in users:
         sub = ((u.get("oauth") or {}).get("oidc") or {}).get("sub")
+        if not sub:
+            sub = email2uid.get((u.get("email") or "").strip().lower())
         if sub:
             mapping[u["id"]] = sub
     return mapping

@@ -60,8 +60,16 @@ _OPENWEBUI_USER_CACHE: dict[str, str] = {}
 
 
 async def _resolve_keycloak_sub(openwebui_id: str, url: str, admin_key: str) -> str | None:
-    """OpenWebUI UUID → Keycloak UUID，in-memory 快取，miss 時查指定實例的 Admin API。
-    使用 GET /api/v1/users/（list）再以 id 過濾，因為部分版本沒有單一使用者端點。
+    """OpenWebUI UUID → DB user_id（= Keycloak sub），in-memory 永久快取，miss 時查該入口 Admin API。
+
+    解析順序：
+      1. OpenWebUI 帳號的 oauth.oidc.sub —— 該人用 Keycloak SSO 登入過 OpenWebUI 才會有。
+      2. 回退：oidc.sub 為空時，改用該 OpenWebUI 帳號的 email 比對 DB 的 user_email，
+         命中就回該使用者的 user_id。讓「還沒用 SSO 登入過 OpenWebUI」的帳號也對應得到
+         DB 使用者（前提：OpenWebUI 與 DB 的 email 一致且唯一）。
+
+    走 GET /api/v1/users/all（admin 權限、不分頁）；不可用 /api/v1/users/，那支每頁只回
+    30 筆，使用者一多就會把排在後面的人漏掉、永遠 resolve 不到。
     """
     if openwebui_id in _OPENWEBUI_USER_CACHE:
         return _OPENWEBUI_USER_CACHE[openwebui_id]
@@ -73,7 +81,7 @@ async def _resolve_keycloak_sub(openwebui_id: str, url: str, admin_key: str) -> 
     try:
         async with httpx.AsyncClient(timeout=5) as client:
             resp = await client.get(
-                f"{url}/api/v1/users/",
+                f"{url}/api/v1/users/all",
                 headers={"Authorization": f"Bearer {admin_key}"},
             )
             print(f"[custom_auth] OpenWebUI API response status: {resp.status_code}")
@@ -81,15 +89,7 @@ async def _resolve_keycloak_sub(openwebui_id: str, url: str, admin_key: str) -> 
             data = resp.json()
             # 支援 {"users": [...]} 或直接 [...]
             users = data.get("users", data) if isinstance(data, dict) else data
-            keycloak_sub = None
-            for u in users:
-                if u.get("id") == openwebui_id:
-                    keycloak_sub = (
-                        (u.get("oauth") or {})
-                        .get("oidc", {})
-                        .get("sub")
-                    )
-                    break
+            owui_user = next((u for u in users if u.get("id") == openwebui_id), None)
     except Exception as e:
         write_log({
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -98,6 +98,19 @@ async def _resolve_keycloak_sub(openwebui_id: str, url: str, admin_key: str) -> 
             "error": str(e),
         })
         return None
+
+    if owui_user is None:
+        return None
+
+    # 路線 1：OpenWebUI 已綁定的 Keycloak sub
+    keycloak_sub = ((owui_user.get("oauth") or {}).get("oidc") or {}).get("sub")
+
+    # 路線 2（回退）：oidc.sub 為空 → 用 email 對映 DB user
+    if not keycloak_sub:
+        email = (owui_user.get("email") or "").strip()
+        db_user = _find_user_by_email(email) if email else None
+        if db_user:
+            keycloak_sub = db_user["user_id"]
 
     if keycloak_sub:
         _OPENWEBUI_USER_CACHE[openwebui_id] = keycloak_sub
@@ -188,6 +201,17 @@ def _find_user(api_key: str) -> dict | None:
 def _find_user_by_user_id(user_id: str) -> dict | None:
     for user in _load_config().get("users", []):
         if user.get("user_id") == user_id and not user.get("blocked", False):
+            return user
+    return None
+
+
+def _find_user_by_email(email: str) -> dict | None:
+    """以 email 比對 DB 使用者（大小寫不敏感、排除 blocked）。OpenWebUI 無 oidc.sub 時的回退。"""
+    target = email.strip().lower()
+    if not target:
+        return None
+    for user in _load_config().get("users", []):
+        if (user.get("user_email") or "").strip().lower() == target and not user.get("blocked", False):
             return user
     return None
 
