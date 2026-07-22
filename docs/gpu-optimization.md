@@ -1,9 +1,9 @@
 # GPU 使用率優化與自動擴縮（討論文件）
 
-> **狀態：討論中，未定案。** 本文件整理可行方案與決策點，作為之後施作方向的參考，
-> 尚未進行任何變更。定案後應更新本文件的「決策點」章節並記錄結論。
+> **狀態：核心方向已定案（2026-07-21），細節待下一階段施作。** 本文件整理可行方案與決策點；
+> 「決策點」章節已記錄目前結論，尚未進行對應的部署變更。
 >
-> 整理日期：2026-07-06
+> 整理日期：2026-07-06，決策更新：2026-07-21
 
 ## 目標
 
@@ -177,23 +177,104 @@ spec:
 
 ---
 
-## 決策點（待拍板）
+## 第五層：節點拓樸與落地細節（2026-07-21 確認）
 
-| # | 問題 | 選項 / 建議 | 結論 |
-|---|---|---|---|
-| 1 | 6 張卡是單機還是多節點？ | 影響最大：多節點 hostPath cache 不共享（每節點重下載+重編譯）、TP 不能跨節點。本文件方案假設**單機** | （未定） |
-| 2 | 31b 是否接受 FP8 換 TP=1？ | 強烈建議至少測一輪品質（線上量化即可試） | （未定） |
-| 3 | 擴縮策略檔位？ | 反應式（快擴慢縮）／常駐 2 副本／混合（26b 常駐 2、31b 反應式） | （未定） |
-| 4 | 浮動池優先權 | 搶卡時 26b vs 31b 誰優先；建議先用「各自上限」制 | （未定） |
-| 5 | 是否引入 Prometheus + KEDA | 約兩個 helm chart，資源開銷不大；做反應式擴縮的前提 | （未定） |
+### 節點拓樸
 
-## 建議組合與施作順序（僅建議，未定案）
+- 確定為 2 節點：**GPU01**（4 張卡）、**GPU02**（2 張卡），共 6 張；不排除之後再加節點。
+- TP 不能跨節點（沒有 NVLink/RDMA 等級的節點間互連），任何 TP>1 的模型必須整組落在同一節點。
+- 31b（TP=2，或改 FP8 後 TP=1）**建議釘在 GPU01**：GPU01 有 4 張卡，扣掉 31b 用量後還能留浮動空間；
+  若釘在只有 2 張卡的 GPU02，會把該節點的浮動池直接歸零。
 
-**組合：方案 B + 26b 常駐 2 副本 + 31b/26b 反應式擴到浮動池 + KEDA 快擴慢縮**
+### nodeSelector 要寫在哪裡
 
-1. **第一層調參**（改幾個參數就有感）：31b `max-num-seqs` 2→32+、
-   `gpu-memory-utilization` 0.85→0.90；同時做 FP8 品質評測（決策點 2）
-2. **裝監控**：kube-prometheus-stack（+ 可選 DCGM-exporter），先看清楚實際負載型態
-   再定擴縮門檻
-3. **上 KEDA**：按觀察到的負載型態寫 ScaledObject，決定檔位（決策點 3）
-4. **視偏斜情況**補 least-request LB / 進階路由（第四層）
+分兩層，不要混在一起：
+
+1. **Node 物件本身要先貼 label**——不是寫在 Deployment yaml 裡，是對 Node 下的一次性操作：
+   ```
+   kubectl label node <GPU01-hostname> gpu-pool=shared
+   kubectl label node <GPU02-hostname> gpu-pool=shared
+   ```
+   建議包成 `scripts/label-nodes.sh`（或併入 `deploy.sh` 初始化步驟）寫進 repo，避免變成沒人記得的
+   手動指令；未來加新節點只要多跑一次。
+2. **Deployment 的 `spec.template.spec.nodeSelector`**——位置跟現在完全一樣，只是 value 依模型是否
+   要浮動而不同：
+   - **固定釘死的模型**（31b、light-models——light-models 的 hostPath PVC 已用 nodeAffinity 釘死
+     節點，本來就不能浮動）：維持 `kubernetes.io/hostname: <特定值>`，但要把 `.env` 的單一
+     `K8S_GPU_NODE_HOSTNAME` 拆成 `K8S_GPU01_HOSTNAME` / `K8S_GPU02_HOSTNAME`。
+   - **可浮動的模型**（26b、未來新服務）：改用 `nodeSelector: {gpu-pool: shared}`，符合這個 label
+     的節點都能落，由 K8s scheduler 挑有空卡的節點排。
+
+### 冷啟動快取的生效範圍（再次確認）
+
+「付過一次冷啟動、之後都是暖啟動」**成立，但有範圍限制，不是一次永久有效**：
+
+- **只在同一節點成立**：`VLLM_CACHE_ROOT` 指向 hostPath（節點本地磁碟），GPU02 沒跑過的模型，就算
+  GPU01 已經暖過，GPU02 照樣要重新付一次冷啟動。多節點下等於「每個節點各自要暖一次」。
+- **只在同一份「模型+編譯相關參數」組合成立**：vLLM 依模型+參數雜湊分快取子目錄，任何影響 compile
+  graph 的參數改變（量化方式、`max-num-seqs`、`max-model-len` 等）都會變成 cache miss，等同一次新的
+  冷啟動。**這次的 FP8 轉換就會觸發一次全額重編**，是預期成本，換完之後才會回到暖啟動；
+  `enable_thinking` 預設值理論上不影響 engine 的 compile graph（只是 chat template 參數），但部署後
+  建議留意首次請求是否又觸發重編。
+- 前提是 hostPath 目錄沒被清過（磁碟壓力清 cache 的前科要記得）。
+
+### 浮動池優先權的實作落差
+
+「誰的需求大，誰能佔用更多資源」這個原則，K8s 原生工具沒有直接對應的機制，落差在於：
+
+- KEDA/HPA 只回答「這個模型現在該有幾個副本」，多個模型的 ScaledObject 之間**不會互相比較需求
+  大小**，資源分配結果其實是「誰的擴容請求先送到 scheduler、誰就先佔到空卡」（搶快，不是搶需求量）。
+- 要接近「需求大者得」，K8s 原生能做到的是**靜態優先權 + 搶佔**：用 `PriorityClass` 給每個模型的
+  Deployment 定優先權，優先權高的 pod 在資源不足時可以搶佔（驅逐）優先權低的 pod。這是「重要程度」而
+  非「即時需求量」的排序——例如定 31b > 26b > 未來新服務，需要時 31b 的新副本能踢掉浮動池上正在跑的
+  低優先權副本。
+- 真正「即時依佇列長度動態分配」需要自寫 controller，比較各模型的 `num_requests_waiting`，動態調整各
+  ScaledObject 的 `maxReplicaCount`——工程量明顯較大。**建議先用 PriorityClass 這個近似版本**，不夠用
+  再考慮自訂 controller。
+- 為保留「未來加新服務」的彈性：floating pool 用通用 `gpu-pool: shared` label，不針對特定模型寫死節
+  點分配；新服務只要掛 GPU request + PriorityClass + ScaledObject 就能自然加入競爭，不用改動既有模型
+  的設定。
+
+### 加碼監控 cache 有沒有幫助
+
+分兩種「cache」，都有幫助，但用途不同：
+
+1. **vLLM 的 KV cache 用量**（`vllm:gpu_cache_usage_perc`）：適合當 KEDA 的**輔助擴容觸發**，跟
+   `num_requests_waiting` 用 OR 的方式疊加（一個 ScaledObject 可掛多個 trigger，任一超標就擴容）。它
+   比排隊訊號更早——排隊之前 KV cache 用量逼近 90%（快搶佔）就能先擴容，縮短反應式擴容「來不及」的
+   窗口。不建議單獨用它當唯一訊號：單一超長 context 請求也會把 KV cache 用量衝高，但不代表有排隊需
+   求，加副本也解決不了那個請求本身。
+2. **hostPath 的 HF cache / compile cache 磁碟用量**：跟 vLLM 無關，是 node-exporter 等級的磁碟監
+   控。有幫助，但用途是**告警防再次 DiskPressure**（之前有過全 namespace 被驅逐的前科），不是拿來當
+   擴縮訊號——建議裝 Prometheus 時順手接上 node-exporter 磁碟指標，掛「用量 > 80%」告警，不接進 KEDA。
+
+---
+
+## 決策點（2026-07-21 更新）
+
+| # | 問題 | 結論 |
+|---|---|---|
+| 1 | 節點拓樸 | **已定案**：GPU01（×4）+ GPU02（×2）兩節點，未來可能再加節點；見上方「節點拓樸與 nodeSelector」 |
+| 2 | 31b 是否接受 FP8 換 TP=1？ | **已定案**：換 FP8，同時把 `enable_thinking` 預設改成 `false`，改由 openwebui 開關顯式控制；**FP8 品質評測仍是落地前的必要前置作業，尚未執行** |
+| 3 | 擴縮策略檔位？ | **已定案**：全面採「快擴慢縮」；31b 先手動固定副本觀察，26b 優先接 KEDA |
+| 4 | 浮動池優先權 | **已定案（原則）**：需求大者得，並保留未來新服務加入的彈性；**實作**：PriorityClass + 搶佔（K8s 原生的近似版本），見上方「浮動池優先權的實作落差」 |
+| 5 | 是否引入 Prometheus + KEDA | **已定案**：採用；追加建議疊加 `vllm:gpu_cache_usage_perc` 當輔助擴容 trigger，hostPath 磁碟用量另外做告警（非擴縮訊號） |
+
+## 下一階段施作順序（2026-07-21 定案，待執行）
+
+1. **節點 label 化**：`kubectl label node` 幫 GPU01/GPU02 貼 `gpu-pool=shared`；
+   `.env` 的 `K8S_GPU_NODE_HOSTNAME` 拆成 `K8S_GPU01_HOSTNAME` / `K8S_GPU02_HOSTNAME`；
+   31b、light-models 改用各自 hostname 釘死節點，26b 改用 `gpu-pool` label 浮動
+2. **31b FP8 品質評測**（決策點 2 的前置作業）：評測過關後切 `--quantization fp8` +
+   `--tensor-parallel-size=1`，同時把 `--default-chat-template-kwargs` 的
+   `enable_thinking` 改成 `false`（thinking 完全交給 openwebui 開關控制）；
+   預期觸發一次全額重編（~14 分鐘冷啟動），換完後才回到暖啟動
+3. **定 PriorityClass**：31b > 26b > 未來新服務，作為「需求大者得」的靜態近似版本
+   （K8s 原生沒有動態依佇列長度分配的機制，見「浮動池優先權的實作落差」）
+4. **裝監控**：kube-prometheus-stack + node-exporter（磁碟用量告警，防
+   DiskPressure 重演）；需另建 PodMonitor（預設不吃現有的
+   `prometheus.io/scrape` annotation）
+5. **上 KEDA**：先只接 26b，雙 trigger（`num_requests_waiting` +
+   `vllm:gpu_cache_usage_perc`），快擴慢縮；31b 先手動固定副本數觀察，
+   跑穩再評估要不要也接
+6. **視偏斜情況**補 least-request LB / 進階路由（第四層）
