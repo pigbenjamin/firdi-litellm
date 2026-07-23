@@ -1,0 +1,235 @@
+[
+  {
+    "id": "qa-01",
+    "category": "general_qa",
+    "messages": [
+      {"role": "user", "content": "請用三點條列說明「部門制」與「個人制」API 權限管理各自的優缺點。"}
+    ]
+  },
+  {
+    "id": "qa-02",
+    "category": "general_qa",
+    "messages": [
+      {"role": "user", "content": "什麼是 KV cache？為什麼它會影響 LLM 推論服務能同時處理的請求數？請用不超過 150 字說明。"}
+    ]
+  },
+  {
+    "id": "qa-03",
+    "category": "general_qa",
+    "messages": [
+      {"role": "user", "content": "幫我把這句話翻成英文，語氣要正式：「本次系統維護將於今晚十點進行，預計中斷服務三十分鐘，造成不便敬請見諒。」"}
+    ]
+  },
+  {
+    "id": "think-01",
+    "category": "thinking_reasoning",
+    "enable_thinking": true,
+    "messages": [
+      {"role": "user", "content": "一個部門有 12 個使用者，其中 5 人同時擁有 gemma-4-31b 與 gemma-4-26b 的權限，3 人只有 26b 權限，其餘的人兩個都沒有。請問完全沒有任何模型權限的使用者有幾人？請列出你的推論過程。"}
+    ]
+  },
+  {
+    "id": "think-02",
+    "category": "thinking_reasoning",
+    "enable_thinking": true,
+    "messages": [
+      {"role": "user", "content": "有三個部門 A、B、C。A 部門的使用者數是 B 的兩倍，C 部門比 B 多 4 人，三個部門總共 44 人。請問 A、B、C 各有幾人？"}
+    ]
+  },
+  {
+    "id": "think-03",
+    "category": "thinking_reasoning",
+    "enable_thinking": false,
+    "messages": [
+      {"role": "user", "content": "一個部門有 12 個使用者，其中 5 人同時擁有 gemma-4-31b 與 gemma-4-26b 的權限，3 人只有 26b 權限，其餘的人兩個都沒有。請問完全沒有任何模型權限的使用者有幾人？直接給答案就好，不用解釋。"}
+    ]
+  },
+  {
+    "id": "think-04",
+    "category": "thinking_reasoning",
+    "enable_thinking": true,
+    "messages": [
+      {"role": "user", "content": "如果 TP=2 的兩張卡之間沒有 NVLink，all-reduce 必須經過 PCIe，這對延遲和吞吐分別會有什麼影響？換成 TP=1 單卡為什麼可能反而更快？"}
+    ]
+  },
+  {
+    "id": "tool-01",
+    "category": "tool_calling",
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "create_department",
+          "description": "在系統中建立一個新部門",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "dept_id": {"type": "string", "description": "部門代碼"},
+              "dept_name": {"type": "string", "description": "部門顯示名稱"},
+              "allowed_models": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "此部門預設可用的模型清單"
+              }
+            },
+            "required": ["dept_id", "dept_name"]
+          }
+        }
+      }
+    ],
+    "messages": [
+      {"role": "user", "content": "幫我建立一個新部門，代碼是 rnd-nlp，名稱是「NLP 研發組」，預設開放 google/gemma-4-26B-A4B-it 這個模型。"}
+    ]
+  },
+  {
+    "id": "tool-02",
+    "category": "tool_calling",
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "get_user",
+          "description": "依 user_id 查詢使用者詳情",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "user_id": {"type": "string", "description": "使用者 ID"}
+            },
+            "required": ["user_id"]
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "block_user",
+          "description": "封鎖指定使用者",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "user_id": {"type": "string", "description": "使用者 ID"},
+              "reason": {"type": "string", "description": "封鎖原因"}
+            },
+            "required": ["user_id"]
+          }
+        }
+      }
+    ],
+    "messages": [
+      {"role": "user", "content": "先查一下 user_id 為 u-0042 的使用者資料，如果他的帳號類型是 service account 就把他封鎖，理由寫「離職清查」。"}
+    ]
+  },
+  {
+    "id": "tool-03",
+    "category": "tool_calling",
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "search_docs",
+          "description": "在內部文件庫搜尋關鍵字",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "query": {"type": "string"},
+              "top_k": {"type": "integer", "description": "回傳筆數，預設 5"}
+            },
+            "required": ["query"]
+          }
+        }
+      }
+    ],
+    "messages": [
+      {"role": "user", "content": "今天天氣真好，你覺得台北適合出去玩嗎？"}
+    ]
+  },
+  {
+    "id": "tool-04",
+    "category": "tool_calling",
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "patch_department_models",
+          "description": "部分更新部門的 allowed_models 欄位（整陣列覆蓋，不是 append）",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "dept_id": {"type": "string"},
+              "allowed_models": {"type": "array", "items": {"type": "string"}}
+            },
+            "required": ["dept_id", "allowed_models"]
+          }
+        }
+      }
+    ],
+    "messages": [
+      {"role": "user", "content": "研發部（dept_id: rnd）目前開放的模型是 [\"google/gemma-4-26B-A4B-it\"]，請幫我加開 google/gemma-4-31B-it，注意這個欄位是整陣列覆蓋不是 append。"}
+    ]
+  },
+  {
+    "id": "long-01",
+    "category": "long_context",
+    "messages": [
+      {
+        "role": "user",
+        "content": "以下是一份內部 API 文件的節錄，請幫我用條列式整理出：(1) 有哪些認證方式 (2) 有哪幾種 HTTP 狀態碼代表的錯誤情境 (3) 部門相關的接口有哪些。\n\n---\n# Admin API 接口文件\n\nAdmin API 提供部門、使用者的資料管理、Keycloak 使用者同步，以及 OpenWebUI ↔ DB 的模型權限同步。\n\n- **Base URL（K8s）**：`http://<node-ip>:30408`\n- **互動式文件**：`http://<node-ip>:30408/docs`（FastAPI Swagger UI）\n\n> **模型權限架構**：權威來源是 **OpenWebUI 畫面**上的模型授權，由反向同步（pull）寫回 DB，custom_auth 讀 DB 做 enforcement（加法模型：`部門授權 ∪ 個人授權`）。\n\n## 接口總表\n\n| 方法 | 路徑 | 說明 | 認證 |\n|------|------|------|------|\n| GET | /health | 服務健康檢查 | 無 |\n| GET | /api/v1/models | 列出系統可用模型清單 | Admin Key |\n| GET | /api/v1/departments | 列出所有部門 | Admin Key |\n| POST | /api/v1/departments | 建立部門 | Admin Key |\n| GET | /api/v1/departments/{dept_id} | 取得部門詳情 | Admin Key |\n| PUT | /api/v1/departments/{dept_id} | 完整替換部門資料 | Admin Key |\n| PATCH | /api/v1/departments/{dept_id} | 部分更新部門欄位 | Admin Key |\n| DELETE | /api/v1/departments/{dept_id} | 刪除部門（需先清空成員） | Admin Key |\n| GET | /api/v1/users | 列出使用者 | Admin Key |\n| POST | /api/v1/users | 建立服務帳號 | Admin Key |\n| POST | /api/v1/sync/keycloak | 接收 Keycloak 使用者事件 | Webhook Secret |\n| POST | /api/v1/sync/keycloak/bulk | 從 Keycloak 拉取全部使用者同步 | Admin Key |\n\n## 認證\n\n除 /health 與 /api/v1/sync/keycloak 外，所有接口需在 HTTP Header 帶入 Admin API Key：\n\n```\nAuthorization: Bearer <ADMIN_API_KEY>\n```\n\n/api/v1/sync/keycloak 使用專屬的 X-Webhook-Secret header 認證。\n\n## 通用錯誤碼\n\n| HTTP 狀態碼 | 說明 |\n|------------|------|\n| 400 | 請求格式錯誤 |\n| 401 | API Key 無效或未提供 |\n| 404 | 資源不存在 |\n| 409 | 資源衝突（重複 ID 或部門仍有使用者） |\n| 422 | 請求 Body 欄位驗證失敗 |\n| 500 | 伺服器設定錯誤（環境變數未設定） |\n| 502 | 無法連線至 LiteLLM 或 Keycloak |\n---"
+      }
+    ]
+  },
+  {
+    "id": "long-02",
+    "category": "long_context",
+    "enable_thinking": true,
+    "messages": [
+      {
+        "role": "user",
+        "content": "同上面那份文件節錄的內容，如果我想「刪除一個部門」，但這個部門底下還有使用者，會發生什麼事？我應該先呼叫哪個接口？請根據文件內容回答，不要憑空猜測。"
+      },
+      {
+        "role": "assistant",
+        "content": "好的，請提供文件內容，我會根據裡面的說明回答。"
+      },
+      {
+        "role": "user",
+        "content": "抱歉重貼一次：\n| DELETE | /api/v1/departments/{dept_id} | 刪除部門（需先清空成員） | Admin Key |\n| GET | /api/v1/users | 列出使用者（可依部門或帳號類型篩選） | Admin Key |\n| DELETE | /api/v1/users/{user_id} | 永久刪除使用者 | Admin Key |\n\n現在回答我的問題。"
+      }
+    ]
+  },
+  {
+    "id": "code-01",
+    "category": "code_math",
+    "messages": [
+      {"role": "user", "content": "寫一個 Python function，輸入一個 dept.allowed_models（list[str]）和 user.models（list[str]），回傳兩者聯集（union），但如果聯集包含 \"*\" 就回傳代表全開放的字串 \"*\"，聯集為空則回傳空 list。"}
+    ]
+  },
+  {
+    "id": "code-02",
+    "category": "code_math",
+    "enable_thinking": true,
+    "messages": [
+      {"role": "user", "content": "這段程式碼在多執行緒環境下有什麼問題？該怎麼修？\n\n```python\ncache = {}\n\ndef get_or_load(key, loader):\n    if key not in cache:\n        cache[key] = loader()\n    return cache[key]\n```"}
+    ]
+  },
+  {
+    "id": "code-03",
+    "category": "code_math",
+    "messages": [
+      {"role": "user", "content": "96GB 的顯卡，gpu-memory-utilization 設 0.9，權重占用 31GB，請問理論上還剩多少 GB 可以給 KV cache？（不用考慮 CUDA graph 等額外開銷，只算這個簡單減法）"}
+    ]
+  },
+  {
+    "id": "edge-01",
+    "category": "edge_case",
+    "messages": [
+      {"role": "user", "content": "請完全用 JSON 格式回答，不要有任何 JSON 以外的文字，欄位只要 summary 和 risk_level（low/medium/high）：這次要把 31b 模型從 bf16 TP=2 換成 FP8 TP=1，你覺得風險等級是什麼？"}
+    ]
+  },
+  {
+    "id": "edge-02",
+    "category": "edge_case",
+    "messages": [
+      {"role": "user", "content": "user_id、dept_id、user_id、models、user_id 這幾個欄位裡，哪一個重複出現最多次？不要輸出思考過程，只回答一個詞。"}
+    ]
+  }
+]

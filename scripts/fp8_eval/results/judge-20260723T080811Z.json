@@ -1,0 +1,170 @@
+{
+  "meta": {
+    "baseline_file": "scripts/fp8_eval/results/bf16-20260723T080102Z.json",
+    "candidate_file": "scripts/fp8_eval/results/fp8-20260723T070219Z.json",
+    "judge_model": "google/gemma-4-26B-A4B-it",
+    "generated_at": "2026-07-23T08:08:11.339592+00:00"
+  },
+  "summary": {
+    "total": 18,
+    "judged": 18,
+    "bf16_win": 3,
+    "fp8_win": 1,
+    "tie": 14,
+    "needs_manual_review": 0,
+    "skipped_error": 0,
+    "fp8_flagged_regression_ids": [
+      "tool-03"
+    ],
+    "needs_manual_review_ids": [],
+    "skipped_error_ids": []
+  },
+  "verdicts": [
+    {
+      "id": "qa-01",
+      "category": "general_qa",
+      "outcome": "judged",
+      "winner": "tie",
+      "regression_flags": [],
+      "notes": "兩者內容品質極高，結構清晰且專業術語使用正確，優缺點分析皆非常到位，難分軒輊。"
+    },
+    {
+      "id": "qa-02",
+      "category": "general_qa",
+      "outcome": "judged",
+      "winner": "tie",
+      "regression_flags": [],
+      "notes": "兩者皆準確回答問題、符合字數限制且邏輯清晰，內容品質極其接近。"
+    },
+    {
+      "id": "qa-03",
+      "category": "general_qa",
+      "outcome": "judged",
+      "winner": "tie",
+      "regression_flags": [],
+      "notes": "兩者品質極高，提供的翻譯選項、分類邏輯與詞彙解析都非常精準且符合使用者需求，幾乎沒有差異。"
+    },
+    {
+      "id": "think-01",
+      "category": "thinking_reasoning",
+      "outcome": "judged",
+      "winner": "tie",
+      "regression_flags": [],
+      "notes": "兩者皆正確回答問題，推論過程清晰且格式一致，品質無顯著差異。"
+    },
+    {
+      "id": "think-02",
+      "category": "thinking_reasoning",
+      "outcome": "judged",
+      "winner": "tie",
+      "regression_flags": [],
+      "notes": "兩者皆正確解答問題，邏輯清晰且格式整齊，僅在排版細節上有微小差異。"
+    },
+    {
+      "id": "think-03",
+      "category": "thinking_reasoning",
+      "outcome": "judged",
+      "winner": "tie",
+      "regression_flags": [],
+      "notes": "兩個回覆皆正確且符合格式要求。"
+    },
+    {
+      "id": "think-04",
+      "category": "thinking_reasoning",
+      "outcome": "judged",
+      "winner": "candidate",
+      "regression_flags": [],
+      "notes": "兩者品質都非常高，但 A 的回答在邏輯結構與公式化解釋上更為嚴謹，特別是在解釋 TP=1 與 TP=2 的時間對比公式時，A 的排版與邏輯推導更直觀易懂。"
+    },
+    {
+      "id": "tool-01",
+      "category": "tool_calling",
+      "outcome": "judged",
+      "winner": "tie",
+      "regression_flags": [],
+      "notes": "兩個回覆的內容與格式完全一致，皆正確執行了 Tool Call。"
+    },
+    {
+      "id": "tool-02",
+      "category": "tool_calling",
+      "outcome": "judged",
+      "winner": "tie",
+      "regression_flags": [],
+      "notes": "兩個回覆的內容完全一致，皆正確地執行了第一步的工具調用。"
+    },
+    {
+      "id": "tool-03",
+      "category": "tool_calling",
+      "outcome": "judged",
+      "winner": "baseline",
+      "regression_flags": [
+        "language_mixing"
+      ],
+      "notes": "回覆 B 的景點推薦更具體且合理（如象山看 101），雖然在第三點夾雜了一個英文單字 'aprove'，但整體品質仍略優於 A。"
+    },
+    {
+      "id": "tool-04",
+      "category": "tool_calling",
+      "outcome": "judged",
+      "winner": "tie",
+      "regression_flags": [],
+      "notes": "兩個回覆的內容與工具呼叫參數完全一致，皆正確執行了陣列覆蓋的操作。"
+    },
+    {
+      "id": "long-01",
+      "category": "long_context",
+      "outcome": "judged",
+      "winner": "tie",
+      "regression_flags": [],
+      "notes": "兩者皆完美地完成了任務，提取資訊準確且格式清晰，僅在標點符號與細微用詞上有極小差異。"
+    },
+    {
+      "id": "long-02",
+      "category": "long_context",
+      "outcome": "judged",
+      "winner": "tie",
+      "regression_flags": [],
+      "notes": "兩者回答品質幾乎一致，邏輯正確且完全符合文件內容，僅在文字表達上有微小差異。"
+    },
+    {
+      "id": "code-01",
+      "category": "code_math",
+      "outcome": "judged",
+      "winner": "baseline",
+      "regression_flags": [],
+      "notes": "兩者程式碼邏輯皆正確，但 B 在測試案例的比較邏輯中考慮到了 set 轉 list 後順序不固定的問題（使用 set(result) == set(expected)），這在撰寫測試程式碼時更為嚴謹。"
+    },
+    {
+      "id": "code-02",
+      "category": "code_math",
+      "outcome": "judged",
+      "winner": "tie",
+      "regression_flags": [],
+      "notes": "兩者品質極高，結構一致，皆正確地指出了 Race Condition (Check-then-Act) 問題，並提供了正確的解決方案（Global Lock, Double-Checked Locking, lru_cache），且對 GIL 的解釋也非常精準。A 的表格總結稍微更完整一點點，但兩者皆屬優秀回覆。"
+    },
+    {
+      "id": "code-03",
+      "category": "code_math",
+      "outcome": "judged",
+      "winner": "tie",
+      "regression_flags": [],
+      "notes": "兩者計算完全正確且邏輯一致，僅在排版格式上有微小差異。"
+    },
+    {
+      "id": "edge-01",
+      "category": "edge_case",
+      "outcome": "judged",
+      "winner": "baseline",
+      "regression_flags": [],
+      "notes": "兩者皆符合格式要求，但 B 的 summary 提供更完整的技術分析（提到硬體需求與記憶體佈局變化），品質較佳。"
+    },
+    {
+      "id": "edge-02",
+      "category": "edge_case",
+      "outcome": "judged",
+      "winner": "tie",
+      "regression_flags": [],
+      "notes": "兩個回覆完全一致且都正確符合要求。"
+    }
+  ]
+}

@@ -255,7 +255,7 @@ spec:
 | # | 問題 | 結論 |
 |---|---|---|
 | 1 | 節點拓樸 | **已定案**：GPU01（×4）+ GPU02（×2）兩節點，未來可能再加節點；見上方「節點拓樸與 nodeSelector」 |
-| 2 | 31b 是否接受 FP8 換 TP=1？ | **已定案**：換 FP8，同時把 `enable_thinking` 預設改成 `false`，改由 openwebui 開關顯式控制；**FP8 品質評測仍是落地前的必要前置作業，尚未執行** |
+| 2 | 31b 是否接受 FP8 換 TP=1？ | **已完成**：2026-07-23 品質評測通過（[fp8-eval-report-2026-07-23.md](fp8-eval-report-2026-07-23.md)）後，正式 `gemma-4-31b-vllm` 已切換為 `--quantization fp8` + `--tensor-parallel-size=1`，`enable_thinking` 預設 `false`；舊 bf16 TP=2 設定備份在 `k8s/vllm/gemma-4-31b/deployment.bf16-tp2.yaml.bak` |
 | 3 | 擴縮策略檔位？ | **已定案**：全面採「快擴慢縮」；31b 先手動固定副本觀察，26b 優先接 KEDA |
 | 4 | 浮動池優先權 | **已定案（原則）**：需求大者得，並保留未來新服務加入的彈性；**實作**：PriorityClass + 搶佔（K8s 原生的近似版本），見上方「浮動池優先權的實作落差」 |
 | 5 | 是否引入 Prometheus + KEDA | **已定案**：採用；追加建議疊加 `vllm:gpu_cache_usage_perc` 當輔助擴容 trigger，hostPath 磁碟用量另外做告警（非擴縮訊號） |
@@ -265,10 +265,13 @@ spec:
 1. **節點 label 化**：`kubectl label node` 幫 GPU01/GPU02 貼 `gpu-pool=shared`；
    `.env` 的 `K8S_GPU_NODE_HOSTNAME` 拆成 `K8S_GPU01_HOSTNAME` / `K8S_GPU02_HOSTNAME`；
    31b、light-models 改用各自 hostname 釘死節點，26b 改用 `gpu-pool` label 浮動
-2. **31b FP8 品質評測**（決策點 2 的前置作業）：評測過關後切 `--quantization fp8` +
-   `--tensor-parallel-size=1`，同時把 `--default-chat-template-kwargs` 的
-   `enable_thinking` 改成 `false`（thinking 完全交給 openwebui 開關控制）；
-   預期觸發一次全額重編（~14 分鐘冷啟動），換完後才回到暖啟動
+2. **31b FP8 品質評測 + 正式切換**：**已於 2026-07-23 完成**。評測見
+   [fp8-eval-report-2026-07-23.md](fp8-eval-report-2026-07-23.md)（先用獨立臨時
+   `gemma-4-31b-fp8-test` deployment 測試，通過後才收編進正式版、刪除臨時目錄）；正式
+   `k8s/vllm/gemma-4-31b/deployment.yaml` 現在是 `--quantization fp8` +
+   `--tensor-parallel-size=1`，`gpu-memory-utilization=0.9`、GPU request 從 2 降到 1；
+   `enable_thinking` 預設 `false`。舊 bf16 TP=2 設定備份在同目錄的
+   `deployment.bf16-tp2.yaml.bak`（不會被 `deploy.sh` 的 `*.yaml` glob 誤套用）。
 3. **定 PriorityClass**：31b > 26b > 未來新服務，作為「需求大者得」的靜態近似版本
    （K8s 原生沒有動態依佇列長度分配的機制，見「浮動池優先權的實作落差」）
 4. **裝監控**：kube-prometheus-stack + node-exporter（磁碟用量告警，防

@@ -32,9 +32,11 @@ spec:
           imagePullPolicy: IfNotPresent
           args:
             - "--model=google/gemma-4-31B-it"
-            - "--tensor-parallel-size=1"
-            - "--quantization=fp8"
+            - "--tensor-parallel-size=2"
             - "--max-model-len=65536"
+            #- "--gpu-memory-utilization=0.85"
+            #- "--max-num-seqs=2"
+            #- "--max-num-batched-tokens=8192"
             - "--gpu-memory-utilization=0.9"
             - "--max-num-seqs=20"
             - "--max-num-batched-tokens=16384"
@@ -47,10 +49,13 @@ spec:
             - "--host=0.0.0.0"
             - "--port=8000"
             - "--trust-remote-code"
+            - "--disable-custom-all-reduce"
           ports:
             - containerPort: 8000
               name: http
           env:
+            - name: NCCL_P2P_DISABLE
+              value: "1"
             - name: HF_TOKEN
               valueFrom:
                 secretKeyRef:
@@ -64,9 +69,9 @@ spec:
               value: /cache/huggingface/vllm-compile-cache
           resources:
             limits:
-              nvidia.com/gpu: "1"
+              nvidia.com/gpu: "2"
             requests:
-              nvidia.com/gpu: "1"
+              nvidia.com/gpu: "2"
           volumeMounts:
             - name: hf-cache
               mountPath: /cache/huggingface
