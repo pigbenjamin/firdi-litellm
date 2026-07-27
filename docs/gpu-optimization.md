@@ -39,7 +39,7 @@
    1 個請求和 50 個請求看起來差不多，區分不出「忙」和「爆」。
 3. **正確訊號是 vLLM 的 request-level metrics**（`/metrics` 端點已內建）：
    - `vllm:num_requests_waiting` — 排隊中請求數，**業界標準擴縮訊號**
-   - `vllm:gpu_cache_usage_perc` — KV cache 用量，>90% 代表快要開始搶佔（preemption）
+   - `vllm:kv_cache_usage_perc` — KV cache 用量，>90% 代表快要開始搶佔（preemption）
    - `vllm:num_requests_running` — 在跑的併發數
 
 因此「讓 GPU 塞滿」的手段依序是：**先讓每張卡同時吃更多請求（加大 batch）**，
@@ -239,7 +239,7 @@ spec:
 
 分兩種「cache」，都有幫助，但用途不同：
 
-1. **vLLM 的 KV cache 用量**（`vllm:gpu_cache_usage_perc`）：適合當 KEDA 的**輔助擴容觸發**，跟
+1. **vLLM 的 KV cache 用量**（`vllm:kv_cache_usage_perc`）：適合當 KEDA 的**輔助擴容觸發**，跟
    `num_requests_waiting` 用 OR 的方式疊加（一個 ScaledObject 可掛多個 trigger，任一超標就擴容）。它
    比排隊訊號更早——排隊之前 KV cache 用量逼近 90%（快搶佔）就能先擴容，縮短反應式擴容「來不及」的
    窗口。不建議單獨用它當唯一訊號：單一超長 context 請求也會把 KV cache 用量衝高，但不代表有排隊需
@@ -257,14 +257,22 @@ spec:
 | 1 | 節點拓樸 | **已定案**：GPU01（×4）+ GPU02（×2）兩節點，未來可能再加節點；見上方「節點拓樸與 nodeSelector」 |
 | 2 | 31b 是否接受 FP8 換 TP=1？ | **已完成**：2026-07-23 品質評測通過（[fp8-eval-report-2026-07-23.md](fp8-eval-report-2026-07-23.md)）後，正式 `gemma-4-31b-vllm` 已切換為 `--quantization fp8` + `--tensor-parallel-size=1`，`enable_thinking` 預設 `false`；舊 bf16 TP=2 設定備份在 `k8s/vllm/gemma-4-31b/deployment.bf16-tp2.yaml.bak` |
 | 3 | 擴縮策略檔位？ | **已定案**：全面採「快擴慢縮」；31b 先手動固定副本觀察，26b 優先接 KEDA |
-| 4 | 浮動池優先權 | **已定案（原則）**：需求大者得，並保留未來新服務加入的彈性；**實作**：PriorityClass + 搶佔（K8s 原生的近似版本），見上方「浮動池優先權的實作落差」 |
-| 5 | 是否引入 Prometheus + KEDA | **已定案**：採用；追加建議疊加 `vllm:gpu_cache_usage_perc` 當輔助擴容 trigger，hostPath 磁碟用量另外做告警（非擴縮訊號） |
+| 4 | 浮動池優先權 | **已實作（2026-07-24）**：`k8s/priorityclasses.yaml` 建了 `gpu-priority-high`(1000, 31b) / `gpu-priority-medium`(500, 26b) / `gpu-priority-low`(100, light-models) 三層 PriorityClass；31b/26b 的 `nodeSelector` 已改為 `gpu-pool: shared` 並掛對應優先權，見下方「下一階段施作順序」第 1、3 項 |
+| 5 | 是否引入 Prometheus + KEDA | **兩者皆已於 2026-07-24 在 ai-x-dev 上線**：Prometheus 精簡版（無 Operator/Grafana）；KEDA 先接 31b（`minReplicaCount=maxReplicaCount=1`，只驗證接線不真的擴容，順序跟原規劃的「先接 26b」相反），雙 trigger 疊加 `vllm:kv_cache_usage_perc`（原文件誤植為 `gpu_cache_usage_perc`，已修正），hostPath 磁碟用量另外做告警（非擴縮訊號） |
 
 ## 下一階段施作順序（2026-07-21 定案，待執行）
 
-1. **節點 label 化**：`kubectl label node` 幫 GPU01/GPU02 貼 `gpu-pool=shared`；
-   `.env` 的 `K8S_GPU_NODE_HOSTNAME` 拆成 `K8S_GPU01_HOSTNAME` / `K8S_GPU02_HOSTNAME`；
-   31b、light-models 改用各自 hostname 釘死節點，26b 改用 `gpu-pool` label 浮動
+1. **節點 label 化**：**已於 2026-07-24 在 ai-x-dev（單節點）完成**，實作與原規劃有一處調整：
+   `31b` 也改成 `gpu-pool` label 浮動（不只 26b），`light-models` 則維持 hostname 硬釘不變——
+   因為 `marker-ingest-pvc` 的 PV 用 `nodeAffinity` 綁死一個 hostname（hostPath 儲存限制），就算
+   Deployment 改用 label 選擇器，pod 實際上仍只能落在那個節點，沒有真正的浮動效果，故暫不改動，
+   等 marker-ingest 換成 RWX 網路儲存後再一起處理。因此 `.env` 的 `K8S_GPU_NODE_HOSTNAME`
+   **沒有**拆成 `K8S_GPU01_HOSTNAME`/`K8S_GPU02_HOSTNAME`（原規劃這步已不需要，因為現在只剩
+   light-models 這一個 hostname 硬釘的消費者），維持單一變數即可。新增 `scripts/label-nodes.sh`
+   包裝 `kubectl label node <hostname> gpu-pool=shared --overwrite`，多節點時對每台新節點各跑一次。
+   到了 GPU01(×4)+GPU02(×2) 正式兩節點拓樸時，兩台都要跑這支腳本；31b 目前沒有硬性規定只能落
+   GPU01，會由 scheduler 依浮動池空卡狀況決定，這點與最初「31b 建議釘 GPU01」的構想不同，之後上
+   兩節點正式環境前應重新評估是否要收斂回硬性拓樸限制。
 2. **31b FP8 品質評測 + 正式切換**：**已於 2026-07-23 完成**。評測見
    [fp8-eval-report-2026-07-23.md](fp8-eval-report-2026-07-23.md)（先用獨立臨時
    `gemma-4-31b-fp8-test` deployment 測試，通過後才收編進正式版、刪除臨時目錄）；正式
@@ -272,12 +280,72 @@ spec:
    `--tensor-parallel-size=1`，`gpu-memory-utilization=0.9`、GPU request 從 2 降到 1；
    `enable_thinking` 預設 `false`。舊 bf16 TP=2 設定備份在同目錄的
    `deployment.bf16-tp2.yaml.bak`（不會被 `deploy.sh` 的 `*.yaml` glob 誤套用）。
-3. **定 PriorityClass**：31b > 26b > 未來新服務，作為「需求大者得」的靜態近似版本
-   （K8s 原生沒有動態依佇列長度分配的機制，見「浮動池優先權的實作落差」）
-4. **裝監控**：kube-prometheus-stack + node-exporter（磁碟用量告警，防
-   DiskPressure 重演）；需另建 PodMonitor（預設不吃現有的
-   `prometheus.io/scrape` annotation）
-5. **上 KEDA**：先只接 26b，雙 trigger（`num_requests_waiting` +
-   `vllm:gpu_cache_usage_perc`），快擴慢縮；31b 先手動固定副本數觀察，
-   跑穩再評估要不要也接
+3. **定 PriorityClass**：**已於 2026-07-24 完成**，`k8s/priorityclasses.yaml`：
+   `gpu-priority-high`(1000, 31b) > `gpu-priority-medium`(500, 26b) > `gpu-priority-low`(100,
+   light-models，先設定好以便日後真正浮動時直接生效)，作為「需求大者得」的靜態近似版本
+   （K8s 原生沒有動態依佇列長度分配的機制，見「浮動池優先權的實作落差」）。注意
+   `PriorityClass` 是 cluster-scoped、不分 namespace，任何 namespace 的 pod 都能引用同一組
+   class 加入搶佔序列（例如未來的批次/fine-tuning job），目前未加 RBAC/`ResourceQuota`
+   限制哪個 namespace 能用哪個 class。
+4. **裝監控**：**已於 2026-07-24 在 ai-x-dev 上線，但走精簡版而非 kube-prometheus-stack**——
+   使用者當時決定這台開發機磁碟已 91% 滿、且只需要「盯 GPU pod + 磁碟」，不需要完整
+   Operator/CRD/Grafana/Alertmanager/kube-state-metrics，改成：
+   - 純 `prom/prometheus` Deployment（無 Operator），靠 `kubernetes_sd_configs: role: pod` +
+     `relabel_configs` 直接吃現有 vLLM deployment 上早就有的 `prometheus.io/scrape`
+     annotation（不需要 PodMonitor CRD）；RBAC 用 namespace-scoped `Role`（非
+     `ClusterRole`），scrape 範圍鎖在 `ai-platform` namespace 內
+   - `node-exporter` DaemonSet 監控磁碟（`NodeDiskUsageHigh` 告警規則，>80% 觸發，見
+     `k8s/monitoring/configmap.yaml`）；**沒裝 Alertmanager**，告警只能在 Prometheus 自己的
+     `/alerts` 頁面看，沒有 Slack/email 等通知路由
+   - Retention `--storage.tsdb.retention.time=5d` + `--storage.tsdb.retention.size=4GB`
+     雙上限、PVC 只給 5Gi——刻意保守，因為磁碟緊
+   - 檔案位置：`k8s/monitoring/`（rbac.yaml、configmap.yaml、prometheus-deployment.yaml、
+     node-exporter-daemonset.yaml），`./scripts/deploy.sh monitoring` 套用（**不在
+     `deploy_all()` 裡**，比照 `openwebui-functions` 視為選配元件）
+   - **之後若要正式上 GPU01+GPU02 兩節點且想要 Grafana 儀表板/多方告警路由**，這個精簡版
+     不會自動長成 kube-prometheus-stack，需要另外評估是否要換裝（兩者資料模型相容，PromQL
+     query 不用改，但物件/RBAC/CRD 要重新規劃）
+5. **上 KEDA**：**已於 2026-07-24 在 ai-x-dev 上線，但跟原規劃順序相反**——使用者這次決定
+   先接 **31b**（原規劃是先接 26b、31b 先手動觀察）。實作與注意事項：
+   - KEDA operator 用 Helm 裝（`helm install keda kedacore/keda --namespace keda
+     --create-namespace`），獨立 `keda` namespace，不在 `deploy.sh` 管理範圍內（一次性
+     cluster bootstrap）
+   - `k8s/keda/scaledobject-gemma-4-31b.yaml`：雙 trigger（`vllm:num_requests_waiting`
+     threshold=5 + `vllm:kv_cache_usage_perc` threshold=0.9），`./scripts/deploy.sh keda`
+     套用（**不納入 `deploy_all()`**，跟 monitoring/openwebui-functions 一樣是選配步驟）
+   - **`minReplicaCount = maxReplicaCount = 1`，刻意不放大**：這台開發機只有 2 張 GPU，
+     31b/26b 各佔一張已滿載；31b 的 `priorityClassName`（`gpu-priority-high`）比 26b
+     （`gpu-priority-medium`）高，若放大 `maxReplicaCount` 讓 31b 真的擴出第 2 副本，
+     資源不足時 K8s 會直接搶佔驅逐 26b 來騰出 GPU，中斷正在使用 26b 的使用者。目前只是把
+     KEDA/HPA/Prometheus 查詢這條線接通、驗證數值正確讀得到，不會真的觸發任何擴容；
+     之後要真的放大 `maxReplicaCount`，要先想清楚跟 26b 搶卡這件事怎麼處理（回頭看「浮動池
+     優先權的實作落差」）
+   - **修正一個文件錯誤**：本文件先前多處寫的 `vllm:gpu_cache_usage_perc` 是錯的，實測這版
+     vLLM（v0.23.0）暴露的正確 metric 名稱是 **`vllm:kv_cache_usage_perc`**，已全文修正
+   - **26b 已於同日跟進接上**（`k8s/keda/scaledobject-gemma-4-26b.yaml`），同樣
+     `minReplicaCount=maxReplicaCount=1`，只驗證接線不真的擴容；兩個 ScaledObject
+     現在都是 `Ready=True`，HPA 都能正確讀到即時數值，兩邊既有 pod 皆未被動到
+
+   ### 之後要真的測試觸發擴容時（2026-07-24 討論，尚未執行）
+
+   目前兩個 ScaledObject 都是 `minReplicaCount=maxReplicaCount=1`，不會真的擴容。之後想實際驗證
+   KEDA 有沒有真的接對、觸發時的行為，先看清楚兩邊風險不對稱：
+
+   | 放大對象 | 觸發後果 | 風險 |
+   |---|---|---|
+   | **26b**（`gpu-priority-medium`）想擴第 2 副本 | 這台機器沒有空 GPU，26b 搶不贏 31b（優先權更高），新副本卡在 `Pending`，**不會**踢掉任何人 | 安全，頂多擴容失敗 |
+   | **31b**（`gpu-priority-high`）想擴第 2 副本 | 一樣沒有空 GPU，但 31b 優先權更高，K8s 會**直接搶佔驅逐正在跑的 26b pod** 來騰出卡 | **會中斷正在用 26b 的使用者**——這是 PriorityClass 設計上刻意的行為，不是 bug |
+
+   **建議：先測 26b（安全），31b 的觸發測試要挑維護時段**（因為會真的踢掉 26b）。測試步驟：
+
+   1. 把要測的模型的 `maxReplicaCount` 調大（例如 26b 改成 2），`kubectl apply -f
+      k8s/keda/scaledobject-gemma-4-26b.yaml` 套用即可，不用重啟現有 pod
+   2. 產生足夠併發請求，把 `vllm:num_requests_waiting` 推過 5、或 `vllm:kv_cache_usage_perc` 推過
+      0.9——併發數要超過該模型的 `max-num-seqs`（26b 是 256，門檻較高；31b 較容易觸發），可以寫
+      小腳本背景併發打長回覆的 chat completion，或用 `hey`/`vegeta` 這類工具直接打 vLLM service
+   3. 一邊用 `kubectl get hpa -n ai-platform -w` 或 Prometheus UI
+      （`kubectl port-forward -n ai-platform svc/prometheus 9090:9090`）盯著數值，觀察 KEDA
+      是否真的把 replica 數推上去、新 pod 排到哪裡；測 31b 的話同時觀察 26b 是否真的被驅逐
+      （`kubectl get pods -n ai-platform -w`）
+   4. 測完把 `maxReplicaCount` 改回 1，恢復現在這個安全狀態
 6. **視偏斜情況**補 least-request LB / 進階路由（第四層）

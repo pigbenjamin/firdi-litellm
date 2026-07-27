@@ -1,0 +1,73 @@
+# DaemonSet：每個節點各跑一份，監控該節點本身的 CPU/記憶體/磁碟（跟 GPU pod 無關，
+# 純粹是主機層級指標）。用 prometheus.io/* annotation 讓既有的 annotation-based
+# scrape config（k8s/monitoring/configmap.yaml）自動撿到，不用額外開一個 job。
+#
+# 用 9101 而非 node_exporter 慣例的 9100：這台機器（ai-x-dev）的 9100 port 在
+# host network namespace 已被其他東西佔用（這台機器同時跑著 enterprise-brain、
+# ai-test-bypass 等其他專案的 namespace，來源不明、沒有 root 權限查證，2026-07-24
+# 排查時決定不去猜測動它，改埠避開衝突）。多節點/新環境部署前，建議先確認目標節點
+# 9101 是否也空著。
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: node-exporter
+  namespace: ai-platform
+  labels:
+    app: node-exporter
+spec:
+  selector:
+    matchLabels:
+      app: node-exporter
+  template:
+    metadata:
+      labels:
+        app: node-exporter
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9101"
+        prometheus.io/path: "/metrics"
+    spec:
+      hostNetwork: true
+      hostPID: true
+      tolerations:
+        - operator: Exists
+      containers:
+        - name: node-exporter
+          image: prom/node-exporter:v1.8.2
+          args:
+            - --path.procfs=/host/proc
+            - --path.sysfs=/host/sys
+            - --path.rootfs=/host/root
+            - --collector.filesystem.mount-points-exclude=^/(dev|proc|sys|var/lib/docker/.+|var/lib/kubelet/.+)($|/)
+            - --web.listen-address=:9101
+          ports:
+            - containerPort: 9101
+              hostPort: 9101
+              name: metrics
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          volumeMounts:
+            - name: proc
+              mountPath: /host/proc
+              readOnly: true
+            - name: sys
+              mountPath: /host/sys
+              readOnly: true
+            - name: root
+              mountPath: /host/root
+              readOnly: true
+      volumes:
+        - name: proc
+          hostPath:
+            path: /proc
+        - name: sys
+          hostPath:
+            path: /sys
+        - name: root
+          hostPath:
+            path: /

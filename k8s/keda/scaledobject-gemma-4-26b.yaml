@@ -1,0 +1,29 @@
+# 2026-07-24：跟 gemma-4-31b-vllm 同時接上（見同目錄 scaledobject-gemma-4-31b.yaml
+# 開頭註解）。同樣 minReplicaCount = maxReplicaCount = 1——這台開發機只有 2 張 GPU，
+# 31b/26b 各佔一張已滿載，這裡先只驗證 KEDA 接線與 Prometheus 查詢是否正確，不會真的
+# 觸發任何擴容。之後要放大 maxReplicaCount 前，要注意 26b 的 priorityClassName
+# （gpu-priority-medium）比 31b（gpu-priority-high）低，26b 自己想擴出第 2 副本時，
+# 若跟 31b 搶同一張卡，會是 26b 這邊排不上去、卡在 Pending，不是搶佔別人。
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: gemma-4-26b-vllm
+  namespace: ai-platform
+spec:
+  scaleTargetRef:
+    name: gemma-4-26b-vllm
+  minReplicaCount: 1
+  maxReplicaCount: 1
+  pollingInterval: 30
+  cooldownPeriod: 1800
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus.ai-platform.svc.cluster.local:9090
+        query: avg(vllm:num_requests_waiting{app="gemma-4-26b-vllm"})
+        threshold: "5"
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus.ai-platform.svc.cluster.local:9090
+        query: avg(vllm:kv_cache_usage_perc{app="gemma-4-26b-vllm"})
+        threshold: "0.9"

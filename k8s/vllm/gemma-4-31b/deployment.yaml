@@ -23,9 +23,11 @@ spec:
         prometheus.io/path: "/metrics"
     spec:
       runtimeClassName: nvidia
-      # 多節點叢集：釘選到有 GPU 的節點（同時也是 hf-cache hostPath 所在節點）
+      # 浮動 GPU 池：排到任一貼了 gpu-pool=shared label 的節點（見 scripts/label-nodes.sh）
       nodeSelector:
-        kubernetes.io/hostname: ${K8S_GPU_NODE_HOSTNAME}
+        gpu-pool: shared
+      # 浮動池最高優先權：資源不足時可搶佔 26b/light-models（見 k8s/priorityclasses.yaml）
+      priorityClassName: gpu-priority-high
       containers:
         - name: vllm
           image: vllm/vllm-openai:v0.23.0

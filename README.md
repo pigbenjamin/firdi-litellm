@@ -209,12 +209,18 @@ Admin API 啟動後在 `http://<node-ip>:30408`，API 文件在 `/docs`。`./scr
 
 ### 6. 部署 vLLM 服務
 
-`k8s/vllm/*/deployment.yaml` 都用了 `${K8S_GPU_NODE_HOSTNAME}` / `${K8S_HF_CACHE_HOST_PATH}` 模板變數，需要 `envsubst` 展開，不能直接 `kubectl apply -f`——否則 nodeSelector / hostPath 會變成字面上的 `${...}` 字串，pod 會卡在 Pending 且找不到明顯錯誤原因：
+`gemma-4-31b` / `gemma-4-26b` 走浮動 GPU 池（`nodeSelector: {gpu-pool: shared}` + `priorityClassName`），部署前要先幫 GPU 節點貼 label、套用 PriorityClass，否則 pod 會卡 `Pending`：
+
+```bash
+./scripts/label-nodes.sh                              # 單節點 k3s：不帶參數即標記本機
+kubectl apply -f k8s/priorityclasses.yaml              # 或 ./scripts/deploy.sh priorityclasses
+```
+
+`k8s/vllm/*/deployment.yaml` 也用了 `${K8S_HF_CACHE_HOST_PATH}`（light-models 另需 `${K8S_GPU_NODE_HOSTNAME}`，見 [docs/deploy.md](docs/deploy.md) 4.2 節）模板變數，需要 `envsubst` 展開，不能直接 `kubectl apply -f`——否則 hostPath 會變成字面上的 `${...}` 字串，pod 會卡在 Pending 且找不到明顯錯誤原因：
 
 ```bash
 # 依序部署（首次啟動需下載模型 + 編譯，Gemma 4 約 15~25 分鐘，見「vLLM 部署要點」）
 source .env
-export K8S_GPU_NODE_HOSTNAME="${K8S_GPU_NODE_HOSTNAME:-$(hostname)}"
 export K8S_HF_CACHE_HOST_PATH="${K8S_HF_CACHE_HOST_PATH:-/opt/firdi/hf-cache}"
 
 for f in k8s/vllm/gemma-4-31b/*.yaml k8s/vllm/gemma-4-26b/*.yaml; do

@@ -13,13 +13,19 @@
 #   ./scripts/deploy.sh secrets      # 只建立 Secrets
 #   ./scripts/deploy.sh status       # 顯示所有 Pod/Service 狀態
 #   ./scripts/deploy.sh openwebui-functions  # 只套用 OpenWebUI Functions（思考模式按鈕等）
+#   ./scripts/deploy.sh priorityclasses  # 只套用浮動池 PriorityClass（gpu-priority-high/medium/low）
+#   ./scripts/deploy.sh monitoring    # 只套用 Prometheus + node-exporter（精簡版，選配）
+#   ./scripts/deploy.sh keda         # 只套用 KEDA ScaledObject（KEDA operator 需先用 Helm 裝好）
 #
 # users-db-pvc / litellm-logs-pvc 走 storageClassName 動態佈建（.env 的
 # K8S_PVC_STORAGE_CLASS，單節點 k3s 預設 local-path，公司 Ceph 叢集設
 # rook-ceph-block），不再是 hostPath，admin-api 用 podAffinity 釘住 litellm 所在
 # 節點才能兩者都掛上同一顆 RWO PVC。hf-cache / marker-ingest 仍是 hostPath，多節點
-# 叢集：.env 設定 REGISTRY（推送 image 用）與 K8S_GPU_NODE_HOSTNAME（釘選這兩個
-# hostPath 相關 Pod 的節點），單節點 k3s 可全部留空。
+# 叢集：.env 設定 REGISTRY（推送 image 用）與 K8S_GPU_NODE_HOSTNAME（釘選 light-models
+# / marker-ingest 這組 hostPath 相關 Pod 的節點），單節點 k3s 可全部留空。
+# gemma-4-31b / gemma-4-26b 改走浮動 GPU 池（nodeSelector: gpu-pool=shared +
+# PriorityClass 搶佔），部署前記得先對每個 GPU 節點跑過一次
+# `./scripts/label-nodes.sh`，否則 pod 會卡 Pending。
 
 set -euo pipefail
 
@@ -181,6 +187,13 @@ deploy_storage() {
     ok "PVC 完成（storageClassName: $K8S_PVC_STORAGE_CLASS）"
 }
 
+# ── PriorityClass（浮動 GPU 池搶佔優先權）──────────────────────────────────────
+deploy_priorityclasses() {
+    info "套用 PriorityClass（gpu-priority-high/medium/low）..."
+    kubectl apply -f "$REPO_ROOT/k8s/priorityclasses.yaml"
+    ok "PriorityClass 完成"
+}
+
 # users-db-pvc 是動態佈建（Ceph/local-path），host 端不再能像過去 hostPath 那樣
 # 直接寫檔案進 PV 內容，改成本機準備一份 users.db，用 kubectl cp 灌進已經掛載
 # users-db-pvc 的 litellm Pod。只在 PVC 內還沒有 users.db 時才動手，避免每次重跑
@@ -250,6 +263,9 @@ deploy_vllm() {
     local name="$1"   # gemma-4-31b / gemma-4-26b / light-models
     local dir="$REPO_ROOT/k8s/vllm/$name"
 
+    # 31b/26b 已改走浮動池（nodeSelector: gpu-pool=shared），不再吃這個變數；
+    # 只有 light-models（仍 hostname 硬釘，見該 deployment.yaml 註解）與
+    # marker-ingest-pvc 還需要它
     export K8S_GPU_NODE_HOSTNAME="${K8S_GPU_NODE_HOSTNAME:-$(hostname)}"
 
     if [[ "$name" == "light-models" ]]; then
@@ -263,7 +279,11 @@ deploy_vllm() {
         envsubst < "$REPO_ROOT/k8s/shared-storage/marker-ingest-pvc.yaml" | kubectl apply -f -
     fi
 
-    info "部署 $name vLLM（GPU node: $K8S_GPU_NODE_HOSTNAME）..."
+    if [[ "$name" == "light-models" ]]; then
+        info "部署 $name vLLM（GPU node: $K8S_GPU_NODE_HOSTNAME，hostname 硬釘）..."
+    else
+        info "部署 $name vLLM（浮動池：gpu-pool=shared）..."
+    fi
     export K8S_HF_CACHE_HOST_PATH="${K8S_HF_CACHE_HOST_PATH:-/opt/firdi/hf-cache}"
     for f in "$dir"/*.yaml; do
         envsubst < "$f" | kubectl apply -f -
@@ -339,6 +359,35 @@ deploy_openwebui_functions() {
     esac
 }
 
+# ── KEDA ScaledObject ─────────────────────────────────────────────────────────
+# 刻意不納入 deploy_all：KEDA operator 本身是一次性 cluster bootstrap，用 Helm 裝
+# （不在 deploy.sh 管理範圍）：
+#   helm repo add kedacore https://kedacore.github.io/charts && helm repo update
+#   helm install keda kedacore/keda --namespace keda --create-namespace
+# 這裡只管 k8s/keda/ 底下的 ScaledObject（针對個別模型接上 KEDA），KEDA operator
+# 沒裝的話 apply 會因為 CRD 不存在而失敗。
+deploy_keda() {
+    info "套用 KEDA ScaledObject..."
+    for f in "$REPO_ROOT"/k8s/keda/*.yaml; do
+        kubectl apply -f "$f"
+    done
+    ok "KEDA ScaledObject 套用完成"
+}
+
+# ── Monitoring（精簡版 Prometheus + node-exporter）───────────────────────────────
+# 刻意不納入 deploy_all：這是選配的觀測性元件（2026-07-24 決定精簡版，只抓
+# ai-platform 內有 prometheus.io/scrape annotation 的 pod，5 天 retention），
+# 不是每個新環境一定要有的核心服務；見 k8s/monitoring/、docs/gpu-optimization.md。
+deploy_monitoring() {
+    info "部署 Monitoring（Prometheus + node-exporter）..."
+    kubectl apply -f "$REPO_ROOT/k8s/monitoring/rbac.yaml"
+    kubectl apply -f "$REPO_ROOT/k8s/monitoring/configmap.yaml"
+    export K8S_PVC_STORAGE_CLASS="${K8S_PVC_STORAGE_CLASS:-local-path}"
+    envsubst < "$REPO_ROOT/k8s/monitoring/prometheus-deployment.yaml" | kubectl apply -f -
+    kubectl apply -f "$REPO_ROOT/k8s/monitoring/node-exporter-daemonset.yaml"
+    ok "Monitoring 套用完成（Prometheus UI：kubectl port-forward -n $NS svc/prometheus 9090:9090）"
+}
+
 # ── Status ────────────────────────────────────────────────────────────────────
 show_status() {
     echo ""
@@ -361,6 +410,7 @@ show_status() {
 deploy_all() {
     deploy_secrets
     deploy_storage
+    deploy_priorityclasses
     deploy_vllm gemma-4-31b
     deploy_vllm gemma-4-26b
     deploy_vllm light-models
@@ -389,6 +439,7 @@ main() {
         storage)      deploy_storage ;;
         users-db)     seed_users_db ;;
         secrets)      deploy_secrets ;;
+        priorityclasses) deploy_priorityclasses ;;
         gemma-4-31b)  deploy_vllm gemma-4-31b ;;
         gemma-4-26b)  deploy_vllm gemma-4-26b ;;
         light-models) deploy_vllm light-models ;;
@@ -396,8 +447,10 @@ main() {
         admin-api)    deploy_admin_api ;;
         status)       show_status ;;
         openwebui-functions) deploy_openwebui_functions ;;
+        monitoring)   deploy_monitoring ;;
+        keda)         deploy_keda ;;
         *)
-            echo "用法: $0 [all|storage|users-db|secrets|gemma-4-31b|gemma-4-26b|light-models|litellm|admin-api|openwebui-functions|status]"
+            echo "用法: $0 [all|storage|priorityclasses|users-db|secrets|gemma-4-31b|gemma-4-26b|light-models|litellm|admin-api|openwebui-functions|monitoring|keda|status]"
             exit 1
             ;;
     esac

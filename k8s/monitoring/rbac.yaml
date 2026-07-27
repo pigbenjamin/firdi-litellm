@@ -1,0 +1,32 @@
+# 精簡版 Prometheus 只需要在 ai-platform namespace 內做 pod service discovery
+# （kubernetes_sd_configs: role: pod），刻意用 namespace-scoped Role 而非
+# ClusterRole/ClusterRoleBinding——不需要看到其他 namespace 的 pod，維持最小權限。
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus
+  namespace: ai-platform
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: prometheus
+  namespace: ai-platform
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: prometheus
+  namespace: ai-platform
+subjects:
+  - kind: ServiceAccount
+    name: prometheus
+    namespace: ai-platform
+roleRef:
+  kind: Role
+  name: prometheus
+  apiGroup: rbac.authorization.k8s.io

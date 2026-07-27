@@ -23,9 +23,14 @@ spec:
         prometheus.io/path: "/metrics"
     spec:
       runtimeClassName: nvidia
-      # 多節點叢集：釘選到有 GPU 的節點（同時也是 hf-cache / marker-ingest hostPath 所在節點）
+      # 尚未加入浮動池（gpu-pool: shared）：marker-ingest-pvc 的 PV 用 nodeAffinity 硬釘同一
+      # hostname（hostPath 儲存限制），即使這裡改成 label 選擇器，pod 實際上仍只能落在那個節點，
+      # 沒有真正的浮動效果，故暫維持 hostname 硬釘。日後 marker-ingest 換成 RWX 網路儲存後再改。
       nodeSelector:
         kubernetes.io/hostname: ${K8S_GPU_NODE_HOSTNAME}
+      # 浮動池最低優先權（先設定好，等未來真正浮動時直接生效；目前 hostname 硬釘下，若同節點
+      # 上 31b/26b 需要搶佔資源，仍會依此優先權驅逐 light-models）
+      priorityClassName: gpu-priority-low
       containers:
         # 單一 container 同時跑 embed-vllm（port 8000）與 marker-service（port 8766），
         # 共用同一份 nvidia.com/gpu: 1 配額 — 這個叢集的 device plugin 是整張 GPU

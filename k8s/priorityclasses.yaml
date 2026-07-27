@@ -1,0 +1,26 @@
+# 浮動 GPU 池（nodeSelector: gpu-pool=shared）搶佔優先權，數字越大優先權越高。
+# 資源不足時，K8s 會驅逐同節點上較低優先權的 pod 來讓較高優先權的 pod 排上去。
+# 見 docs/gpu-optimization.md「浮動池優先權的實作落差」。
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: gpu-priority-high
+value: 1000
+globalDefault: false
+description: "gemma-4-31b（思考型/精品層），浮動池最高優先權"
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: gpu-priority-medium
+value: 500
+globalDefault: false
+description: "gemma-4-26b（快捷型），浮動池中等優先權"
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: gpu-priority-low
+value: 100
+globalDefault: false
+description: "light-models（embed + marker-service），浮動池最低優先權；目前 nodeSelector 仍走 hostname 硬釘（見 marker-ingest-pvc 限制），但仍納入優先權序列以便日後 RWX 化後直接生效"

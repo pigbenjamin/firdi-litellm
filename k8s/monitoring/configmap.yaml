@@ -1,0 +1,58 @@
+# 精簡版 Prometheus：不用 Operator/CRD（ServiceMonitor/PodMonitor），純用
+# kubernetes_sd_configs + prometheus.io/* annotation 做 service discovery——
+# 剛好呼應 vLLM deployment 上早就加好、但一直沒人收的 prometheus.io/scrape
+# annotation（見 docs/gpu-optimization.md）。scrape 範圍限縮在 ai-platform
+# namespace，且只挑有 annotation 的 pod（目前是 3 個 vLLM + node-exporter）。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: ai-platform
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
+
+    rule_files:
+      - /etc/prometheus/rules/*.yml
+
+    scrape_configs:
+      - job_name: annotated-pods
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names:
+                - ai-platform
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+            action: keep
+            regex: "true"
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+            action: replace
+            target_label: __metrics_path__
+            regex: (.+)
+          - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+            action: replace
+            regex: ([^:]+)(?::\d+)?;(\d+)
+            replacement: $1:$2
+            target_label: __address__
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            target_label: app
+
+  disk-alerts.yml: |
+    groups:
+      - name: disk-usage
+        rules:
+          - alert: NodeDiskUsageHigh
+            expr: (1 - node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) * 100 > 80
+            for: 10m
+            labels:
+              severity: warning
+            annotations:
+              summary: "節點根目錄磁碟使用率超過 80%（{{ $value | printf \"%.1f\" }}%）"
+              description: "此前有過 DiskPressure 導致全 namespace pod 被驅逐的前科，建議清 repo/.cache、舊模型或 docker prune。沒裝 Alertmanager，需自行看 Prometheus /alerts 頁面。"

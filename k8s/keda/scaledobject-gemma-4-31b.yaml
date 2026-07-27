@@ -1,0 +1,33 @@
+# 2026-07-24：先接 31b（原規劃是先接 26b，這次使用者決定反過來優先接 31b）。
+# minReplicaCount = maxReplicaCount = 1：這台開發機只有 2 張 GPU、31b/26b 各佔一張、
+# 全滿載，若真的放大 maxReplicaCount 讓 31b 擴出第 2 副本，因為 31b 的
+# priorityClassName（gpu-priority-high）比 26b（gpu-priority-medium）高，K8s 會直接
+# 搶佔驅逐 26b 來騰出 GPU，中斷正在使用 26b 的使用者。這裡先設 1，只驗證 KEDA 接線與
+# Prometheus 查詢是否正確、不會真的觸發任何擴容，之後要放大再手動改（見
+# docs/gpu-optimization.md「浮動池優先權的實作落差」）。
+#
+# vllm:kv_cache_usage_perc 是這版 vLLM（v0.23.0）的正確 metric 名稱——
+# docs/gpu-optimization.md 原本寫的 vllm:gpu_cache_usage_perc 是錯的，查證後已修正。
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: gemma-4-31b-vllm
+  namespace: ai-platform
+spec:
+  scaleTargetRef:
+    name: gemma-4-31b-vllm
+  minReplicaCount: 1
+  maxReplicaCount: 1
+  pollingInterval: 30
+  cooldownPeriod: 1800
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus.ai-platform.svc.cluster.local:9090
+        query: avg(vllm:num_requests_waiting{app="gemma-4-31b-vllm"})
+        threshold: "5"
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus.ai-platform.svc.cluster.local:9090
+        query: avg(vllm:kv_cache_usage_perc{app="gemma-4-31b-vllm"})
+        threshold: "0.9"

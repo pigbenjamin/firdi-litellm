@@ -55,6 +55,42 @@ handler: nvidia
 EOF
 ```
 
+### ⚠️ Device Plugin 本身也要指定 `runtimeClassName`（2026-07-27 gpu01 踩過的坑）
+
+上面兩步只解決「這顆節點有能力用 nvidia runtime 起容器」，**不代表任何 Pod 會自動套用它**——每個 Pod 都要自己在 spec 裡宣告 `runtimeClassName: nvidia` 才會生效，**包括 device plugin 自己**。用官方 `nvdp/nvidia-device-plugin` Helm chart（非 GPU Operator）安裝時，這個值預設是空字串、不會自動帶入，必須手動指定：
+
+```bash
+helm repo add nvdp https://nvidia.github.io/k8s-device-plugin
+helm install nvidia-device-plugin nvdp/nvidia-device-plugin \
+  -n kube-system --create-namespace \
+  --set runtimeClassName=nvidia
+```
+
+**這個坑很難被發現**：漏設的話 device plugin 的 Pod 仍會正常建立、正常啟動（不會卡在建立階段，跟上面「沒有 `RuntimeClass` 物件」的症狀完全不同），只是 container 內部呼叫 NVML 初始化 GPU 時失敗，log 會看到：
+
+```
+Failed to initialize NVML: ERROR_LIBRARY_NOT_FOUND
+```
+
+host 上直接跑 `nvidia-smi`、`nvidia-container-cli info` 都完全正常（問題只發生在這個 container 沒被套用 nvidia runtime），容易誤判成驅動問題而繞遠路。症狀：`kubectl describe node` 的 Capacity/Allocatable **完全沒有 `nvidia.com/gpu` 這個 key**（不是數字 0，是整行不存在），所有請求 GPU 的 Pod 全部 `Pending`；如果節點曾經正常註冊過、後來 device plugin pod 重啟失敗，既有的 GPU workload 會變成 `UnexpectedAdmissionError`。
+
+檢查現況：
+
+```bash
+kubectl get daemonset -n kube-system nvidia-device-plugin -o yaml | grep runtimeClassName
+```
+
+沒有輸出就是漏了，補上（`--version` 記得釘住目前版本號，避免順便跳版）：
+
+```bash
+helm upgrade nvidia-device-plugin nvdp/nvidia-device-plugin -n kube-system \
+  --version <目前版本> --reuse-values --set runtimeClassName=nvidia
+```
+
+這個設定寫進 Helm release / etcd 裡，跟上面 containerd 設定、`RuntimeClass` 物件一樣是持久化的宣告式狀態，**重開機不會消失、不需要每次重做**。
+
+> 若走 GPU Operator 安裝（見上方），這件事通常由 Operator 內部處理好，但建議裝完還是照上面指令查一次確認。
+
 ## 1. Clone 專案
 
 ```bash
@@ -125,17 +161,24 @@ K8S_IMAGE_PULL_SECRET=ghcr-pull-secret   # 叢集端 pull 用的 k8s secret 名�
 > - 在單節點開發機上跑，會連這台機器自己的 admin-api / light-models 也一起用 GHCR image 重新部署一次（`imagePullPolicy` 變 `Always`）。這台機器要能連到 `ghcr.io`；如果 package 設為 private，這台機器的 `.env` 也要填 `K8S_IMAGE_PULL_SECRET`，否則這裡的 rollout 會 `ImagePullBackOff`。
 > - 目標的多節點叢集那邊**還是要自己 clone 這個 repo、填一樣的 `REGISTRY`（+ 若私有則含 `REGISTRY_USERNAME`/`REGISTRY_PASSWORD`/`K8S_IMAGE_PULL_SECRET`）、在那邊跑 `deploy.sh`**——它會在那台機器上重新 build 一次再 push（同一個 tag，蓋掉沒差），不是只把已經 push 好的 image 抓下來就結束。
 
-### 4.2 hostPath 節點釘選（nodeAffinity / nodeSelector）
+### 4.2 節點釘選：浮動池（gpu-pool label）vs hostPath 硬釘（nodeAffinity / nodeSelector）
 
-`.env` 設定 `K8S_GPU_NODE_HOSTNAME`，指定 hf-cache / marker-ingest 這兩個 hostPath 實際落在哪個節點（值需與 `kubectl get nodes` 印出的 `NAME` 一致）：
+`gemma-4-31b` / `gemma-4-26b` 已改走**浮動 GPU 池**：`nodeSelector: {gpu-pool: shared}` + `priorityClassName`（`gpu-priority-high` / `gpu-priority-medium`，見 `k8s/priorityclasses.yaml`）。部署前要先幫每個 GPU 節點貼上 label：
+
+```bash
+./scripts/label-nodes.sh            # 單節點 k3s：不帶參數，標記本機 hostname
+./scripts/label-nodes.sh gpu01 gpu02  # 多節點：標記指定的節點
+```
+
+沒貼過這個 label 的節點，31b/26b 的 pod 會卡在 `Pending`。`k8s/priorityclasses.yaml` 是叢集層級資源，`./scripts/deploy.sh priorityclasses`（或 `deploy.sh all` 已內含）套用一次即可，之後新增服務只要引用同一組 `gpu-priority-*` 就能加入搶佔序列。
+
+`light-models` **仍是 hostname 硬釘**，還沒加入浮動池：它掛的 `marker-ingest-pvc` 是 hostPath PV，`nodeAffinity` 綁死一個 hostname（見下方），就算 Deployment 改用 `gpu-pool` label 選擇器，pod 實際上還是只能落在那個節點，不會真的浮動；要等 marker-ingest 換成 RWX 網路儲存才能一起改。`.env` 的 `K8S_GPU_NODE_HOSTNAME` 因此只剩 light-models 的 `nodeSelector` 與 `marker-ingest-pv` 的 `nodeAffinity` 在用（值需與 `kubectl get nodes` 印出的 `NAME` 一致）：
 
 ```bash
 kubectl get nodes   # 確認節點名稱
 
-K8S_GPU_NODE_HOSTNAME=node-b       # 承載 K8S_HF_CACHE_HOST_PATH / K8S_MARKER_INGEST_HOST_PATH 的節點（有 GPU 的那台）
+K8S_GPU_NODE_HOSTNAME=node-b       # 承載 K8S_MARKER_INGEST_HOST_PATH 的節點（light-models 所在節點）
 ```
-
-`K8S_GPU_NODE_HOSTNAME`：寫進 3 個 vLLM deployment 的 `nodeSelector`，以及 `marker-ingest-pv` 的 `nodeAffinity`。理論上 GPU 資源請求（`nvidia.com/gpu`）本身就會把這些 pod 排到有 GPU 的節點，但叢集若有多台 GPU 節點、且 hostPath 目錄只存在其中一台時，明確指定 `nodeSelector` 才不會排錯台。
 
 單節點 k3s 這個變數留空即可，`deploy.sh` 會自動帶入 `$(hostname)`。
 
@@ -145,9 +188,9 @@ K8S_GPU_NODE_HOSTNAME=node-b       # 承載 K8S_HF_CACHE_HOST_PATH / K8S_MARKER_
 
 #### 事後修改 `K8S_GPU_NODE_HOSTNAME`（叢集已在跑）
 
-單改 `.env` 沒有用——這兩個變數只在 `deploy.sh` 跑 `envsubst` 展開 yaml 時才生效，要重新 apply 受影響的資源：
+單改 `.env` 沒有用——這個變數只在 `deploy.sh` 跑 `envsubst` 展開 yaml 時才生效，要重新 apply 受影響的資源（現在只剩 light-models 這條路徑會用到；31b/26b 已改走 `gpu-pool` label，換節點只要對新節點多跑一次 `./scripts/label-nodes.sh`，不用碰這個變數）：
 
-- 3 個 vLLM deployment 的 `nodeSelector`：直接重跑 `deploy.sh` 對應指令即可（`strategy: Recreate`，pod 會自動重排到新節點）。
+- `light-models` 的 `nodeSelector`：直接重跑 `deploy.sh light-models` 即可（`strategy: Recreate`，pod 會自動重排到新節點）。
 - `marker-ingest-pv` 的 `nodeAffinity`：**建立後不可修改**，`kubectl apply` 會被拒絕，要先刪掉 PVC/PV 再重建（hostPath + `Retain`，磁碟資料不會被動到）。
 
 ```bash
@@ -161,8 +204,6 @@ kubectl delete pvc marker-ingest-pvc -n ai-platform
 kubectl delete pv marker-ingest-pv
 
 # 3. 重新部署（light-models 會順便用新的 K8S_GPU_NODE_HOSTNAME 重建 PV/PVC）
-./scripts/deploy.sh gemma-4-31b
-./scripts/deploy.sh gemma-4-26b
 ./scripts/deploy.sh light-models
 ```
 
