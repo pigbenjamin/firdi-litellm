@@ -326,7 +326,7 @@ spec:
      `minReplicaCount=maxReplicaCount=1`，只驗證接線不真的擴容；兩個 ScaledObject
      現在都是 `Ready=True`，HPA 都能正確讀到即時數值，兩邊既有 pod 皆未被動到
 
-   ### 之後要真的測試觸發擴容時（2026-07-24 討論，尚未執行）
+   ### 之後要真的測試觸發擴容時（2026-07-24 討論；**26b 已於 2026-07-27 執行，結果見文末**）
 
    目前兩個 ScaledObject 都是 `minReplicaCount=maxReplicaCount=1`，不會真的擴容。之後想實際驗證
    KEDA 有沒有真的接對、觸發時的行為，先看清楚兩邊風險不對稱：
@@ -334,7 +334,7 @@ spec:
    | 放大對象 | 觸發後果 | 風險 |
    |---|---|---|
    | **26b**（`gpu-priority-medium`）想擴第 2 副本 | 這台機器沒有空 GPU，26b 搶不贏 31b（優先權更高），新副本卡在 `Pending`，**不會**踢掉任何人 | 安全，頂多擴容失敗 |
-   | **31b**（`gpu-priority-high`）想擴第 2 副本 | 一樣沒有空 GPU，但 31b 優先權更高，K8s 會**直接搶佔驅逐正在跑的 26b pod** 來騰出卡 | **會中斷正在用 26b 的使用者**——這是 PriorityClass 設計上刻意的行為，不是 bug |
+   | **31b**（`gpu-priority-high`）想擴第 2 副本 | 一樣沒有空 GPU，但 31b 優先權更高，K8s 會**直接搶佔驅逐正在跑的 26b pod** 來騰出卡 | **會中斷正在用 26b 的使用者**——這是 PriorityClass 設計上刻意的行為，不是 bug。**2026-07-28 實測記錄**：前兩次測試曾觸發驅動層級的 Xid 120 GPU 故障（見文末「31b 擴容測試事故」），驅動升級到 `580.173.02` 後第三次重測已確認解決，搶佔行為本身正確、且服務層有 readiness probe 自動容錯 |
 
    **建議：先測 26b（安全），31b 的觸發測試要挑維護時段**（因為會真的踢掉 26b）。測試步驟：
 
@@ -348,4 +348,132 @@ spec:
       是否真的把 replica 數推上去、新 pod 排到哪裡；測 31b 的話同時觀察 26b 是否真的被驅逐
       （`kubectl get pods -n ai-platform -w`）
    4. 測完把 `maxReplicaCount` 改回 1，恢復現在這個安全狀態
+
+   ### 26b 擴容測試結果（2026-07-27 執行，ai-x-dev）
+
+   按上面步驟執行，結果完全符合預期：
+
+   - `maxReplicaCount` 1→2 套用後，用一個 `curlimages/curl` 測試 pod（`kubectl run loadtest-26b`）在
+     90 秒內持續背景併發打 `/v1/completions`（`max_tokens=600` 的長回覆，維持約 40 併發、每 3 秒補一批）
+     成功把 `vllm:num_requests_waiting` 推過門檻
+   - `keda-hpa-gemma-4-26b-vllm` 的 REPLICAS 正確從 1 變 2
+   - 新副本卡在 `Pending`，`kubectl describe` 顯示 `FailedScheduling: Insufficient nvidia.com/gpu`，
+     preemption 評估也是 `0/1 nodes available`——因為 light-models（唯一優先權比 26b 低的）此時是
+     0 replica，根本沒有可搶佔對象，所以 26b 單純排不上去，**沒有**驅逐任何 pod
+   - 既有 26b pod 與 31b pod 全程 age 未變、未重啟，功能測試（送一個 completion）確認 26b 服務正常
+   - `maxReplicaCount` 改回 1 後，HPA 自動把 Pending 副本收掉，`ScaledObject`/HPA/pod 都乾淨回到測試前狀態
+   - **意外發現**：`kubectl apply` 時出現警告 `PollingInterval`/`CooldownPeriod` 在
+     `minReplicaCount>0`（或 `useCachedMetrics` 未啟用）時其實不生效——實際輪詢週期是 K8s HPA
+     controller 內建的 sync period（預設約 15 秒），不是 `ScaledObject` 裡設的 30 秒。這跟本文件先前
+     的假設有落差，但不影響上面的擴容結論，記錄下來避免下次誤判時間軸
+
+   ### 31b 擴容測試事故（2026-07-28 執行，ai-x-dev）——**未驗證出擴容行為，觸發了 GPU 硬體錯誤**
+
+   比照 26b 的做法（`maxReplicaCount` 1→2，`curlimages/curl` 測試 pod 背景併發打
+   `/v1/completions`，因為 31b 的 `max-num-seqs=20` 遠低於 26b 的 256，這次批次只用約 15
+   併發、每 2 秒補一批），但這次**沒有走到預期的「擴容 → 搶佔驅逐 26b」流程**：
+
+   - 整個測試期間 `keda-hpa-gemma-4-31b-vllm` 的 REPLICAS 全程停在 1，沒有真的擴出第 2 副本
+   - 負載打進去後，31b 那張 GPU 的 `nvidia-smi` 直接進入 **`ERR!`** 狀態（Fan/Perf/GPU-Util/MIG
+     全部錯誤、`No running processes found`）——跟 [fp8-eval-report-2026-07-23.md](fp8-eval-report-2026-07-23.md)
+     評測時 bf16 TP=2 觸發過的同一種故障一樣，但這次是正式的 **FP8 TP=1** 設定也觸發了，說明
+     這不只是 TP=2 PCIe all-reduce 的問題，這張 GPU 硬體本身可能對突發高併發連線負載較脆弱
+   - 故障後所有真實 `/v1/completions` 請求（包含測試前就在跑的真實使用者請求）完全卡死無回應，
+     `curl -m 60` 也是 0 bytes；但 **`/health` 端點仍然回 200**——K8s liveness/readiness
+     探測不到這個故障模式，pod 會一直顯示 `1/1 Ready`，不會自動重啟，只能靠人工發現
+   - vLLM log 只看到 `/health`、`/metrics` 的探測請求，完全沒有任何 `POST /v1/completions`
+     被記錄到——研判請求可能卡在 CUDA 呼叫或 engine 層，尚未實際定位根因
+   - 波及範圍**只限 31b 這張 GPU**：26b（另一張 GPU）、litellm、admin-api 全程健康；這台機器上
+     其他不相關 namespace（`enterprise-brain`/`ai-test-bypass`/`docblock`）的既有 Running pod
+     也未受影響
+   - **復原方式**：比照舊事故，整機重開後 `nvidia-smi` 兩張 GPU 都恢復乾淨，31b/26b pod
+     自動重新排程並在約 6 分鐘內回到 `1/1 Running`（暖重啟，torch.compile 快取跨重開機仍有效），
+     功能測試（送一個 completion）確認兩者皆恢復正常
+   - **踩到的坑：整機重開會連動這台機器上其他團隊的 namespace**（`enterprise-brain`、
+     `ai-test-bypass`、`docblock` 都有正常運作中的 pod）；這次是使用者確認後自行執行重開，
+     之後若同事需要參考這份文件操作，要記得這個代價不是只影響這個專案
+
+   **對後續的影響（第一次事故當時的結論，第二次事故後有更新，見下方）：**
+   - 31b 的擴容觸發測試**仍然沒有驗證出預期的「搶佔驅逐 26b」行為**，因為還沒等到那一步 GPU
+     就先掛了；KEDA/PriorityClass 對 31b 的搶佔邏輯本身還是未經實測
+   - **在公司叢集（GPU01/GPU02，424 個使用者）做任何類似的高併發測試前，必須先評估這是否為
+     這張特定 GPU/這批硬體的普遍脆弱性，還是 ai-x-dev 這張卡的個案**——若是普遍性問題，公司環境
+     一旦真的擴容觸發同樣故障，影響的是正式使用者、且可能沒辦法像這台開發機一樣說重開就重開
+   - `/health` 探測不到這個故障模式，代表現有監控（Prometheus + node-exporter）也看不到——
+     之後若要更早發現這類故障，可能需要額外對 `nvidia-smi` 的 ECC/Xid 錯誤或 ERR! 狀態做告警，
+     現有的 KV cache/排隊訊號都偵測不到
+
+   ### 31b 擴容測試第二次事故（2026-07-28，同日重測）——確認是同一張實體卡的重現性故障
+
+   整機重開後（GPU 恢復乾淨、31b/26b 功能正常），比照完全相同的方式（`maxReplicaCount` 1→2、
+   同一支負載腳本：15 併發/2 秒一批/90 秒）重測一次，這次得到更完整的資料：
+
+   - 這次**真的驗證到預期的擴容/搶佔行為**：負載打進去後 `num_requests_waiting` 迅速衝高
+     （25 → 55.5 → 103.5 → 104，遠超門檻 5），`keda-hpa-gemma-4-31b-vllm` REPLICAS 從 1 變 2；
+     因為沒有空 GPU，K8s **如預期搶佔驅逐了正在跑的 26b pod**，把騰出的 GPU 讓給新的 31b 副本——
+     PriorityClass 搶佔邏輯確認正確運作
+   - 撐了約 65 秒之後，**同一張實體 GPU（bus ID `02:00.0`，跟第一次事故是同一張卡）再次觸發
+     `nvidia-smi ERR!`**——這確認了這不是隨機/一次性的故障，而是**這張特定實體卡在持續高排隊
+     負載（100+ waiting）下、撐約 1 分鐘左右的重現性故障**，與量化模式（bf16 TP=2、FP8 TP=1）
+     和是哪個模型在跑都無關
+   - 原本在這張壞卡上的 31b pod（`52c4x`）進入 `CrashLoopBackOff`（`Startup probe failed:
+     connection refused`，因為 GPU 壞了 CUDA 初始化直接失敗）
+   - **但這次的影響比第一次事故小**：搶佔驅逐 26b 後空出來的另一張 GPU（bus `01:00.0`，健康）
+     被新的 31b 副本接手，該副本正常完成暖啟動（約 4 分鐘）並變成 `Ready`；`gemma-4-31b-vllm-service`
+     的 Endpoints **只列出這個健康副本**（`CrashLoopBackOff` 的 pod 過不了 readiness probe，
+     自動被排除在服務之外），所以**真實使用者打 31b 完全正常，沒有機率性打到壞掉的副本**
+   - 唯一下線的是 **26b**：它被驅逐後的替代 pod 卡在 `Pending`，因為壞掉的 `52c4x` 雖然完全沒在
+     運作，但只要這個 pod 物件還存在，K8s 就認定它「持有」那張壞 GPU 的 `nvidia.com/gpu`
+     資源額度，26b 排不進去。開測前已確認 26b/31b 皆閒置（0 waiting/running），所以這次**沒有
+     真實使用者被直接打斷**
+   - 事後討論了「先刪掉 `CrashLoopBackOff` 的 pod 釋放額度、看 26b 能不能不重開機就復原」的
+     輕量級選項，但風險是：K8s 標準 NVIDIA device plugin 是否已把這張壞 GPU 標記為 unhealthy
+     並停止廣播不確定，若還沒標記，26b 的新 pod 有可能被排到同一張壞卡、一樣起不來，不會比現狀
+     更差但也不保證修好。**使用者選擇先不處理、自行決定時機**，截至記錄當下 26b 仍是 `Pending`
+     下線狀態，31b 靠倖存副本正常運作，尚未執行任何復原動作（重開機或刪 pod）
+
+   **對後續的影響（第二次事故當時的結論，第三次重測後有更新，見下方）：**
+   - **KEDA + PriorityClass 搶佔 26b 的行為現在已經驗證正確**，原本「31b 的搶佔邏輯未經實測」
+     這條結論已不成立
+   - **同一張實體卡（bus `02:00.0`）連續兩次獨立測試都在「持續高排隊負載約 1 分鐘」後觸發同一種
+     `ERR!` 故障，重現性很高**——當時懷疑是這張卡本身的硬體問題，但根因後來查出來是驅動/韌體層級
+     問題（見下方），不是硬體缺陷
+   - 服務層面的影響比預期輕：只要 Deployment 還有其他健康副本可以接手，K8s 的 readiness probe
+     機制會自動把壞掉的副本排除在 Service 之外，使用者不會打到故障實例——**前提是要有其他健康
+     GPU 可以接手**；這台機器只有 2 張卡，所以「接手」代價是犧牲 26b，公司多節點叢集這點會更有餘裕
+
+   ### 根因與復原機制補充（兩次事故之間查證）
+
+   - **device plugin 的健康檢查機制其實有效攔截了故障**：查 `nvidia-device-plugin`（官方
+     `nvcr.io/nvidia/k8s-device-plugin:v0.19.1`，無 `DP_DISABLE_HEALTHCHECKS`覆蓋，走預設行為）
+     的 log，看到 `XidCriticalError: Xid=120 on Device=GPU-xxx; marking device as unhealthy`，
+     且 `kubectl get node -o jsonpath` 查 `nvidia.com/gpu` 的 `capacity`/`allocatable` 從
+     `2/2` 掉到 `2/1`——**壞掉的 GPU 會被即時標記 unhealthy 並停止廣播**，新 pod 不會被分配到
+     它。這修正了第二次事故記錄裡「26b 新 pod 可能被排到同一張壞卡」的推測——實際上不會，
+     26b 排不進去單純是因為「健康 GPU 只剩 1 張、已經被 31b 倖存副本佔走」，不是機率問題
+   - **`Xid=120` 是 NVIDIA 已命名的錯誤代碼**，經查詢屬於 GSP（GPU System Processor）韌體
+     RPC timeout 類型的已知問題，常見於較新架構（含 Blackwell 專業卡）在持續高負載下觸發，
+     跟量化模式/模型無關的觀察吻合。這代表根因方向是**驅動/韌體**，不是隨機的硬體個案
+
+   ### 31b 擴容測試第三次執行（2026-07-28，升級 NVIDIA 驅動後重測）——**成功，未再觸發故障**
+
+   使用者將驅動從 `580.126.20` 升級到 `580.173.02` 後，照完全相同方式（`maxReplicaCount`
+   1→2、同一支負載腳本）第三次重測，這次全程盯著 `nvidia-smi` 的 `ERR!` 狀態：
+
+   - 負載打進去後 `num_requests_waiting` 一樣衝高到 100+，KEDA 正確擴出第 2 副本，
+     PriorityClass 如預期搶佔驅逐 26b 的 pod（測前確認 26b/31b 皆閒置，無真實使用者受影響）
+   - **全程 100+ 秒監控，`nvidia-smi` 完全沒有出現 `ERR!`**；新的 31b 副本正常完成暖啟動、
+     變成 `Ready`，`gemma-4-31b-vllm-service` 的 Endpoints 同時列出兩個健康副本，功能測試正常
+   - `maxReplicaCount` 改回 1 後，HPA 正確把 31b 縮回 1 副本，騰出的 GPU 被 26b 的 pod
+     接手，26b 在約 30 秒內完成暖啟動變成 `Ready`（比第一次事故後的 6 分鐘快很多，推測是
+     torch.compile 快取這次沒有被冷啟動流程清掉），功能測試正常
+   - 收尾確認：兩張 GPU 的 `ecc.errors.uncorrected.volatile.total` 皆為 0，`ScaledObject`/HPA
+     都回到 `1/1` 基準狀態，`k8s/keda/scaledobject-gemma-4-31b.yaml` 跟 git 無 diff
+
+   **結論：這次事故的根因是驅動/韌體層級的 Xid 120 問題，驅動升級後已解決**，不是硬體本身的
+   缺陷，不需要考慮送修/更換這張卡。KEDA 擴容 + PriorityClass 搶佔 31b/26b 的完整行為現在
+   已經在 ai-x-dev 正式驗證成功（雙向都測過：26b 擴容安全、31b 擴容會搶佔 26b 但服務層有
+   readiness probe 自動容錯）。**後續建議**：公司叢集（GPU01/GPU02）部署前，先確認那邊的
+   NVIDIA 驅動版本是否已經是修過 Xid 120 這個問題的版本（`580.173.02` 或更新），避免在正式
+   環境重演同樣的故障。
 6. **視偏斜情況**補 least-request LB / 進階路由（第四層）

@@ -1,9 +1,11 @@
 # 套用前請先 source .env，再用 envsubst 展開變數（scripts/deploy.sh monitoring 已處理）：
 #   source .env && envsubst < k8s/monitoring/prometheus-deployment.yaml | kubectl apply -f -
 #
-# 精簡版：單一 Prometheus（無 Operator/Grafana/Alertmanager），5Gi PVC + 5 天
-# retention（時間、大小雙重上限，哪個先到就先觸發清理）——這台開發機磁碟已 91%
-# 滿，刻意設保守值。
+# 精簡版：單一 Prometheus（無 Operator/Grafana/Alertmanager），5Gi PVC + 60 天
+# retention（時間、大小雙重上限，哪個先到就先觸發清理）。2026-07-28 從 5 天延長為
+# 60 天：實測成長速度約 35.7MB/天（6601 條序列裡 5716 條是 node-exporter，vLLM
+# 三個模型合計約 1300 條），60 天推估約 2.1GB，5Gi PVC + 4GB size 上限綽綽有餘，
+# 不需要擴 PVC。
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -43,7 +45,7 @@ spec:
           args:
             - --config.file=/etc/prometheus/prometheus.yml
             - --storage.tsdb.path=/prometheus
-            - --storage.tsdb.retention.time=5d
+            - --storage.tsdb.retention.time=60d
             - --storage.tsdb.retention.size=4GB
           ports:
             - containerPort: 9090
