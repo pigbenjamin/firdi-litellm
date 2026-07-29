@@ -211,12 +211,12 @@ kubectl delete pv marker-ingest-pv
 
 ## 5. GPU 資源核對
 
-`k8s/vllm/*/deployment.yaml` 目前假設 4× RTX PRO 6000（96GB）：GPU 0+1 給 `gemma-4-31b`（TP=2）、GPU 2 給 `gemma-4-26b`、GPU 3 給 `light-models`。若新機器 GPU 數量或顯存不同，部署前要調整對應 deployment 的 GPU 資源請求、`--tensor-parallel-size`、`--gpu-memory-utilization`，否則會排程失敗或 OOM。
+`k8s/vllm/*/deployment.yaml` 目前假設 RTX PRO 6000（96GB）等級的卡：`gemma-4-31b`（FP8 量化 + `--tensor-parallel-size=1`）、`gemma-4-26b`、`light-models` 每個都只請求 **1 張** `nvidia.com/gpu`，沒有假設固定的 GPU 編號——31b/26b 是浮動池（見 4.2 節），排到哪一張純看當下哪張卡空，`light-models` 才是硬釘一個節點但不指定卡號。若新機器的顯存明顯較小（例如 48GB 級的卡），部署前要調整對應 deployment 的 `--gpu-memory-utilization`，否則會 OOM；若要恢復 TP>1（多卡跑一個 replica），要注意 TP 不能跨節點，且無 NVLink 環境下 TP=2 曾在評測時觸發過 GPU 故障（見 [gpu-optimization.md](gpu-optimization.md) FP8 評測記錄），沒有特殊理由不建議改回去。
 
 ## 6. 一鍵部署
 
 ```bash
-./scripts/deploy.sh          # secrets → storage(PVC) → 3個 vLLM → litellm → users.db 初始化 → admin-api
+./scripts/deploy.sh          # secrets → storage(PVC) → priorityclasses → 3個 vLLM → litellm → users.db 初始化 → admin-api
 ./scripts/deploy.sh status   # 檢查 Pod/Service 狀態、印出 NodeIP + port
 ```
 
@@ -253,6 +253,14 @@ curl http://<node-ip>:30408/api/v1/models -H "Authorization: Bearer <ADMIN_API_K
 - **Keycloak 使用者同步插件**：`deploy.sh` 不會自動裝，需另外照 [keycloak/SETUP.md](../keycloak/SETUP.md) 手動 build + 部署到 Keycloak。
 - **marker-service ingest 目錄對齊**：若這台機器同時要跑 `docblock-rag-platform`，`.env` 的 `K8S_MARKER_INGEST_HOST_PATH` 必須跟該專案的 `docblock-ingest-pv` 指向同一個實體目錄，否則 marker-service 讀不到 PDF 且是**靜默失敗**（沒有錯誤訊息，只是轉檔目錄是空的）。
 - **對外防火牆**：LiteLLM NodePort `30400`、Admin API NodePort `30408`，若要對外存取記得開通。
+- **Prometheus + node-exporter 監控**：`./scripts/deploy.sh monitoring`。精簡版（無 Operator/Grafana/Alertmanager），只抓 `ai-platform` namespace 內有 `prometheus.io/scrape` annotation 的 pod，60 天 retention。查詢不用 port-forward，`scripts/query-metrics.sh`（`./scripts/query-metrics.sh help` 看常用查詢）透過 `kubectl exec` 直接打 Prometheus API。細節見 [gpu-optimization.md](gpu-optimization.md)。
+- **KEDA 自動擴縮**：KEDA operator 本身是一次性 cluster bootstrap，`deploy.sh` 不管理，要先用 Helm 裝：
+  ```bash
+  helm repo add kedacore https://kedacore.github.io/charts && helm repo update
+  helm install keda kedacore/keda --namespace keda --create-namespace
+  ```
+  裝好後 `./scripts/deploy.sh keda` 套用 31b/26b 的 `ScaledObject`（監控 monitoring 要先部署好，KEDA 的 trigger 是查 Prometheus）。新機器預設 `minReplicaCount=maxReplicaCount=1`，只接線不會真的擴容；要放大前請先讀 [gpu-optimization.md](gpu-optimization.md) 的風險表（31b 擴容會搶佔驅逐 26b）。
+- **Internal LB（Traefik p2c，多副本 least-request 分流）**：`./scripts/deploy.sh internal-lb`。只有 KEDA 的 `maxReplicaCount>1` 時才用得到，單副本場景裝了也是白裝；只走 `ClusterIP`、不對外曝露。裝好後 `config/litellm_config.yaml` 的 `api_base` 要改指向 `http://internal-lb.ai-platform.svc.cluster.local:8000/lb/<model>/v1`（現有設定已經是這樣，新機器沿用即可）。細節見 [gpu-optimization.md](gpu-optimization.md)。
 
 ## 相關文件
 
