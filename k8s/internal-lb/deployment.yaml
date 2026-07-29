@@ -1,0 +1,77 @@
+# 專用內部 Traefik（不是 kube-system 那個共用的 k3s 內建 Traefik）：純粹當
+# LiteLLM → vLLM 之間的 least-request（p2c）負載平衡器用。刻意只用 ClusterIP、
+# 不曝露 NodePort/LoadBalancer——避免任何人繞過 LiteLLM 的 auth 直接打到 vLLM。
+#
+# 兩個 entrypoint：
+#   web (8000)     實際流量走這個，IngressRoute 掛在這裡
+#   metrics (8082) Prometheus 格式的 Traefik 自身 metrics，pod annotation 已比照
+#                  vLLM 的做法標 prometheus.io/scrape，k8s/monitoring/ 那個既有的
+#                  Prometheus 會自動 scrape 到，不用改 configmap.yaml。
+#                  注意：這裡的 metric 是「service 層級」的聚合（總請求數/延遲），
+#                  不會拆到個別 backend pod；要看個別 pod 收到多少流量，還是要查
+#                  vLLM 自己的 vllm:num_requests_running{pod=...}。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: internal-lb
+  namespace: ai-platform
+  labels:
+    app: internal-lb
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: internal-lb
+  template:
+    metadata:
+      labels:
+        app: internal-lb
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8082"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: internal-lb
+      containers:
+        - name: traefik
+          image: rancher/mirrored-library-traefik:3.6.13
+          args:
+            - --entrypoints.web.address=:8000
+            - --entrypoints.metrics.address=:8082
+            - --metrics.prometheus=true
+            - --metrics.prometheus.entrypoint=metrics
+            - --providers.kubernetescrd=true
+            - --providers.kubernetescrd.namespaces=ai-platform
+            - --api.dashboard=false
+            - --log.level=INFO
+          ports:
+            - containerPort: 8000
+              name: web
+            - containerPort: 8082
+              name: metrics
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: internal-lb
+  namespace: ai-platform
+  labels:
+    app: internal-lb
+spec:
+  type: ClusterIP
+  selector:
+    app: internal-lb
+  ports:
+    - name: web
+      port: 8000
+      targetPort: 8000
+    - name: metrics
+      port: 8082
+      targetPort: 8082

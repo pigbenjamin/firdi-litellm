@@ -1,0 +1,78 @@
+# p2c（Power of Two Choices）：隨機挑兩個健康 backend，選連線數少的那個——比純
+# round-robin 更能反映即時忙碌程度，且不需要（像 leasttime 那樣）用回應時間判斷，
+# 避免把「使用者要求的回覆比較長」誤判成「這個 backend 比較慢/該少分一點」。
+#
+# 用 PathPrefix 而非 Host 判斷路由，避免要在 litellm_config.yaml 額外注入自訂
+# Host header（LiteLLM 對 hosted_vllm provider 是否支援自訂 header 不確定）。
+apiVersion: traefik.io/v1alpha1
+kind: ServersTransport
+metadata:
+  name: vllm-transport
+  namespace: ai-platform
+spec:
+  forwardingTimeouts:
+    responseHeaderTimeout: 600s   # 對齊 litellm_settings.request_timeout，避免長回覆被提早切斷
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: strip-gemma-4-31b
+  namespace: ai-platform
+spec:
+  stripPrefix:
+    prefixes:
+      - /lb/gemma-4-31b
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: gemma-4-31b-lb
+  namespace: ai-platform
+spec:
+  entryPoints:
+    - web
+  routes:
+    - kind: Rule
+      match: PathPrefix(`/lb/gemma-4-31b`)
+      middlewares:
+        - name: strip-gemma-4-31b
+      services:
+        - kind: Service
+          name: gemma-4-31b-vllm-service
+          port: 8000
+          strategy: p2c
+          serversTransport: vllm-transport
+          responseForwarding:
+            flushInterval: 100ms   # 確保串流回應（SSE）即時送出，不被 Traefik 緩衝卡住
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: strip-gemma-4-26b
+  namespace: ai-platform
+spec:
+  stripPrefix:
+    prefixes:
+      - /lb/gemma-4-26b
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: gemma-4-26b-lb
+  namespace: ai-platform
+spec:
+  entryPoints:
+    - web
+  routes:
+    - kind: Rule
+      match: PathPrefix(`/lb/gemma-4-26b`)
+      middlewares:
+        - name: strip-gemma-4-26b
+      services:
+        - kind: Service
+          name: gemma-4-26b-vllm-service
+          port: 8000
+          strategy: p2c
+          serversTransport: vllm-transport
+          responseForwarding:
+            flushInterval: 100ms

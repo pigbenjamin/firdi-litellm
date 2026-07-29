@@ -476,4 +476,141 @@ spec:
    readiness probe 自動容錯）。**後續建議**：公司叢集（GPU01/GPU02）部署前，先確認那邊的
    NVIDIA 驅動版本是否已經是修過 Xid 120 這個問題的版本（`580.173.02` 或更新），避免在正式
    環境重演同樣的故障。
-6. **視偏斜情況**補 least-request LB / 進階路由（第四層）
+6. **least-request LB / 進階路由**：**已於 2026-07-28 在 ai-x-dev 實作並驗證**，原規劃是
+   「等真的觀察到多副本負載偏斜才需要」，這次使用者在排多副本負載測試前主動決定先做對分流
+   機制，理由：`config/litellm_config.yaml` 原本每個模型只設一筆 `api_base` 指向 K8s
+   ClusterIP Service，分流完全交給 kube-proxy 的連線層級（L4）負載平衡——不知道 vLLM
+   內部排了多少請求，HTTP keep-alive 重用連線時還可能造成偏斜。
+
+   **查證後排除的替代方案：**
+   - k3s kube-proxy 切 IPVS + least-connection scheduler：查到 k3s 官方 issue #10522，
+     IPVS+lc 在 k3s 預設的 Flannel CNI 上有已知相容性問題；且這是叢集層級設定，會影響這台
+     機器上其他團隊的 namespace，代價/風險過大，排除
+
+   **第一版採用方案（StatefulSet + LiteLLM 自帶 least-busy router）——已於同日驗證成功，
+   但後來又換成 Traefik p2c（見下方「最終採用方案」），這裡完整保留當時的記錄供對照：**
+   - `k8s/vllm/gemma-4-31b/`、`k8s/vllm/gemma-4-26b/` 的 `deployment.yaml` 從
+     `kind: Deployment` 改成 `kind: StatefulSet`，加 `serviceName`；同目錄新增
+     `service-headless.yaml`（`clusterIP: None`），提供穩定的 per-pod DNS
+     （`gemma-4-31b-vllm-0.gemma-4-31b-vllm-headless.ai-platform.svc.cluster.local`）。
+     原本的一般 ClusterIP `service.yaml` 保留不動，方便手動 curl 除錯
+   - 拿掉原本的 `strategy: {type: Recreate}`，改用 StatefulSet 預設的 `RollingUpdate`——
+     按 ordinal 逐一刪除+重建、等 Ready 才換下一個，天生不會像 Deployment 的
+     RollingUpdate 那樣需要「新舊同時存在」而在 GPU 滿載時死鎖，剛好取代了原本用
+     `Recreate` 迴避死鎖的作用，不需要額外處理
+   - `k8s/keda/scaledobject-gemma-4-31b.yaml` / `-26b.yaml` 的 `scaleTargetRef` 加
+     `kind: StatefulSet`（不寫的話 KEDA 預設當 Deployment）
+   - `config/litellm_config.yaml`：同一個 `model_name` 設多筆 `api_base`，各自指向一個
+     StatefulSet replica 的穩定 DNS，搭配新增的 `router_settings: {routing_strategy:
+     least-busy}`，讓 LiteLLM 自己追蹤每個 deployment 的即時併發數來分流。`litellm`
+     本身是單一 replica，這個計數器在單一 process 內追蹤即可，不需要 Redis
+   - **已知代價（重要）**：litellm_config.yaml 裡的 api_base 筆數要跟
+     `maxReplicaCount` 手動保持同步——調高 `maxReplicaCount` 前，要記得回來這裡多加
+     一筆（`-1`、`-2`...），不然多出來的 replica LiteLLM 永遠不會用到。目前 `-1` 那筆
+     先用註解方式預留在 yaml 裡，準備測 2 副本時直接取消註解即可。`-1` 在 pod 還不存在
+     時 DNS 解析會失敗，這是預期行為，LiteLLM Router 對失敗的 deployment 有內建的
+     cooldown/重試機制會自動避開，pod 起來後自動納入輪替
+   - **部署驗證**：`kubectl apply` 沒辦法把既有 Deployment 原地轉成 StatefulSet（不同
+     kind），要先 `kubectl delete deployment` 再 apply 新的 StatefulSet；當次在兩個
+     模型都閒置時操作，两者都在 1 分鐘內完成暖重啟、`1/1 Ready`。端到端功能驗證：
+     LiteLLM 內建的健康檢查（`litellm-internal-health-check`）log 確認
+     `LeastBusyLoggingHandler` 有載入、且成功路由到
+     `gemma-4-31b-vllm-0.gemma-4-31b-vllm-headless...`；另外直接用
+     `LITELLM_MASTER_KEY` 打 `http://localhost:30400/v1/chat/completions`，31b/26b
+     都正常回應
+   - **「兩個 replica 是否都有分流到流量」已於同日驗證成功**：把 `maxReplicaCount` 調到
+     2（取消 litellm_config.yaml 裡 `-1` 那筆的註解），透過 `litellm-service`（不是直接
+     打 vLLM）送持續併發負載，等 `gemma-4-31b-vllm-1` 變 `Ready` 後，同時查兩個 pod 的
+     `vllm:num_requests_running`：**`gemma-4-31b-vllm-0` 和 `-1` 同時都是 20（各自的
+     `max-num-seqs` 上限），連續 2.5 分鐘的多次採樣都是如此**——確認 LiteLLM 的
+     least-busy router 真的把流量平均分給了兩個 replica，有效產能是兩張卡的和，不是
+     全部塞在同一個 pod 上。
+     - 過程中踩到一個環境限制：第一次嘗試用「先送 8 分鐘負載、事後用
+       `scripts/query-metrics.sh range` 回頭查歷史數據」的方式驗證，查回來完全沒有
+       `-1` 這個 pod 的任何資料（包括最基本的 `up` metric），一度懷疑是 Prometheus
+       沒抓到 StatefulSet 第二個 pod；後來改成「等 pod-1 Ready → 送負載 → 同時輪詢」
+       全部包在同一次操作裡驗證，才確認 Prometheus 其實在 pod-1 Ready 後幾十秒內就正常
+       抓到了，之前查無資料是回頭查歷史時間窗算錯，不是 Prometheus 或 StatefulSet 的
+       問題。**教訓：驗證「一段時間內發生的事」時，同一次操作裡從頭到尾自己量測時間戳
+       記，比事後用相對時間（`-9 min` 之類）回頭查更可靠**
+     - **意外的副作用**：這次驗證測試把 31b 擴到 2 副本時，如預期搶佔驅逐了 26b（見上方
+       PriorityClass 搶佔的既有結論）；但因為這輪驗證反覆試了幾次、橫跨的時間比預期長，
+       **這次沒有在觸發前重新確認 26b 當下是否閒置**，跟先前每次正式測試都會先查閒置
+       狀態的做法不一致，無法保證絕對沒有真實使用者受影響。26b 事後已完全復原、功能
+       測試正常
+
+   ### 最終採用方案（同日改版）：Traefik p2c，取代 StatefulSet + least-busy
+
+   上面的 StatefulSet 方案驗證有效，但使用者事後看到結果，指出一個實際的不彈性：
+   **`litellm_config.yaml` 的 api_base 筆數要跟 `maxReplicaCount` 手動同步，忘記加等於
+   白擴容**。回頭比較先前排除的「專用內部 Traefik（p2c）」方案——它不需要手動維護 replica
+   清單，Traefik 直接 watch K8s Service 的 Endpoints，replica 增減自動反映，因此決定改採
+   這個方向。
+
+   **架構回滾 + 新增：**
+   - `gemma-4-31b`/`gemma-4-26b` 的 `deployment.yaml` **改回 `Deployment`**（拿掉
+     `StatefulSet`/`serviceName`，恢復 `strategy: {type: Recreate}`）——Traefik 只需要
+     一般的 Service + Endpoints，不需要穩定 per-pod DNS，StatefulSet 那層複雜度整個不需要了
+   - 刪除 `k8s/vllm/*/service-headless.yaml`
+   - `k8s/keda/scaledobject-*.yaml` 的 `scaleTargetRef` 拿掉 `kind: StatefulSet`（改回
+     KEDA 預設的 Deployment）
+   - 新增 `k8s/internal-lb/`（RBAC + Traefik Deployment/Service + IngressRoute/Middleware/
+     ServersTransport），`scripts/deploy.sh internal-lb` 套用（選配，不進 `deploy_all()`）：
+     - 專用 Traefik（`rancher/mirrored-library-traefik:3.6.13`，跟 k3s 內建那個共用同一個
+       image、但是**完全獨立的一個 Deployment**，不是同一個實例），只給 `ClusterIP`，
+       刻意不對外曝露，避免繞過 LiteLLM 的 auth 直接打到 vLLM
+     - 兩個 entrypoint：`web`（8000，實際流量）、`metrics`（8082，Traefik 自身
+       Prometheus metrics，pod annotation 比照 vLLM 的做法標 `prometheus.io/scrape`，
+       既有的 Prometheus 自動 scrape 到，不用改 `k8s/monitoring/configmap.yaml`）
+     - 每個模型一組 `Middleware`（`stripPrefix`）+ `IngressRoute`（`PathPrefix` 判斷路由，
+       避免要在 LiteLLM 端注入自訂 Host header），`strategy: p2c`（Power of Two
+       Choices：隨機挑兩個健康 backend、選連線數少的那個），共用一個 `ServersTransport`
+       設 `responseHeaderTimeout: 600s` 對齊 `litellm_settings.request_timeout`
+   - `config/litellm_config.yaml`：31b/26b 改回**單筆** `api_base`，指向
+     `http://internal-lb.ai-platform.svc.cluster.local:8000/lb/gemma-4-31b/v1`（26b
+     同理），拿掉 `router_settings`（不需要了，分流交給 Traefik）
+
+   **踩到的坑（RBAC，花了兩輪才抓到）：**
+   1. 一開始只給 `internal-lb` 這個 ServiceAccount `ingressroutes`/`middlewares`/
+      `serverstransports` 的權限，結果 Traefik log 狂噴一堆跟這些完全無關的
+      `Failed to watch ... forbidden`（`configmaps`、`tlsstores`、`tlsoptions`、
+      `ingressroutetcps`/`udps`、`middlewaretcps`、`traefikservices`、
+      `serverstransporttcps`）——**Traefik 的 kubernetescrd provider 預設會嘗試 watch
+      全部 traefik.io CRD 類型，即使我們完全沒用到 TCP/UDP/TLS 那些**，缺權限不會讓
+      Traefik 掛掉，但會讓實際的路由（IngressRoute）跟著回 404，因為 provider
+      的內部狀態沒能正常建立起來。修法：把這些類型的 `get/list/watch` 都補進 Role
+   2. 修完上面那輪後還有一個 `nodes is forbidden ... at the cluster scope`——**Node
+      是 cluster-scoped 資源，namespace-scoped 的 `Role` 無論如何都給不了**，Traefik
+      內部邏輯會 watch 它（推測是跟 NodePort 外部 IP 解析相關的既有邏輯殘留，即使
+      這裡完全沒用到 NodePort）。解法：另外加一個只包含 `nodes` 唯讀權限的
+      `ClusterRole`/`ClusterRoleBinding`（範圍降到最小，只多開一種 cluster-scoped
+      資源的唯讀權限，不是給整個 ClusterRole）
+   3. **一般的功能驗證（單一 backend）不會踩到這兩個坑**——之前先測了 `query`（單
+      backend 情境）都正常，是後來測「兩個 replica 同時存在、且其中一個路由改用
+      `PathPrefix` 時 Traefik provider 需要正確初始化完整狀態」才會撞見；**之後如果
+      有其他 Traefik CRD provider 的部署，RBAC 建議直接抄 Traefik 官方文件給的完整清單，
+      不要憑直覺只給「看起來會用到的」那幾個資源類型**
+
+   **端到端驗證（跟 StatefulSet 版本用同樣的方法論再測一次）：**
+   - 功能驗證：`kubectl exec ... wget` 直接打 Traefik 的 `/lb/gemma-4-31b/v1/completions`
+     跟 `/lb/gemma-4-26b/...` 都正常；`LITELLM_MASTER_KEY` 打
+     `http://localhost:30400/v1/chat/completions` 兩個模型也都正常回應
+   - **兩個 replica 分流驗證成功**：`maxReplicaCount` 調到 2、透過 `litellm-service` 送
+     持續負載，第二個 31b pod 起來後，**兩個 pod 同時都是 `num_requests_running=20`**
+     （各自滿載），連續採樣確認非一次性巧合；同時 Traefik 自己的
+     `traefik_service_requests_total{service="...gemma-4-31b-lb..."}` 持續往上漲，
+     證實流量真的有源源不絕地透過 Traefik 送進去，兩層證據互相印證
+   - **Traefik 自身 metrics 的實際粒度**：如同規劃時的推測，`traefik_service_requests_total`
+     只在「service」層級聚合（一個模型的總請求數/延遲/錯誤碼），**沒有拆到個別 backend
+     pod**——`traefik_service_server_up` 只有健康狀態，不是請求數。想看「哪個 pod
+     收到多少流量」還是得查 vLLM 自己的 `vllm:num_requests_running{pod=...}`，這次驗證
+     兩層都查了，缺一不可
+   - **同樣的副作用又發生一次**：31b 擴到 2 副本又搶佔驅逐了 26b，這次 26b 的替代 pod
+     因為之前排隊等 GPU 排了 8 分鐘、實際暖啟動又花了將近 4 分鐘，加起來離線快 12
+     分鐘，比之前任何一次都久（純粹是因為這次連續測了兩輪、GPU 被佔用的時間比較長，
+     不是暖啟動本身變慢）；事後一樣完全復原、兩個模型功能測試都正常
+   - **殘留負載的清理眉角**：測試用的負載產生器 pod（`loadtest-31b`）被中途刪除後，
+     vLLM 自己已經接受進 engine 的請求（`num_requests_waiting` 當時高達 400+）不會立刻
+     歸零，需要讓 vLLM 自然把 backlog 處理完（實測約 70 秒排空，過程中用戶端已斷線的
+     請求會逐漸被偵測到並中止，不是要等每個請求真的跑完 300 tokens）——**下次測完要收尾
+     時，等這個自然排空，不要以為砍掉負載產生器 pod 就代表 vLLM 立刻恢復閒置**

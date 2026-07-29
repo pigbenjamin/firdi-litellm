@@ -16,6 +16,7 @@
 #   ./scripts/deploy.sh priorityclasses  # 只套用浮動池 PriorityClass（gpu-priority-high/medium/low）
 #   ./scripts/deploy.sh monitoring    # 只套用 Prometheus + node-exporter（精簡版，選配）
 #   ./scripts/deploy.sh keda         # 只套用 KEDA ScaledObject（KEDA operator 需先用 Helm 裝好）
+#   ./scripts/deploy.sh internal-lb  # 只套用內部 Traefik p2c 負載平衡（多副本 least-request 分流，選配）
 #
 # users-db-pvc / litellm-logs-pvc 走 storageClassName 動態佈建（.env 的
 # K8S_PVC_STORAGE_CLASS，單節點 k3s 預設 local-path，公司 Ceph 叢集設
@@ -388,6 +389,17 @@ deploy_monitoring() {
     ok "Monitoring 套用完成（Prometheus UI：kubectl port-forward -n $NS svc/prometheus 9090:9090）"
 }
 
+# ── Internal LB（專用內部 Traefik，p2c 對 31b/26b 多副本做 least-request 分流）──────
+# 刻意不納入 deploy_all：只有 maxReplicaCount>1 時才用得到，單副本場景裝了也是白裝。
+# 見 k8s/internal-lb/、docs/gpu-optimization.md「6. least-request LB」。
+deploy_internal_lb() {
+    info "部署 Internal LB（Traefik p2c）..."
+    kubectl apply -f "$REPO_ROOT/k8s/internal-lb/rbac.yaml"
+    kubectl apply -f "$REPO_ROOT/k8s/internal-lb/deployment.yaml"
+    kubectl apply -f "$REPO_ROOT/k8s/internal-lb/ingressroutes.yaml"
+    ok "Internal LB 套用完成"
+}
+
 # ── Status ────────────────────────────────────────────────────────────────────
 show_status() {
     echo ""
@@ -449,8 +461,9 @@ main() {
         openwebui-functions) deploy_openwebui_functions ;;
         monitoring)   deploy_monitoring ;;
         keda)         deploy_keda ;;
+        internal-lb)  deploy_internal_lb ;;
         *)
-            echo "用法: $0 [all|storage|priorityclasses|users-db|secrets|gemma-4-31b|gemma-4-26b|light-models|litellm|admin-api|openwebui-functions|monitoring|keda|status]"
+            echo "用法: $0 [all|storage|priorityclasses|users-db|secrets|gemma-4-31b|gemma-4-26b|light-models|litellm|admin-api|openwebui-functions|monitoring|keda|internal-lb|status]"
             exit 1
             ;;
     esac

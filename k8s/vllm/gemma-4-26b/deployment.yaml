@@ -7,7 +7,12 @@ metadata:
     app: gemma-4-26b-vllm
 spec:
   replicas: 1
-  # 單副本 GPU 工作負載：先殺舊 pod 釋放 GPU 再起新 pod，避免 RollingUpdate 死鎖
+  # 2026-07-28：短暫改過 StatefulSet + LiteLLM least-busy router 分流，驗證成功後
+  # 又改用 k8s/internal-lb/（專用內部 Traefik，p2c 策略）取代，因為 StatefulSet 方案
+  # 有個代價：litellm_config.yaml 的 api_base 筆數要跟 maxReplicaCount 手動同步，
+  # Traefik 直接跟著 Service 的 Endpoints 動態走，不用手動維護。改回單純的 Deployment
+  # （不需要穩定的 per-pod DNS 了），單副本 GPU 工作負載：先殺舊 pod 釋放 GPU
+  # 再起新 pod，避免 RollingUpdate 死鎖。
   strategy:
     type: Recreate
   selector:

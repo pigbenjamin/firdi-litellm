@@ -1,15 +1,21 @@
 model_list:
   # 地端模型（K8s vLLM 服務）
+  #
+  # 2026-07-28：31b/26b 改走 k8s/internal-lb/（專用內部 Traefik，p2c 策略）做
+  # least-request 分流，取代之前短暫用過的「StatefulSet + LiteLLM least-busy router」
+  # 方案——那個方案驗證有效，但代價是 api_base 筆數要跟 maxReplicaCount 手動同步，
+  # 容易忘記漏加。現在改成單筆 api_base 指向 internal-lb，Traefik 自己 watch
+  # K8s Service 的 Endpoints、replica 增減完全自動跟上，不用碰這裡的設定。
   - model_name: gemma-4-31B-it
     litellm_params:
       model: hosted_vllm/google/gemma-4-31B-it
-      api_base: http://gemma-4-31b-vllm-service:8000/v1
+      api_base: http://internal-lb.ai-platform.svc.cluster.local:8000/lb/gemma-4-31b/v1
       api_key: EMPTY
 
   - model_name: gemma-4-26B-A4B-it
     litellm_params:
       model: hosted_vllm/google/gemma-4-26B-A4B-it
-      api_base: http://gemma-4-26b-vllm-service:8000/v1
+      api_base: http://internal-lb.ai-platform.svc.cluster.local:8000/lb/gemma-4-26b/v1
       api_key: EMPTY
 
   - model_name: embeddinggemma-300m

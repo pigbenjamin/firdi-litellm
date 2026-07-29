@@ -1,0 +1,77 @@
+# 專用內部 Traefik（p2c 策略），只在 ai-platform namespace 內看 Service/Endpoints/
+# 自己的 CRD（IngressRoute/Middleware/ServersTransport），namespace-scoped Role，
+# 維持最小權限，不需要 ClusterRole。
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: internal-lb
+  namespace: ai-platform
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: internal-lb
+  namespace: ai-platform
+rules:
+  - apiGroups: [""]
+    resources: ["services", "endpoints", "secrets", "configmaps"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["get", "list", "watch"]
+  # Traefik 的 kubernetescrd provider 預設會嘗試 watch 全部 traefik.io CRD 類型
+  # （即使我們沒用到 TCP/UDP/TLS 那些），缺權限會一直在 log 噴 reflector 錯誤，
+  # 所以全部授權，比照 Traefik 官方安裝文件的慣例做法。
+  - apiGroups: ["traefik.io"]
+    resources:
+      - ingressroutes
+      - ingressroutetcps
+      - ingressrouteudps
+      - middlewares
+      - middlewaretcps
+      - serverstransports
+      - serverstransporttcps
+      - tlsoptions
+      - tlsstores
+      - traefikservices
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: internal-lb
+  namespace: ai-platform
+subjects:
+  - kind: ServiceAccount
+    name: internal-lb
+    namespace: ai-platform
+roleRef:
+  kind: Role
+  name: internal-lb
+  apiGroup: rbac.authorization.k8s.io
+---
+# Node 是 cluster-scoped 資源，namespace-scoped Role 給不了，Traefik 的
+# kubernetescrd provider 內部會 watch 它（跟 NodePort/外部 IP 解析有關的既有邏輯，
+# 即使我們完全沒用到 NodePort）。只給 nodes 的唯讀權限，資訊本身是硬體/容量中繼資料，
+# 不是敏感資料，影響範圍比給整個 ClusterRole 小很多。
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: internal-lb-nodes
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: internal-lb-nodes
+subjects:
+  - kind: ServiceAccount
+    name: internal-lb
+    namespace: ai-platform
+roleRef:
+  kind: ClusterRole
+  name: internal-lb-nodes
+  apiGroup: rbac.authorization.k8s.io
