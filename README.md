@@ -45,15 +45,22 @@ LiteLLM Proxy (K8s, :30400)
 │   │   └── cronjob-pull-sync.yaml — OpenWebUI → DB 權限 pull 同步（每 2 分鐘）
 │   ├── openwebui/
 │   │   └── job-apply-functions.yaml — 把 openwebui/functions/*.json 套進 OpenWebUI 的一次性 Job（用 `./scripts/deploy.sh openwebui-functions` 跑，不要單獨 apply）
+│   ├── batch/                   — 非 LiteLLM 的 GPU 工作（fine-tuning / 批次腳本）
+│   │   ├── README.md            — A 案（K8s Job + gpu-priority-batch）/ B 案（手動拉卡）說明
+│   │   ├── job-template.yaml    — Job 範本，複製去改再 apply（非 deploy.sh 管理範圍）
+│   │   └── workspace-pvc.yaml   — 資料集/checkpoint 的 PVC（RWO，${K8S_PVC_STORAGE_CLASS}）
 │   └── ollama/                  — 空目錄（尚無 manifest），臨時需求時參考下方「Ollama 臨時使用」自行部署，非 deploy.sh 管理範圍
 ├── admin-api/                   ← 管理 API 原始碼（FastAPI）
 │   ├── main.py
 │   ├── database.py
 │   ├── models.py
 │   ├── auth.py
+│   ├── keycloak.py              — Keycloak 連線設定 + 使用者 token 驗證/交換（sync / me / me_web 共用）
 │   ├── routers/
 │   │   ├── departments.py       — 部門 CRUD
 │   │   ├── users.py             — 使用者 CRUD + block/unblock + regenerate-key
+│   │   ├── me.py                — 自助端點 JSON API：帶 Keycloak token 查/重設自己的 sk- key（給腳本）
+│   │   ├── me_web.py            — 自助端點瀏覽器登入頁：Keycloak 登入導向 + 網頁顯示/重設 key（給一般使用者，主要途徑）
 │   │   ├── models.py            — 可用模型清單（代理 LiteLLM /models）
 │   │   ├── openwebui.py         — OpenWebUI ↔ DB 模型權限 pull/push 同步
 │   │   └── sync.py              — Keycloak webhook 接收 + bulk 同步
@@ -70,6 +77,7 @@ LiteLLM Proxy (K8s, :30400)
 ├── docs/
 │   ├── deploy.md                — 新機器部署完整 checklist
 │   ├── admin-api.md             — Admin API 完整接口文件
+│   ├── api-access.md            — 給使用者：不透過 OpenWebUI，直接用 API/agent/coding 工具存取
 │   └── permission-sync.md       — 模型權限同步架構與 SOP（OpenWebUI 主導）
 ├── config/                      ← LiteLLM + auth 設定（K8s 版）
 │   ├── litellm_config.yaml

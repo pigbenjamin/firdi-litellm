@@ -1,0 +1,32 @@
+# 批次 / fine-tuning 工作的資料集與 checkpoint 儲存（2026-07-29 決定走動態佈建 PVC）。
+#
+# 比照 k8s/shared-storage/pvc.yaml：storageClassName 走 .env 的 K8S_PVC_STORAGE_CLASS
+#（開發機 ai-x-dev = local-path，公司叢集 = rook-ceph-block），套用前要 envsubst 展開：
+#   source .env && envsubst < k8s/batch/workspace-pvc.yaml | kubectl apply -f -
+#
+# 為什麼不用 hostPath（hf-cache 那種）：批次工作走浮動池，可能被排到任一個 gpu-pool=shared
+# 節點。hostPath 綁死單一機器，job 換節點就讀不到自己的資料；Ceph RBD 是網路儲存，PVC
+# 會跟著 pod 移動到任何節點，這才配得上浮動池。
+#
+# ⚠️ ReadWriteOnce 的實際限制：rook-ceph-block 是 Ceph RBD（block 儲存），**不支援 RWX**，
+# 同一時間只有一個 pod 掛得上。所以：
+#   - 一次跑一個批次工作 → 直接用這個 batch-workspace 就好
+#   - 要同時跑兩個工作 → 複製這個檔案、改成不同的 name，各自一塊（不能共用同一塊）
+#   - 多個工作要「同時讀同一份資料集」→ RBD 做不到，得另外找 CephFS 之類支援 RWX 的
+#     storage class，屆時再評估（跟 marker-ingest-pvc 卡在同一個限制上）
+#
+# 容量：50Gi 是還沒決定第一個工作要跑什麼之前的起始值。fine-tuning 的資料集 + 多份
+# checkpoint 很容易吃掉遠不止這個數，確定工作內容後請直接改這裡再重新 apply
+#（PVC 擴容需要 storage class 有 allowVolumeExpansion，rook-ceph-block 通常有開）。
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: batch-workspace
+  namespace: ai-platform
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: ${K8S_PVC_STORAGE_CLASS}
+  resources:
+    requests:
+      storage: 50Gi

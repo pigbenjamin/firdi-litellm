@@ -58,6 +58,53 @@ Clients → user-sync-service → Credentials → Client Secret
 
 ---
 
+## 一之二、（選用）建立自助端點網頁登入用 Client
+
+給 admin-api 的 `/api/v1/me/web/login`（使用者自己查詢/重設 API key 的網頁）用。
+**跟上面的 `user-sync-service` 是兩個獨立 client**：那個是 webhook 專用的
+service-account（機器對機器），沒有、也不該開放讓真人瀏覽器登入；這裡要的是
+Authorization Code flow（真人在瀏覽器登入）。
+
+```
+Clients → Create client
+```
+
+| 欄位 | 值 |
+|------|----|
+| Client ID | `firdi-admin-api-selfservice`（要跟 `.env` 的 `KEYCLOAK_SELFSERVICE_CLIENT_ID` 一致） |
+| Client authentication | ON（confidential——token 交換是 admin-api 伺服器端做的，瀏覽器端拿不到 client secret） |
+| Standard flow | ON |
+| Direct access grants | OFF（不需要，這裡只用瀏覽器導向） |
+| Service accounts roles | OFF |
+
+儲存後進入 `Settings`，設定：
+
+```
+Valid redirect URIs：<ADMIN_API_PUBLIC_URL>/api/v1/me/web/callback
+Valid post logout redirect URIs：<ADMIN_API_PUBLIC_URL>/api/v1/me/web/login
+Web origins：<ADMIN_API_PUBLIC_URL>（或設 +，讓 Web origins 直接沿用 redirect URI 的來源）
+```
+
+`<ADMIN_API_PUBLIC_URL>` 就是 `.env` 裡同名變數的值——**使用者瀏覽器實際連得到**的
+admin-api 網址（反向代理位址，或單節點測試用 `http://<node-ip>:30408`），跟叢集
+內部 Service DNS 是兩回事，兩邊要完全一致，Keycloak 對 redirect URI 是精確比對。
+
+**`Valid post logout redirect URIs` 是獨立欄位，不會沿用 `Valid redirect URIs`**
+（2026-07-29 實測踩到）：頁面上的「登出並切換使用者」按鈕（`admin-api/routers/me_web.py`
+的 `GET /api/v1/me/web/logout`）會導向 Keycloak 的 RP-Initiated Logout，Keycloak 對
+這個登出用的 `post_logout_redirect_uri` 另外做一次白名單驗證，沒設就會回
+`Invalid redirect uri`，即使登入那邊的 `Valid redirect URIs` 已經設對也一樣。
+
+取得 secret：
+
+```
+Clients → firdi-admin-api-selfservice → Credentials → Client Secret
+```
+
+填進 `.env` 的 `KEYCLOAK_SELFSERVICE_CLIENT_SECRET`。
+
+---
+
 ## 二、Keycloak Admin Console：啟用 Event Listener
 
 ```

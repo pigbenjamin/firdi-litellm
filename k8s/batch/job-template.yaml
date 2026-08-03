@@ -1,0 +1,96 @@
+# 非 LiteLLM GPU 工作的 Job 範本（fine-tuning、批次推論腳本等）——見同目錄 README.md。
+#
+# 這支檔案是「複製去改」的範本，**不要**直接 kubectl apply（`deploy.sh` 也刻意沒有
+# batch 子指令）：每個批次工作的 image / 指令 / 資料路徑都不一樣，統一套用沒有意義。
+# 用法：cp job-template.yaml job-<你的工作名>.yaml，改掉標了 CHANGE-ME 的地方再 apply。
+#
+#   envsubst < k8s/batch/job-<name>.yaml | kubectl apply -f -
+#
+# （用 envsubst 是為了讓 ${K8S_HF_CACHE_HOST_PATH} 跟其他 manifest 一樣從 .env 取值；
+#  如果你的工作不需要 HF cache，可以拿掉那個 volume 並直接 kubectl apply。）
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: CHANGE-ME-job-name
+  namespace: ai-platform
+  labels:
+    workload: batch-gpu
+spec:
+  # GPU 工作通常不該自動重跑（跑一半的 checkpoint、已寫出的輸出檔會讓重試變成髒狀態），
+  # 預設 0 = 失敗就停，人工看過再決定。確定 idempotent 的工作才調高。
+  backoffLimit: 0
+  # 保留完成的 Job 物件 24 小時供查 log，之後自動清掉（避免 Job 屍體累積）。
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        workload: batch-gpu
+    spec:
+      restartPolicy: Never
+      runtimeClassName: nvidia
+      # 浮動 GPU 池：跟 31b/26b 共用同一批貼了 gpu-pool=shared 的節點
+      # （見 scripts/label-nodes.sh）。批次工作沒有硬釘節點的理由。
+      nodeSelector:
+        gpu-pool: shared
+      # 只吃空卡、永不搶佔線上服務；反過來隨時可能被 31b/26b/light-models 搶掉。
+      # 見 k8s/priorityclasses.yaml 的 gpu-priority-batch 註解。
+      priorityClassName: gpu-priority-batch
+      containers:
+        - name: batch
+          image: CHANGE-ME-image:tag
+          imagePullPolicy: IfNotPresent
+          command: ["CHANGE-ME"]
+          # args: ["--your", "--flags"]
+          resources:
+            limits:
+              # 這個叢集的 device plugin 是整張卡配一個 container（count-based，
+              # 不能指定卡號）。要幾張卡就填幾，但注意：TP 不能跨節點，多卡工作
+              # 必須確定單一節點上真的有那麼多張空卡，否則會一直 Pending。
+              nvidia.com/gpu: "1"
+            requests:
+              nvidia.com/gpu: "1"
+          env:
+            # 跟 vLLM 共用同一份 HF 快取，避免同一個模型在同一台機器下載兩次
+            - name: HF_HOME
+              value: /cache/huggingface
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: token
+                  optional: true
+          volumeMounts:
+            - name: hf-cache
+              mountPath: /cache/huggingface
+            - name: shm
+              mountPath: /dev/shm
+            # 資料集 / checkpoint 輸出。先 apply workspace-pvc.yaml 建好這塊 PVC。
+            # RWO：同時只有一個 pod 掛得上，要平行跑多個工作得各自建一塊，見該檔註解。
+            - name: workspace
+              mountPath: /workspace
+          # 批次工作被更高優先權的服務搶佔時，K8s 會先送 SIGTERM 再等這個秒數。
+          # 有 checkpoint 機制的訓練腳本可以在這段時間內存檔；沒有的話設短一點，
+          # 免得整個驅逐流程被拖住。
+      terminationGracePeriodSeconds: 60
+      volumes:
+        - name: hf-cache
+          hostPath:
+            path: ${K8S_HF_CACHE_HOST_PATH}
+            type: DirectoryOrCreate
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Gi
+        - name: workspace
+          persistentVolumeClaim:
+            claimName: batch-workspace
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+        # 比照 vLLM deployment：部分叢集給 GPU 節點加了 node-pool=compute:NoSchedule
+        # taint，沒有這個 taint 的叢集加這條是 no-op。
+        - key: node-pool
+          operator: Equal
+          value: compute
+          effect: NoSchedule

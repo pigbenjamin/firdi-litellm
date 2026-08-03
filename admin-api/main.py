@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from database import DB_PATH, init_db
-from routers import departments, models, openwebui, sync, users
+from routers import departments, me, me_web, models, openwebui, sync, users
 
 
 @asynccontextmanager
@@ -19,6 +19,8 @@ app.include_router(users.router)
 app.include_router(models.router)
 app.include_router(sync.router)
 app.include_router(openwebui.router)
+app.include_router(me.router)
+app.include_router(me_web.router)
 
 
 @app.get("/health")

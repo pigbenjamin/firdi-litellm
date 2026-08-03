@@ -58,6 +58,20 @@ class UserPatch(BaseModel):
     blocked: bool | None = None
 
 
+class MeOut(BaseModel):
+    """自助端點 /api/v1/me 的回應：只給使用者自己需要知道的欄位。
+
+    刻意不含 rpm/tpm/metadata/部門 openrouter key 等管理面資訊。
+    """
+    user_id: str
+    key_name: str
+    user_email: str | None
+    dept_id: str
+    api_key: str
+    allowed_models: list[str]  # 部門 ∪ 個人 的聯集；["*"] = 不限制
+    blocked: bool
+
+
 class UserOut(BaseModel):
     api_key: str
     key_name: str

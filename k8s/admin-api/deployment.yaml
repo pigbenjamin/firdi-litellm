@@ -70,6 +70,37 @@ spec:
                 secretKeyRef:
                   name: admin-api-secrets
                   key: keycloak-ssl-verify
+            # 自助端點網頁登入用（見 admin-api/routers/me_web.py），跟上面
+            # KEYCLOAK_CLIENT_ID/SECRET（webhook 專用）是不同的 Keycloak client。
+            - name: KEYCLOAK_SELFSERVICE_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: admin-api-secrets
+                  key: keycloak-selfservice-client-id
+                  optional: true
+            - name: KEYCLOAK_SELFSERVICE_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: admin-api-secrets
+                  key: keycloak-selfservice-client-secret
+                  optional: true
+            # 使用者瀏覽器看得到的 admin-api 網址（反向代理位址或
+            # http://<node-ip>:30408），Keycloak 登入完導回這裡；跟叢集內部 DNS
+            # 是兩回事，未設定時 /api/v1/me/web/login 會回 500 並說明原因。
+            - name: ADMIN_API_PUBLIC_URL
+              valueFrom:
+                secretKeyRef:
+                  name: admin-api-secrets
+                  key: admin-api-public-url
+                  optional: true
+            # Keycloak 瀏覽器看到的官方 hostname，只在跟 KEYCLOAK_URL 不同時才需要
+            # 設定（見 admin-api/keycloak.py 的 KEYCLOAK_BROWSER_URL 註解）
+            - name: KEYCLOAK_BROWSER_URL
+              valueFrom:
+                secretKeyRef:
+                  name: admin-api-secrets
+                  key: keycloak-browser-url
+                  optional: true
             - name: LITELLM_URL
               value: "http://litellm-service:4000"
             - name: LITELLM_MASTER_KEY

@@ -7,21 +7,17 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 
 from auth import verify_admin_key
 from database import DB_PATH, bump_version, get_conn
+from keycloak import (
+    KEYCLOAK_CLIENT_ID,
+    KEYCLOAK_CLIENT_SECRET,
+    KEYCLOAK_REALM,
+    KEYCLOAK_SSL_VERIFY,
+    KEYCLOAK_URL,
+)
 
 router = APIRouter(prefix="/api/v1/sync")
 
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
-KEYCLOAK_URL = os.getenv("KEYCLOAK_URL", "").rstrip("/")
-KEYCLOAK_REALM = os.getenv("KEYCLOAK_REALM", "")
-KEYCLOAK_CLIENT_ID = os.getenv("KEYCLOAK_CLIENT_ID", "")
-KEYCLOAK_CLIENT_SECRET = os.getenv("KEYCLOAK_CLIENT_SECRET", "")
-# self-signed cert: 設 KEYCLOAK_SSL_VERIFY=false 停用驗證，或填 CA 憑證路徑
-_ssl_verify_raw = os.getenv("KEYCLOAK_SSL_VERIFY", "true").strip().lower()
-KEYCLOAK_SSL_VERIFY: bool | str = (
-    False if _ssl_verify_raw == "false"
-    else _ssl_verify_raw if _ssl_verify_raw not in ("true", "1", "yes")
-    else True
-)
 
 _token_cache: dict = {"access_token": None, "expires_at": 0.0}
 

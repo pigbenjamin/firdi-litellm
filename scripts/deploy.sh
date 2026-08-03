@@ -89,6 +89,10 @@ deploy_secrets() {
         --from-literal=keycloak-client-id="${KEYCLOAK_CLIENT_ID:-user-sync-service}" \
         --from-literal=keycloak-client-secret="${KEYCLOAK_CLIENT_SECRET:-}" \
         --from-literal=keycloak-ssl-verify="${KEYCLOAK_SSL_VERIFY:-false}" \
+        --from-literal=keycloak-selfservice-client-id="${KEYCLOAK_SELFSERVICE_CLIENT_ID:-}" \
+        --from-literal=keycloak-selfservice-client-secret="${KEYCLOAK_SELFSERVICE_CLIENT_SECRET:-}" \
+        --from-literal=admin-api-public-url="${ADMIN_API_PUBLIC_URL:-}" \
+        --from-literal=keycloak-browser-url="${KEYCLOAK_BROWSER_URL:-}" \
         --namespace="$NS" \
         --dry-run=client -o yaml | kubectl apply -f -
 
@@ -190,7 +194,7 @@ deploy_storage() {
 
 # ── PriorityClass（浮動 GPU 池搶佔優先權）──────────────────────────────────────
 deploy_priorityclasses() {
-    info "套用 PriorityClass（gpu-priority-high/medium/low）..."
+    info "套用 PriorityClass（gpu-priority-high/medium/low/batch）..."
     kubectl apply -f "$REPO_ROOT/k8s/priorityclasses.yaml"
     ok "PriorityClass 完成"
 }

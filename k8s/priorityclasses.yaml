@@ -24,3 +24,22 @@ metadata:
 value: 100
 globalDefault: false
 description: "light-models（embed + marker-service），浮動池最低優先權；目前 nodeSelector 仍走 hostname 硬釘（見 marker-ingest-pvc 限制），但仍納入優先權序列以便日後 RWX 化後直接生效"
+---
+# 非 LiteLLM 的 GPU 工作（fine-tuning、批次推論腳本等），見 k8s/batch/README.md。
+#
+# preemptionPolicy: Never 是這個 class 的重點，比 value 數字更重要——批次工作只會
+# 排隊等浮動池出現空卡，「永遠不會」為了自己排上去而驅逐任何線上服務。實測過搶佔
+# 的代價：31b 擴副本搶掉 26b 那次，26b 離線 12 分鐘（排隊等 GPU + 暖啟動），批次
+# 工作不值得付這個代價。
+#
+# 注意 Never 只擋「這個 pod 主動搶佔別人」，不擋「別人搶佔這個 pod」——value=50
+# 低於所有 vLLM class，所以 31b/26b/light-models 需要卡時仍可隨時把批次工作踢掉。
+# 方向性是刻意的：線上服務永遠贏。
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: gpu-priority-batch
+value: 50
+globalDefault: false
+preemptionPolicy: Never
+description: "批次/fine-tuning 等非 LiteLLM GPU 工作：只吃浮動池空卡、永不搶佔線上服務，且可被任一 vLLM 服務搶佔"

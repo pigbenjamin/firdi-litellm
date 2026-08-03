@@ -34,6 +34,12 @@ Admin API 提供部門、使用者的資料管理、Keycloak 使用者同步，�
 | `POST` | `/api/v1/users/{user_id}/unblock` | 解除封鎖使用者 | Admin Key |
 | `POST` | `/api/v1/users/{user_id}/regenerate-key` | 重新生成使用者 API Key | Admin Key |
 | | | | |
+| `GET` | `/api/v1/me` | 查詢**自己**的 API Key 與可用模型（JSON，給腳本用） | Keycloak Token |
+| `POST` | `/api/v1/me/regenerate-key` | 重設**自己**的 API Key（JSON，給腳本用） | Keycloak Token |
+| `GET` | `/api/v1/me/web/login` | **一般使用者請走這支**：瀏覽器登入頁，導向 Keycloak | 無（登入後才驗證）|
+| `GET` | `/api/v1/me/web/callback` | 登入完成後的回呼，網頁直接顯示 key | Keycloak（登入流程內部使用）|
+| `POST` | `/api/v1/me/web/regenerate-key` | 網頁上的「重設我的 Key」按鈕 | Session Cookie |
+| | | | |
 | `POST` | `/api/v1/sync/keycloak` | 接收 Keycloak 使用者事件 | Webhook Secret |
 | `POST` | `/api/v1/sync/keycloak/bulk` | 從 Keycloak 拉取全部使用者同步 | Admin Key |
 | | | | |
@@ -47,11 +53,48 @@ Admin API 提供部門、使用者的資料管理、Keycloak 使用者同步，�
 
 ## 認證
 
-除 `/health` 與 `/api/v1/sync/keycloak` 外，所有接口需在 HTTP Header 帶入 Admin API Key：
+除 `/health`、`/api/v1/sync/keycloak`（Webhook Secret）與 `/api/v1/me`（Keycloak Token）外，
+所有接口需在 HTTP Header 帶入 Admin API Key：
 
 ```
 Authorization: Bearer <ADMIN_API_KEY>
 ```
+
+### 自助端點的認證（`/api/v1/me*`）
+
+給**一般使用者**用，不吃 `ADMIN_API_KEY`。有兩組並存、認證方式不同：
+
+- **`/api/v1/me/web/*`**（瀏覽器登入頁，一般使用者的**主要途徑**）：不需要自己組
+  HTTP 請求。使用者點 `/api/v1/me/web/login` → 導向 Keycloak 熟悉的登入畫面（跟登
+  入 OpenWebUI 同一套帳號）→ 登入完自動導回、網頁直接顯示 key，並附一顆「重設我的
+  Key」按鈕。伺服器端用短效 cookie（`me_session`，存的是 Keycloak access token 本
+  身、HttpOnly、`SameSite=Lax`）記住這次登入，按重設鈕時不用再登入一次；`SameSite=Lax`
+  同時是唯一的 CSRF 防護——瀏覽器不會在跨站 POST 帶上這顆 cookie，因此不需要另外
+  做 CSRF token。
+- **`/api/v1/me`（GET）/ `/api/v1/me/regenerate-key`（POST）**（JSON，給腳本/CI
+  用）：帶使用者自己的 Keycloak access token：
+  ```
+  Authorization: Bearer <Keycloak access token>
+  ```
+  **注意**：這支只負責驗證你交來的 token，本身不提供「怎麼拿到 token」的手段——
+  目前唯一驗證過可行的取得方式是走 `/api/v1/me/web/login` 的瀏覽器登入流程（人工
+  操作一次）。如果你的腳本需要在無瀏覽器環境下自動取得 token（例如 CI），Keycloak
+  client 是否開放對應的 grant（如 Direct Access Grants）尚未評估與設定，請先跟平台
+  管理員確認，不要假設它已經可行。
+
+兩者共用同一套底層邏輯（`admin-api/routers/me.py` 的 `resolve_db_user()` /
+`to_me_out()` / `regenerate_key_for()`）。無論哪個入口，驗證都是把 token 送去
+Keycloak 的 `userinfo` 端點（`admin-api/keycloak.py` 的 `fetch_userinfo()`），由
+Keycloak 自己判斷有效性——刻意不在本地驗 JWT 簽章，這樣**已登出／已撤銷但還沒過期**
+的 token 也會被擋掉。取得的 `sub` 對應 DB 的 `users.user_id`；沒命中時退回用
+`email` 比對（涵蓋 Keycloak 帳號重建導致 sub 換掉的情況）。
+
+回傳的 `MeOut` 只含使用者自己該知道的欄位（`user_id` / `key_name` / `user_email` /
+`dept_id` / `api_key` / `allowed_models` / `blocked`），不含 rpm/tpm、metadata、部門
+OpenRouter key 等管理面資訊，而且**只會回傳 token 對應的那一個帳號**。
+
+`allowed_models` 是「部門 ∪ 個人」的聯集（`["*"]` 代表不限制），僅供顯示；真正的
+enforcement 在 `config/custom_auth.py` 的 `_effective_models()`，兩邊邏輯要保持一致。
 
 `/api/v1/sync/keycloak` 使用專屬的 `X-Webhook-Secret` header 認證。
 
@@ -391,6 +434,76 @@ curl -X POST "http://<host>:30408/api/v1/users/alice-unique-id/regenerate-key" \
 ```
 
 > 務必將新 `api_key` 通知使用者，並更新其應用程式設定。
+> 使用者也可以自己重設，不必透過這支，見下方「自助端點」。
+
+---
+
+## 自助端點（Me）
+
+給一般使用者查詢／重設**自己**的 API Key，不需要 admin 介入。認證方式與回傳欄位的
+設計理由見上方「[自助端點的認證](#自助端點的認證apiv1me)」。
+
+使用者端的完整操作說明見 [api-access.md](api-access.md) 第 1 節（**一般使用者請看
+那一節的瀏覽器登入方式即可**，不用理解下面這組 JSON 端點）。
+
+### `GET /api/v1/me/web/login`
+
+**主要途徑，給一般使用者。** 瀏覽器直接打開：
+
+```
+http://<admin-api 位址>/api/v1/me/web/login
+```
+
+會 302 導向 Keycloak 登入畫面（跟登入 OpenWebUI 同一套帳號），登入完自動導回
+`/api/v1/me/web/callback`，網頁直接顯示 `key_name` / 部門 / email / 可用模型 /
+API Key，並附一顆「重設我的 Key」按鈕（POST 到 `/api/v1/me/web/regenerate-key`，
+靠登入時設好的 session cookie 驗證，不用重新登入）。
+
+未設定 `KEYCLOAK_SELFSERVICE_CLIENT_ID` / `KEYCLOAK_SELFSERVICE_CLIENT_SECRET` /
+`ADMIN_API_PUBLIC_URL` 時直接回 `500`，並在錯誤訊息裡列出缺了哪些變數；設定方式見
+[keycloak/SETUP.md](../keycloak/SETUP.md)「一之二」。
+
+### `GET /api/v1/me` （JSON，給腳本用）
+
+**認證**：`Authorization: Bearer <Keycloak access token>`
+
+**回應**：`MeOut`（200）
+
+```bash
+curl "http://<host>:30408/api/v1/me" -H "Authorization: Bearer $KEYCLOAK_TOKEN"
+```
+
+```json
+{
+  "user_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+  "key_name": "alice",
+  "user_email": "alice@example.com",
+  "dept_id": "RD",
+  "api_key": "sk-a3f9c2e1b7d4...",
+  "allowed_models": ["gemma-4-26B-A4B-it", "gemma-4-31B-it"],
+  "blocked": false
+}
+```
+
+| 狀態碼 | 情況 |
+|---|---|
+| `401` | token 無效、已過期或已撤銷 |
+| `403` | 帳號已被封鎖（`blocked=1`） |
+| `404` | Keycloak 身分在平台上還沒有對應帳號（sub 與 email 都對不到） |
+| `500` | admin-api 沒設定 `KEYCLOAK_URL` / `KEYCLOAK_REALM` |
+| `502` | 連不上 Keycloak |
+
+### `POST /api/v1/me/regenerate-key` （JSON，給腳本用）
+
+重設自己的 API Key，行為與 `POST /api/v1/users/{user_id}/regenerate-key` 相同，只是限定
+在自己的帳號上。**舊 Key 立即失效**（最多 30 秒快取延遲），所有填過舊 key 的工具都要更新。
+
+**回應**：`MeOut`（含新 `api_key`）（200）
+
+```bash
+curl -X POST "http://<host>:30408/api/v1/me/regenerate-key" \
+  -H "Authorization: Bearer $KEYCLOAK_TOKEN"
+```
 
 ---
 
