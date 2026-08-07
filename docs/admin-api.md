@@ -688,6 +688,8 @@ curl -X POST http://<host>:30408/api/v1/users/<user_id>/regenerate-key \
 
 服務帳號供程式直接呼叫 LiteLLM 使用（CI/CD、排程腳本、後端服務等），不透過 Keycloak 建立，需手動管理生命週期。
 
+> **這個平台固定需要的服務帳號，請走 `config/service_accounts.json` + `scripts/seed_service_accounts.py`**（見下方獨立章節），不要只用下面的 curl 建一次就結束——那樣這個帳號只活在當下這台機器的 SQLite 裡，git 完全沒有紀錄，換機器或重灌 `users-db-pvc` 會整個消失且無感。下面的 curl 流程適用於**臨時測試**或**還沒決定要不要固定下來**的一次性帳號。
+
 **建議命名慣例**
 - `user_id`：`svc-<服務名稱>`，例如 `svc-rag-pipeline`
 - `key_name`：與 `user_id` 相同或加上環境後綴，例如 `svc-rag-pipeline-prod`
@@ -737,6 +739,32 @@ curl -X POST http://<host>:30408/api/v1/users/svc-rag-pipeline/block \
 curl -X DELETE http://<host>:30408/api/v1/users/svc-rag-pipeline \
   -H "Authorization: Bearer <key>"
 ```
+
+---
+
+## 固定服務帳號（新機器 / 重灌環境必須帶的帳號）
+
+`config/service_accounts.json` 是 git 追蹤的宣告式清單，列出這個平台**必須存在**的服務帳號（`user_id`/`dept_id`/`models`/`rpm_limit`/`tpm_limit`/`metadata`，**不含 `api_key`**）。`scripts/seed_service_accounts.py` 把目前 admin-api 的實際狀態收斂到這份清單，新機器部署或既有機器補帳號都跑同一支：
+
+```bash
+# 預覽會有什麼變更，不實際送出
+ADMIN_API_KEY=xxx ./scripts/seed_service_accounts.py --dry-run
+
+# 實際套用
+ADMIN_API_KEY=xxx ./scripts/seed_service_accounts.py
+
+# 只處理清單裡的其中幾個
+ADMIN_API_KEY=xxx ./scripts/seed_service_accounts.py --only svc-chat-summarizer
+```
+
+冪等規則：
+- **帳號不存在** → 建立，隨機產生新 `api_key`（`sk-<user_id>-<32位隨機hex>`），**只印一次**，需立刻存進該服務的 Secret 管理系統
+- **帳號已存在** → 只 `PATCH` `key_name`/`user_email`/`dept_id`/`models`/`rpm_limit`/`tpm_limit`/`metadata` 對齊清單，**絕不覆蓋既有 `api_key`**（避免重跑就讓所有消費端的 key 一起失效），也不動 `blocked`（封鎖/解封是操作動作，不是宣告式設定）
+- 引用到的 `dept_id` 若不存在會自動建立一個空部門（`allowed_models=[]`）
+
+`./scripts/deploy.sh service-accounts` 是這支腳本的 wrapper，會先等 admin-api Pod Ready 再執行；`./scripts/deploy.sh all`（即 `deploy_all()`）跑完整部署時已經自動包含這一步，新機器一鍵部署就會把清單裡的服務帳號一併補齊。
+
+**要新增一個「固定下來」的服務帳號**：把定義加進 `config/service_accounts.json`（比照 [POST /api/v1/users](#post-apiv1users) 的欄位，`account_type` 由腳本固定填 `service`，不用寫），跑一次腳本即可；不需要再手動 curl。
 
 ---
 

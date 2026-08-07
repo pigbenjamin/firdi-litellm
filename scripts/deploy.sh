@@ -2,9 +2,10 @@
 # 快速部署腳本：將 firdi-litellm 所有 K8s 資源部署到 ai-platform namespace
 #
 # 用法：
-#   ./scripts/deploy.sh              # 部署全部（storage → vllm → litellm → admin-api）
+#   ./scripts/deploy.sh              # 部署全部（storage → internal-lb → vllm → litellm → admin-api）
 #   ./scripts/deploy.sh storage      # 只建立 users-db-pvc / litellm-logs-pvc
 #   ./scripts/deploy.sh users-db     # 只檢查/初始化 users.db（灌進 users-db-pvc）
+#   ./scripts/deploy.sh service-accounts  # 收斂 config/service_accounts.json 定義的固定服務帳號
 #   ./scripts/deploy.sh gemma-4-31b  # 只部署 gemma-4-31b-vllm（思考型）
 #   ./scripts/deploy.sh gemma-4-26b  # 只部署 gemma-4-26b-vllm（快捷型）
 #   ./scripts/deploy.sh light-models # 只部署 light-models（embedding + marker，同一張 GPU）
@@ -16,7 +17,7 @@
 #   ./scripts/deploy.sh priorityclasses  # 只套用浮動池 PriorityClass（gpu-priority-high/medium/low）
 #   ./scripts/deploy.sh monitoring    # 只套用 Prometheus + node-exporter（精簡版，選配）
 #   ./scripts/deploy.sh keda         # 只套用 KEDA ScaledObject（KEDA operator 需先用 Helm 裝好）
-#   ./scripts/deploy.sh internal-lb  # 只套用內部 Traefik p2c 負載平衡（多副本 least-request 分流，選配）
+#   ./scripts/deploy.sh internal-lb  # 只套用內部 Traefik p2c 負載平衡（all 已包含；gemma-4-31b/26b 唯一入口，不論副本數）
 #
 # users-db-pvc / litellm-logs-pvc 走 storageClassName 動態佈建（.env 的
 # K8S_PVC_STORAGE_CLASS，單節點 k3s 預設 local-path，公司 Ceph 叢集設
@@ -111,6 +112,17 @@ deploy_secrets() {
     fi
 
     ok "Secrets 完成"
+
+    # Secret 內容更新後，已經在跑的 pod 不會自動吃到新值（env var 只在容器啟動時
+    # 讀取一次）——這造成過好幾次「明明改了 .env/Secret 怎麼還是舊行為」的誤判
+    # （2026-08-05：Keycloak client secret、OpenWebUI admin key 都中過招）。這裡
+    # 只在對應 Deployment 已存在時才重啟，全新環境第一次跑不會有任何影響。
+    for d in litellm admin-api; do
+        if kubectl get deployment "$d" -n "$NS" &>/dev/null; then
+            info "重啟 $d 讓它讀取最新的 Secret 內容..."
+            kubectl rollout restart deployment/"$d" -n "$NS"
+        fi
+    done
 }
 
 # 若設定 K8S_IMAGE_PULL_SECRET，掛到指定 Deployment 的 imagePullSecrets（私有 registry
@@ -188,6 +200,12 @@ build_and_publish_image() {
 deploy_storage() {
     info "建立 PVC..."
     export K8S_PVC_STORAGE_CLASS="${K8S_PVC_STORAGE_CLASS:-local-path}"
+    # local-path 是單節點 k3s 內建的預設值；公司多節點 kubeadm 叢集通常沒有這個
+    # StorageClass（見 kubectl get storageclass），沒檢查的話 PVC 會卡 Pending
+    # 卻不會有任何明顯錯誤，直到 litellm/admin-api 也跟著卡 Pending 才會發現。
+    if ! kubectl get storageclass "$K8S_PVC_STORAGE_CLASS" &>/dev/null; then
+        die "StorageClass「$K8S_PVC_STORAGE_CLASS」不存在（.env 的 K8S_PVC_STORAGE_CLASS），可用的有：$(kubectl get storageclass -o jsonpath='{.items[*].metadata.name}' 2>/dev/null)"
+    fi
     envsubst < "$REPO_ROOT/k8s/shared-storage/pvc.yaml" | kubectl apply -f -
     ok "PVC 完成（storageClassName: $K8S_PVC_STORAGE_CLASS）"
 }
@@ -217,10 +235,29 @@ seed_users_db() {
         return 0
     fi
 
-    if kubectl exec -n "$NS" "$pod" -- test -f /app/data/users.db 2>/dev/null; then
+    # 連續測 3 次、間隔 2 秒才判定「檔案不存在」：admin-api/litellm 若剛好在
+    # Recreate 重啟過渡期間被檢查到，RWO volume 有時會有短暫沒完全 ready 的瞬間，
+    # 單測一次就判定「PVC 內沒資料」曾經真的把 421 個 Keycloak 使用者誤判成全新
+    # 環境、蓋成 config/users.json 的範本假資料（2026-08-05 事故）。
+    local exists=0 i
+    for i in 1 2 3; do
+        if kubectl exec -n "$NS" "$pod" -- test -f /app/data/users.db 2>/dev/null; then
+            exists=1
+            break
+        fi
+        sleep 2
+    done
+    if [[ "$exists" == "1" ]]; then
         ok "users.db 已存在於 PVC，略過初始化"
         return 0
     fi
+
+    warn "════════════════════════════════════════════════════════════════"
+    warn "偵測不到 users.db，即將用 config/users.json 範本資料建立全新 DB。"
+    warn "如果這不是全新環境（PVC 應該已經有正式使用者資料），現在請按 Ctrl+C"
+    warn "中止，先查清楚為什麼檔案不見了，不要讓範本假資料蓋過去。"
+    warn "════════════════════════════════════════════════════════════════"
+    sleep 5
 
     local tmp_db legacy_db
     tmp_db="$(mktemp --suffix=.db)"
@@ -238,6 +275,27 @@ seed_users_db() {
     kubectl cp "$tmp_db" "$NS/$pod:/app/data/users.db"
     rm -f "$tmp_db"
     ok "users.db 已寫入 PVC"
+}
+
+# 固定必須存在的服務帳號（account_type=service，如聊天紀錄整理、RAG pipeline 等）不像
+# 人類帳號有 Keycloak webhook 自動同步，改用 config/service_accounts.json 宣告 + 這支
+# 冪等腳本收斂：帳號不存在就建立（新 key 只印一次），已存在只同步 models/rate limit/
+# metadata 等設定欄位，絕不覆蓋既有 api_key。需要 admin-api 已可連線才能執行。
+deploy_service_accounts() {
+    info "收斂固定服務帳號（config/service_accounts.json）..."
+    local pod
+    pod=$(kubectl get pod -n "$NS" -l app=admin-api -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+    if [[ -z "$pod" ]]; then
+        warn "找不到 admin-api Pod，略過服務帳號收斂（admin-api 部署好之後執行 ./scripts/deploy.sh service-accounts 手動補上）"
+        return 0
+    fi
+    if ! kubectl wait -n "$NS" "pod/$pod" --for=condition=Ready --timeout=120s >/dev/null 2>&1; then
+        warn "admin-api Pod 尚未 Ready，略過服務帳號收斂（稍後執行 ./scripts/deploy.sh service-accounts 手動補上）"
+        return 0
+    fi
+
+    python3 "$REPO_ROOT/scripts/seed_service_accounts.py"
+    ok "服務帳號收斂完成"
 }
 
 # ── LiteLLM ConfigMaps ────────────────────────────────────────────────────────
@@ -267,6 +325,21 @@ deploy_litellm_configmaps() {
 deploy_vllm() {
     local name="$1"   # gemma-4-31b / gemma-4-26b / light-models
     local dir="$REPO_ROOT/k8s/vllm/$name"
+
+    # 所有 vLLM Deployment 的 podSpec 都指名 runtimeClassName: nvidia。k3s 單節點
+    # 通常內建就有這個 RuntimeClass，標準 kubeadm 叢集完全不會自動生成——沒有的話
+    # Pod 會在建立階段就被直接拒絕（連 kubectl get pods 都看不到），需要另外查
+    # events 才找得到原因。見 G02 GPU 節點設定文件「建立 RuntimeClass」那步。
+    if ! kubectl get runtimeclass nvidia &>/dev/null; then
+        die "RuntimeClass「nvidia」不存在，GPU pod 會被直接拒絕建立。手動建立：
+  kubectl apply -f - <<'EOF'
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: nvidia
+handler: nvidia
+EOF"
+    fi
 
     # 31b/26b 已改走浮動池（nodeSelector: gpu-pool=shared），不再吃這個變數；
     # 只有 light-models（仍 hostname 硬釘，見該 deployment.yaml 註解）與
@@ -320,12 +393,16 @@ deploy_admin_api() {
     envsubst < "$REPO_ROOT/k8s/admin-api/deployment.yaml" | kubectl apply -f -
     kubectl apply -f "$REPO_ROOT/k8s/admin-api/service.yaml"
     apply_image_pull_secret admin-api
+
+    # CronJob 套用要放在 rollout status 之前：admin-api 第一次部署、或前面
+    # PVC/RWO 死鎖排除中，rollout 常常會等超過 90 秒，set -e 一逾時就整支腳本
+    # 中止，CronJob 永遠沒被套用到（且不會有任何錯誤提示，只會發現同步一直沒動靜）。
+    kubectl apply -f "$REPO_ROOT/k8s/admin-api/cronjob-pull-sync.yaml"
+    ok "openwebui-pull-sync CronJob 已套用"
+
     kubectl rollout restart deployment/admin-api -n "$NS"
     kubectl rollout status deployment/admin-api -n "$NS" --timeout=90s
     ok "Admin API 部署完成（image: $ADMIN_API_IMAGE）"
-
-    kubectl apply -f "$REPO_ROOT/k8s/admin-api/cronjob-pull-sync.yaml"
-    ok "openwebui-pull-sync CronJob 已套用"
 }
 
 # ── OpenWebUI Functions ───────────────────────────────────────────────────────
@@ -394,10 +471,27 @@ deploy_monitoring() {
 }
 
 # ── Internal LB（專用內部 Traefik，p2c 對 31b/26b 多副本做 least-request 分流）──────
-# 刻意不納入 deploy_all：只有 maxReplicaCount>1 時才用得到，單副本場景裝了也是白裝。
-# 見 k8s/internal-lb/、docs/gpu-optimization.md「6. least-request LB」。
+# 2026-07-28 起 config/litellm_config.yaml 的 gemma-4-31b/26b api_base 已經改成
+# 單筆寫死指向 internal-lb（不再依 maxReplicaCount 動態列多筆），代表不管副本數
+# 是 1 還是多顆，internal-lb 都是這兩個 model 唯一的入口——沒部署的話 litellm 完
+# 全打不到 vLLM（2026-08-05 花了很長時間才追到根因：Traefik pod 正常 Running，
+# 只是沒有 Traefik CRD 導致零路由規則，所有請求固定 404）。因此已經納入 deploy_all，
+# 不再是選配步驟。見 k8s/internal-lb/、docs/gpu-optimization.md「6. least-request LB」。
 deploy_internal_lb() {
     info "部署 Internal LB（Traefik p2c）..."
+
+    # ingressroutes.yaml 用的 IngressRoute/Middleware/ServersTransport 是 Traefik
+    # 自訂的 CRD（traefik.io/v1alpha1）。k3s 內建 Traefik 當預設 ingress
+    # controller，CRD 是內建好的；標準 kubeadm 叢集完全沒有，apply 這個 yaml 會
+    # 直接失敗——但 rbac.yaml / deployment.yaml 這兩步不受影響，Traefik pod 照樣
+    # 會正常 Running，只是完全沒有任何路由規則，導致所有請求都回 404，且沒有
+    # 任何明顯的錯誤提示（2026-08-05 花了很長時間才追到這裡）。
+    if ! kubectl get crd ingressroutes.traefik.io &>/dev/null; then
+        die "Traefik CRD 不存在（ingressroutes.traefik.io），internal-lb 部署了也不會有任何路由規則。先安裝 CRD：
+  kubectl apply -f https://raw.githubusercontent.com/traefik/traefik/v3.6/docs/content/reference/dynamic-configuration/kubernetes-crd-definition-v1.yml
+再重跑 ./scripts/deploy.sh internal-lb"
+    fi
+
     kubectl apply -f "$REPO_ROOT/k8s/internal-lb/rbac.yaml"
     kubectl apply -f "$REPO_ROOT/k8s/internal-lb/deployment.yaml"
     kubectl apply -f "$REPO_ROOT/k8s/internal-lb/ingressroutes.yaml"
@@ -427,12 +521,14 @@ deploy_all() {
     deploy_secrets
     deploy_storage
     deploy_priorityclasses
+    deploy_internal_lb
     deploy_vllm gemma-4-31b
     deploy_vllm gemma-4-26b
     deploy_vllm light-models
     deploy_litellm
     seed_users_db
     deploy_admin_api
+    deploy_service_accounts
     echo ""
     ok "=== 全部部署完成 ==="
     show_status
@@ -454,6 +550,7 @@ main() {
         all)          deploy_all ;;
         storage)      deploy_storage ;;
         users-db)     seed_users_db ;;
+        service-accounts) deploy_service_accounts ;;
         secrets)      deploy_secrets ;;
         priorityclasses) deploy_priorityclasses ;;
         gemma-4-31b)  deploy_vllm gemma-4-31b ;;
@@ -467,7 +564,7 @@ main() {
         keda)         deploy_keda ;;
         internal-lb)  deploy_internal_lb ;;
         *)
-            echo "用法: $0 [all|storage|priorityclasses|users-db|secrets|gemma-4-31b|gemma-4-26b|light-models|litellm|admin-api|openwebui-functions|monitoring|keda|internal-lb|status]"
+            echo "用法: $0 [all|storage|priorityclasses|users-db|service-accounts|secrets|gemma-4-31b|gemma-4-26b|light-models|litellm|admin-api|openwebui-functions|monitoring|keda|internal-lb|status]"
             exit 1
             ;;
     esac

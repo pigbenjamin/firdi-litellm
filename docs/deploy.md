@@ -126,6 +126,10 @@ cp .env.example .env
 - **全新環境**：`K8S_DATA_HOST_PATH` 留空或指到不存在的路徑即可，直接用預設流程，之後靠 Admin API / Keycloak 同步建立使用者。
 - **要延續舊機器既有使用者/部門**：先把舊機器的 `users.db` 複製到新機器 `.env` 的 `K8S_DATA_HOST_PATH` 目錄下（檔名固定 `users.db`），再跑 `deploy.sh users-db`（或整套 `deploy.sh all`）即可自動搬進 PVC；也可以自己手動 `kubectl cp <本機路徑> ai-platform/<litellm-pod>:/app/data/users.db`。
 
+### 3.1 固定服務帳號（`config/service_accounts.json`）
+
+`users-db` 只負責把「一整份 users.db」搬進新機器；但**服務帳號**（`account_type=service`，例如 RAG pipeline、聊天紀錄整理等固定跑的自動化角色）通常是新機器也要重新具備、而不是單純延續舊資料的東西。`deploy.sh service-accounts`（`deploy.sh all` 也會在 admin-api 部署完後自動跑一次）讀 `config/service_accounts.json` 這份 git 追蹤的清單，收斂到 admin-api 目前狀態：帳號不存在就建立（新 `api_key` 只印一次，需自行存進 Secret）、已存在只同步 models/rate limit 等設定、絕不覆蓋既有 key。詳細規則見 [admin-api.md「固定服務帳號」](admin-api.md#固定服務帳號新機器--重灌環境必須帶的帳號)。
+
 ## 4. 單節點 vs 多節點
 
 hf-cache（模型快取）與 marker-ingest（PDF 共用目錄）這兩塊仍是 **hostPath**，本質上綁定在某一台實體節點的本地磁碟上。單節點 k3s 沒有這個問題（叢集只有一個節點，pod 不可能排到別的地方）；換成真正的多節點 k8s 叢集後，兩件事一定要處理，否則 pod 可能被排到沒有該 hostPath 目錄的節點。（`users-db-pvc` / `litellm-logs-pvc` 已經是動態佈建的 PVC，不受這節影響；admin-api 改用 `podAffinity` 釘住 litellm 所在節點來滿足 RWO 限制，見 `k8s/admin-api/deployment.yaml`。）
@@ -216,7 +220,7 @@ kubectl delete pv marker-ingest-pv
 ## 6. 一鍵部署
 
 ```bash
-./scripts/deploy.sh          # secrets → storage(PVC) → priorityclasses → 3個 vLLM → litellm → users.db 初始化 → admin-api
+./scripts/deploy.sh          # secrets → storage(PVC) → priorityclasses → 3個 vLLM → litellm → users.db 初始化 → admin-api → 固定服務帳號
 ./scripts/deploy.sh status   # 檢查 Pod/Service 狀態、印出 NodeIP + port
 ```
 
@@ -231,6 +235,7 @@ kubectl delete pv marker-ingest-pv
 ./scripts/deploy.sh litellm
 ./scripts/deploy.sh users-db     # litellm Pod Ready 後才能執行，見第 3 節
 ./scripts/deploy.sh admin-api
+./scripts/deploy.sh service-accounts  # admin-api Pod Ready 後才能執行，見第 3.1 節
 ```
 
 vLLM 冷啟動很慢是正常現象（Gemma 4 首次下載+編譯約 15~25 分鐘），細節與 `strategy: Recreate` 等維運要點見 README「vLLM 部署要點」，不重複列在此。
@@ -251,6 +256,12 @@ curl http://<node-ip>:30408/api/v1/models -H "Authorization: Bearer <ADMIN_API_K
 ## 8. 選用元件
 
 - **Keycloak 使用者同步插件**：`deploy.sh` 不會自動裝，需另外照 [keycloak/SETUP.md](../keycloak/SETUP.md) 手動 build + 部署到 Keycloak。
+  - **新環境務必檢查 Keycloak realm 的「Require SSL」設定**（Realm Settings → General）。設成 `External requests` 時，Keycloak 只把 loopback(127.0.0.1) 判定為「非 external」，叢集內部 pod 對 pod（真實 pod IP，不是 loopback）打的請求一樣會被當 external、要求 HTTPS，導致 admin-api 呼叫 Keycloak 的 client_credentials 一律 403「HTTPS required」——不只影響一次性 bulk sync，Keycloak 那邊即時 webhook 觸發的 CREATE/UPDATE 同步（`POST /api/v1/sync/keycloak`）也會用同一支 `_get_admin_token()`，一樣會壞掉，且無感（webhook 呼叫方通常不會重試或告警）。內部服務對服務的流量，通常直接把這個設定改成 `None` 即可（使用者瀏覽器登入走的是 `KEYCLOAK_BROWSER_URL`，前面有反向代理處理 HTTPS，不受影響）。
+- **OpenWebUI Connection 設定**（OpenWebUI 由另一個 repo 部署，這幾點不在 `deploy.sh` 管理範圍，但每次接新的 OpenWebUI 實例都要重做一次）：
+  1. Admin Panel → Settings → Connections，Connection 的 API Key 要填 `.env` 的 `OPENWEBUI_SERVICE_KEY`（**不是** `LITELLM_MASTER_KEY`）——填 master key 會讓 `custom_auth.py` 直接放行、`models=[]`（等於不分部門全開放），整套權限/rate limit 形同虛設。
+  2. 同一個 Connection 的「API Type」要選 **Chat Completions**（不是 Responses）——vLLM 沒有實作 `/v1/responses`，選錯會讓所有對話固定 404。
+  3. OpenWebUI 本身要開啟轉發使用者身份的環境變數（通常是 `ENABLE_FORWARD_USER_INFO_HEADERS=true`），`custom_auth.py` 靠請求裡的 `X-OpenWebUI-User-Id` header 才能解析出使用者部門/權限，沒有這個 header 會直接 401。
+  4. 改完上述設定後，OpenWebUI 前端有快取，**要硬刷新頁面或登出重新登入**才會套用新設定，只是關掉編輯視窗不會生效。
 - **marker-service ingest 目錄對齊**：若這台機器同時要跑 `docblock-rag-platform`，`.env` 的 `K8S_MARKER_INGEST_HOST_PATH` 必須跟該專案的 `docblock-ingest-pv` 指向同一個實體目錄，否則 marker-service 讀不到 PDF 且是**靜默失敗**（沒有錯誤訊息，只是轉檔目錄是空的）。
 - **對外防火牆**：LiteLLM NodePort `30400`、Admin API NodePort `30408`，若要對外存取記得開通。
 - **Prometheus + node-exporter 監控**：`./scripts/deploy.sh monitoring`。精簡版（無 Operator/Grafana/Alertmanager），只抓 `ai-platform` namespace 內有 `prometheus.io/scrape` annotation 的 pod，60 天 retention。查詢不用 port-forward，`scripts/query-metrics.sh`（`./scripts/query-metrics.sh help` 看常用查詢）透過 `kubectl exec` 直接打 Prometheus API。細節見 [gpu-optimization.md](gpu-optimization.md)。
@@ -260,7 +271,11 @@ curl http://<node-ip>:30408/api/v1/models -H "Authorization: Bearer <ADMIN_API_K
   helm install keda kedacore/keda --namespace keda --create-namespace
   ```
   裝好後 `./scripts/deploy.sh keda` 套用 31b/26b 的 `ScaledObject`（監控 monitoring 要先部署好，KEDA 的 trigger 是查 Prometheus）。新機器預設 `minReplicaCount=maxReplicaCount=1`，只接線不會真的擴容；要放大前請先讀 [gpu-optimization.md](gpu-optimization.md) 的風險表（31b 擴容會搶佔驅逐 26b）。
-- **Internal LB（Traefik p2c，多副本 least-request 分流）**：`./scripts/deploy.sh internal-lb`。只有 KEDA 的 `maxReplicaCount>1` 時才用得到，單副本場景裝了也是白裝；只走 `ClusterIP`、不對外曝露。裝好後 `config/litellm_config.yaml` 的 `api_base` 要改指向 `http://internal-lb.ai-platform.svc.cluster.local:8000/lb/<model>/v1`（現有設定已經是這樣，新機器沿用即可）。細節見 [gpu-optimization.md](gpu-optimization.md)。
+- **Internal LB（Traefik p2c，多副本 least-request 分流）**：`./scripts/deploy.sh internal-lb`（**`deploy.sh all` 已經包含這步，不是選配**——`config/litellm_config.yaml` 的 `gemma-4-31b`/`gemma-4-26b` `api_base` 已經寫死指向 internal-lb，不管副本數是 1 還是多顆，這是這兩個 model 唯一的入口，沒部署 vLLM 會完全連不到）。只走 `ClusterIP`、不對外曝露。**前置需求：叢集要先有 Traefik 的 CRD**（`kubectl get crd ingressroutes.traefik.io`），k3s 內建 Traefik 當預設 ingress controller 會自動有；標準 kubeadm 叢集要手動裝：
+  ```bash
+  kubectl apply -f https://raw.githubusercontent.com/traefik/traefik/v3.6/docs/content/reference/dynamic-configuration/kubernetes-crd-definition-v1.yml
+  ```
+  沒裝 CRD 的話 `deploy.sh` 會直接 die 並印出這行指令；如果是舊版 deploy.sh 沒有這個檢查，症狀是 internal-lb pod 正常 Running、但所有請求都回 404（Traefik 完全沒有路由規則，2026-08-05 花了很長時間才追到這裡）。細節見 [gpu-optimization.md](gpu-optimization.md)。
 
 ## 相關文件
 
