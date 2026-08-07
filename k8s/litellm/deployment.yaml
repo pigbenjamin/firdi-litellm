@@ -7,6 +7,10 @@ metadata:
     app: litellm
 spec:
   replicas: 1
+  # users-db-pvc 是 ReadWriteOnce、跟 admin-api 共用（見 k8s/admin-api/deployment.yaml
+  # 同樣的註解）——預設 RollingUpdate 會死鎖，改用 Recreate 先砍舊 pod 釋放 volume。
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: litellm

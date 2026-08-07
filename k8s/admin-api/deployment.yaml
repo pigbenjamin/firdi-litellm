@@ -7,6 +7,12 @@ metadata:
     app: admin-api
 spec:
   replicas: 1
+  # users-db-pvc 是 ReadWriteOnce，預設 RollingUpdate 會先生新 pod、等新 pod Ready
+  # 才砍舊的——但新 pod 搶不到舊 pod 還握著的 RWO volume，永遠 Ready 不了，滾動更新
+  # 死鎖（同樣的坑 gemma-4-31b/26b 的 Deployment 也踩過，見那邊 strategy 註解）。
+  # 改成 Recreate：先砍舊 pod 釋放 volume，再起新 pod。
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: admin-api
