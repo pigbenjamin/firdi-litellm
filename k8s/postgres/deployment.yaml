@@ -1,0 +1,77 @@
+# 專給 LiteLLM store_model_in_db 用的 Postgres（見 docs/external-models-ops.md
+# 「路線 C：自助上架」）。單副本、只存「模型定義」（LiteLLM 啟動時會自己跑
+# Prisma migration 建表，不需要我們手動初始化 schema）；spend log/更新已在
+# config/litellm_config.yaml 用 disable_spend_logs/disable_spend_updates 關掉
+# （本專案的用量記錄走 config/custom_logger.py 寫 jsonl + Langfuse，不需要在這裡
+# 重複一份），所以這顆 DB 的資料量預期很小。
+#
+# 沒有做高可用（單副本 + 單顆 RWO PVC）：跟 users-db-pvc 的取捨一致——這是內部
+# 管理用途（新增/查詢模型定義），不是每個請求都會打的關鍵路徑；litellm pod 本身
+# 短暫連不上這顆 DB 不影響既有模型（YAML model_list 那些）的正常請求，只會讓
+# 「新增/刪除外部模型」這個操作暫時失敗。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: ai-platform
+  labels:
+    app: postgres
+spec:
+  replicas: 1
+  # 單顆 RWO PVC，RollingUpdate 會死鎖（新 pod 搶不到舊 pod 還握著的 volume），
+  # 跟 litellm/admin-api 同樣的坑，改用 Recreate。
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5432
+              name: postgres
+          env:
+            - name: POSTGRES_USER
+              value: "litellm"
+            - name: POSTGRES_DB
+              value: "litellm"
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secrets
+                  key: postgres-password
+            # postgres 官方 image 預設資料目錄下會建立 lost+found（部分儲存後端
+            # mount 進去時已有這個目錄），PGDATA 指到子目錄避開「目錄非空」的初始化檢查。
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+          volumeMounts:
+            - name: postgres-data
+              mountPath: /var/lib/postgresql/data
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "litellm"]
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "litellm"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: postgres-data
+          persistentVolumeClaim:
+            claimName: postgres-data-pvc

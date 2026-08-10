@@ -1,0 +1,19 @@
+# Postgres 專用資料儲存，供 LiteLLM 的 store_model_in_db（外部模型自助上架，見
+# docs/external-models-ops.md「路線 C」）使用。跟 k8s/shared-storage/pvc.yaml 的
+# users-db-pvc/litellm-logs-pvc 不同，這顆 PVC 只給 postgres 這一個 Deployment
+# 掛（不用像那兩顆一樣搭配 podAffinity 釘節點），所以獨立放在這個目錄，跟著
+# postgres 自己的 deployment.yaml / service.yaml 一起管理。
+# 套用前請先 source .env，再用 envsubst 展開變數（deploy.sh 的 postgres 步驟已處理）：
+#   source .env && envsubst < k8s/postgres/pvc.yaml | kubectl apply -f -
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-data-pvc
+  namespace: ai-platform
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: ${K8S_PVC_STORAGE_CLASS}
+  resources:
+    requests:
+      storage: 2Gi

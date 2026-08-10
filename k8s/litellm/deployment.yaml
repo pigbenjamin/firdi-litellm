@@ -39,6 +39,13 @@ spec:
               value: /app/data/users.db
             - name: LOG_PATH
               value: /app/logs/usage.jsonl
+            # store_model_in_db 用（見 config/litellm_config.yaml general_settings
+            # 與 docs/external-models-ops.md「路線 C」），不是 users.db 那顆 SQLite。
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: litellm-secrets
+                  key: database-url
             # OpenRouter key placeholder（實際 key 由 custom_auth 從 users.json 取得）
             - name: OPENROUTER_API_KEY_PLACEHOLDER
               value: "placeholder"

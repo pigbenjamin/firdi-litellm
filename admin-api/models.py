@@ -72,6 +72,28 @@ class MeOut(BaseModel):
     blocked: bool
 
 
+class ExternalModelIn(BaseModel):
+    """自助上架外部模型（見 docs/external-models-ops.md「路線 C」）。
+
+    對應 LiteLLM `/model/new` 的簡化版輸入，讓「使用管理者」不需要知道 LiteLLM
+    的完整 Deployment schema。model_name 走 `openrouter/` 前綴代表要用 OpenRouter
+    路線——這個慣例跟這個模型是 YAML model_list 定義還是 DB-managed 無關，
+    config/custom_logger.py 的 async_pre_call_hook 只看請求當下的 model 字串
+    是否以 openrouter/ 開頭，來決定要不要注入呼叫者的部門 openrouter_api_key。
+    """
+    model_name: str
+    model: str  # litellm_params.model，如 "openai/gpt-4o-mini" 或 openrouter 路線的 "openai/anthropic/claude-sonnet-4-5"
+    api_key: str | None = None  # 原生 Provider 路線必填；openrouter 路線留空則用共用 placeholder，實際 key 由部門設定動態注入
+    api_base: str | None = None  # 原生 Provider 若非官方預設端點才需要；openrouter 路線留空則自動帶 https://openrouter.ai/api/v1
+
+
+class ExternalModelOut(BaseModel):
+    id: str
+    model_name: str
+    model: str
+    api_base: str | None
+
+
 class UserOut(BaseModel):
     api_key: str
     key_name: str

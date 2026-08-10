@@ -2,8 +2,9 @@
 # 快速部署腳本：將 firdi-litellm 所有 K8s 資源部署到 ai-platform namespace
 #
 # 用法：
-#   ./scripts/deploy.sh              # 部署全部（storage → internal-lb → vllm → litellm → admin-api）
+#   ./scripts/deploy.sh              # 部署全部（storage → postgres → internal-lb → vllm → litellm → admin-api）
 #   ./scripts/deploy.sh storage      # 只建立 users-db-pvc / litellm-logs-pvc
+#   ./scripts/deploy.sh postgres     # 只部署 Postgres（LiteLLM store_model_in_db 專用，見 docs/external-models-ops.md「路線 C」）
 #   ./scripts/deploy.sh users-db     # 只檢查/初始化 users.db（灌進 users-db-pvc）
 #   ./scripts/deploy.sh service-accounts  # 收斂 config/service_accounts.json 定義的固定服務帳號
 #   ./scripts/deploy.sh gemma-4-31b  # 只部署 gemma-4-31b-vllm（思考型）
@@ -60,6 +61,12 @@ deploy_secrets() {
     [[ -z "${OPENWEBUI_URL:-}" ]]         && warn "OPENWEBUI_URL 未設定"
     [[ -z "${OPENWEBUI_ADMIN_KEY:-}" ]]   && warn "OPENWEBUI_ADMIN_KEY 未設定"
     [[ -z "${OPENWEBUI_SERVICE_KEY:-}" ]] && warn "OPENWEBUI_SERVICE_KEY 未設定"
+    [[ -z "${POSTGRES_PASSWORD:-}" ]]     && warn "POSTGRES_PASSWORD 未設定，將使用預設密碼（僅供本機測試，正式環境請在 .env 設定）"
+
+    # store_model_in_db 用（外部模型自助上架，見 docs/external-models-ops.md
+    # 「路線 C」與 k8s/postgres/）。DATABASE_URL 組成的 host 固定指向
+    # k8s/postgres/service.yaml 的 postgres-service，密碼取自下面的 postgres-secrets。
+    local database_url="postgresql://litellm:${POSTGRES_PASSWORD:-change-me-postgres-password}@postgres-service.${NS}.svc.cluster.local:5432/litellm"
 
     kubectl create secret generic litellm-secrets \
         --from-literal=master-key="${LITELLM_MASTER_KEY:-sk-firdi-master-change-me}" \
@@ -69,6 +76,18 @@ deploy_secrets() {
         --from-literal=langfuse-public-key="${LANGFUSE_PUBLIC_KEY:-}" \
         --from-literal=langfuse-secret-key="${LANGFUSE_SECRET_KEY:-}" \
         --from-literal=langfuse-host="${LANGFUSE_HOST:-}" \
+        --from-literal=database-url="$database_url" \
+        --namespace="$NS" \
+        --dry-run=client -o yaml | kubectl apply -f -
+
+    # postgres 官方 image 只在「PVC 內第一次 initdb」時套用 POSTGRES_PASSWORD，之後
+    # 每次重啟都不會重新套用——事後改這裡的 POSTGRES_PASSWORD 只會讓 litellm 這邊
+    # 的連線字串跟 Postgres 裡實際的密碼對不上（litellm 開始連不上、日誌出現
+    # authentication failed）。真的要輪替密碼，要另外 kubectl exec 進 postgres pod
+    # 跑 `ALTER USER litellm WITH PASSWORD '...'`，這裡的 secret 只是負責讓 litellm
+    # 端的 DATABASE_URL 跟著更新，不會反向改動 Postgres 本身。
+    kubectl create secret generic postgres-secrets \
+        --from-literal=postgres-password="${POSTGRES_PASSWORD:-change-me-postgres-password}" \
         --namespace="$NS" \
         --dry-run=client -o yaml | kubectl apply -f -
 
@@ -208,6 +227,22 @@ deploy_storage() {
     fi
     envsubst < "$REPO_ROOT/k8s/shared-storage/pvc.yaml" | kubectl apply -f -
     ok "PVC 完成（storageClassName: $K8S_PVC_STORAGE_CLASS）"
+}
+
+# ── Postgres（store_model_in_db 專用，見 docs/external-models-ops.md「路線 C」）──
+deploy_postgres() {
+    info "部署 Postgres（store_model_in_db 專用）..."
+    export K8S_PVC_STORAGE_CLASS="${K8S_PVC_STORAGE_CLASS:-local-path}"
+    if ! kubectl get storageclass "$K8S_PVC_STORAGE_CLASS" &>/dev/null; then
+        die "StorageClass「$K8S_PVC_STORAGE_CLASS」不存在（.env 的 K8S_PVC_STORAGE_CLASS）"
+    fi
+    envsubst < "$REPO_ROOT/k8s/postgres/pvc.yaml" | kubectl apply -f -
+    kubectl apply -f "$REPO_ROOT/k8s/postgres/deployment.yaml"
+    kubectl apply -f "$REPO_ROOT/k8s/postgres/service.yaml"
+    # litellm 接下來的 deploy_litellm 會需要它已經能接受連線才連得上 DB；等到
+    # Ready 再往下走，避免 litellm 第一次啟動時 store_model_in_db 初始化失敗。
+    kubectl rollout status deployment/postgres -n "$NS" --timeout=120s
+    ok "Postgres 部署完成"
 }
 
 # ── PriorityClass（浮動 GPU 池搶佔優先權）──────────────────────────────────────
@@ -520,6 +555,7 @@ show_status() {
 deploy_all() {
     deploy_secrets
     deploy_storage
+    deploy_postgres
     deploy_priorityclasses
     deploy_internal_lb
     deploy_vllm gemma-4-31b
@@ -549,6 +585,7 @@ main() {
     case "$cmd" in
         all)          deploy_all ;;
         storage)      deploy_storage ;;
+        postgres)     deploy_postgres ;;
         users-db)     seed_users_db ;;
         service-accounts) deploy_service_accounts ;;
         secrets)      deploy_secrets ;;
@@ -564,7 +601,7 @@ main() {
         keda)         deploy_keda ;;
         internal-lb)  deploy_internal_lb ;;
         *)
-            echo "用法: $0 [all|storage|priorityclasses|users-db|service-accounts|secrets|gemma-4-31b|gemma-4-26b|light-models|litellm|admin-api|openwebui-functions|monitoring|keda|internal-lb|status]"
+            echo "用法: $0 [all|storage|postgres|priorityclasses|users-db|service-accounts|secrets|gemma-4-31b|gemma-4-26b|light-models|litellm|admin-api|openwebui-functions|monitoring|keda|internal-lb|status]"
             exit 1
             ;;
     esac

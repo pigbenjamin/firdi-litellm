@@ -8,7 +8,7 @@ from threading import Lock
 
 import httpx
 from fastapi import Request
-from litellm.proxy._types import ProxyException, UserAPIKeyAuth
+from litellm.proxy._types import LitellmUserRoles, ProxyException, UserAPIKeyAuth
 
 _WRITE_LOCK = Lock()
 
@@ -461,9 +461,19 @@ async def user_api_key_auth(request: Request, api_key: str) -> UserAPIKeyAuth:
     normalized = _normalize_api_key(api_key)
 
     # ── Master key：管理用途（admin-api 查模型清單等），全權限 ─────────────────
+    # user_role 必須明確設成 PROXY_ADMIN：LiteLLM 內建的「master key → PROXY_ADMIN」
+    # 判斷只存在於它自己的 user_api_key_auth（見 litellm/proxy/auth/user_api_key_auth.py），
+    # 這個 custom_auth 完全取代了那條路徑（custom_auth_run_common_checks: false），
+    # 沒有明確設定的話 UserAPIKeyAuth.user_role 預設是 None。GET /model/info 這類
+    # 端點不檢查角色所以感覺沒事，但 POST /model/new、/model/delete 會在
+    # ModelManagementAuthChecks.can_user_make_model_call 檢查角色，None 一律 403
+    # 「Your role=None」——外部模型自助上架（見 docs/external-models-ops.md「路線 C」）
+    # 的 admin-api 代理端點就是靠這裡吃到 PROXY_ADMIN 才打得通。
     master_key = os.getenv("LITELLM_MASTER_KEY", "")
     if master_key and normalized == master_key:
-        return UserAPIKeyAuth(api_key=normalized, models=[])  # models=[] → 全部
+        return UserAPIKeyAuth(
+            api_key=normalized, models=[], user_role=LitellmUserRoles.PROXY_ADMIN
+        )  # models=[] → 全部
 
     # ── OpenWebUI 全域 model 探索 ──────────────────────────────────────────────
     # OpenWebUI 由管理員在「連線」層級抓 model list，用 service key 但不帶 user header。

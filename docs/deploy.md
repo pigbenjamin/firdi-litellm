@@ -113,7 +113,8 @@ cp .env.example .env
 | OpenWebUI | `OPENWEBUI_URL` / `_ADMIN_KEY` / `_SERVICE_KEY` | 若接同一個 OpenWebUI，從舊機器複製 |
 | HuggingFace | `HF_TOKEN` | 新機器自己的 token，需先在 HF 網站接受 Gemma 授權 |
 | Langfuse | `LANGFUSE_PUBLIC_KEY` / `_SECRET_KEY` / `_HOST` | 要觀測性才需要，可留空 |
-| K8s PVC / hostPath | `K8S_PVC_STORAGE_CLASS`（users-db-pvc/litellm-logs-pvc 用）、`K8S_HF_CACHE_HOST_PATH` / `K8S_MARKER_INGEST_HOST_PATH`（仍是 hostPath，改成這台機器要用的路徑；不用預先 `mkdir`，`deploy.sh` 會自動建立） | 見下方說明 |
+| Postgres | `POSTGRES_PASSWORD` | LiteLLM `store_model_in_db` 用（見 [external-models-ops.md「路線 C」](external-models-ops.md)），必須改，不可沿用 `change-me` |
+| K8s PVC / hostPath | `K8S_PVC_STORAGE_CLASS`（users-db-pvc/litellm-logs-pvc/postgres-data-pvc 用）、`K8S_HF_CACHE_HOST_PATH` / `K8S_MARKER_INGEST_HOST_PATH`（仍是 hostPath，改成這台機器要用的路徑；不用預先 `mkdir`，`deploy.sh` 會自動建立） | 見下方說明 |
 | 多節點（單節點可留空） | `REGISTRY` / `K8S_GPU_NODE_HOSTNAME` | 見第 4 節 |
 
 ## 3. 使用者資料庫（`users-db-pvc`，動態佈建）
@@ -220,7 +221,7 @@ kubectl delete pv marker-ingest-pv
 ## 6. 一鍵部署
 
 ```bash
-./scripts/deploy.sh          # secrets → storage(PVC) → priorityclasses → 3個 vLLM → litellm → users.db 初始化 → admin-api → 固定服務帳號
+./scripts/deploy.sh          # secrets → storage(PVC) → postgres → priorityclasses → 3個 vLLM → litellm → users.db 初始化 → admin-api → 固定服務帳號
 ./scripts/deploy.sh status   # 檢查 Pod/Service 狀態、印出 NodeIP + port
 ```
 
@@ -229,6 +230,7 @@ kubectl delete pv marker-ingest-pv
 ```bash
 ./scripts/deploy.sh secrets
 ./scripts/deploy.sh storage
+./scripts/deploy.sh postgres      # LiteLLM store_model_in_db 專用，見 external-models-ops.md「路線 C」；要在 litellm 之前跑
 ./scripts/deploy.sh gemma-4-31b
 ./scripts/deploy.sh gemma-4-26b
 ./scripts/deploy.sh light-models

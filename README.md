@@ -78,7 +78,9 @@ LiteLLM Proxy (K8s, :30400)
 │   ├── deploy.md                — 新機器部署完整 checklist
 │   ├── admin-api.md             — Admin API 完整接口文件
 │   ├── api-access.md            — 給使用者：不透過 OpenWebUI，直接用 API/agent/coding 工具存取
-│   └── permission-sync.md       — 模型權限同步架構與 SOP（OpenWebUI 主導）
+│   ├── permission-sync.md       — 模型權限同步架構與 SOP（OpenWebUI 主導）
+│   ├── external-models.md       — 給部門使用管理者：申請外部模型上線後，自己設部門 key／開通權限
+│   └── external-models-ops.md   — 給平台管理員：新增外部模型（OpenRouter／原生 Provider API）完整技術步驟
 ├── config/                      ← LiteLLM + auth 設定（K8s 版）
 │   ├── litellm_config.yaml
 │   ├── custom_auth.py           — 從 SQLite 讀取使用者/部門設定
@@ -136,6 +138,9 @@ kubectl apply -f k8s/namespace.yaml
 # LiteLLM master key + OpenWebUI/Langfuse 整合（litellm 與 admin-api 的 deployment.yaml
 # 都用 secretKeyRef 讀這幾個 key，除了 *-b 系列外都不是 optional，缺一個都會讓 pod
 # 卡在 CreateContainerConfigError；沒有 Langfuse 也要建空字串，不能整段省略）
+# database-url 是 LiteLLM store_model_in_db 用（外部模型自助上架，見
+# docs/external-models-ops.md「路線 C」），host 指向下面第 4b 步會部署的
+# postgres-service，密碼要跟那邊建立的 postgres-secrets 一致。
 kubectl create secret generic litellm-secrets \
   --from-literal=master-key=sk-firdi-master-CHANGE-ME \
   --from-literal=openwebui-url=http://<openwebui-host>:<port> \
@@ -144,6 +149,7 @@ kubectl create secret generic litellm-secrets \
   --from-literal=langfuse-public-key=<langfuse-public-key，不用觀測性可留空字串> \
   --from-literal=langfuse-secret-key=<langfuse-secret-key> \
   --from-literal=langfuse-host=http://<langfuse-host>:<port> \
+  --from-literal=database-url=postgresql://litellm:<POSTGRES_PASSWORD>@postgres-service.ai-platform.svc.cluster.local:5432/litellm \
   -n ai-platform
 
 # HuggingFace token（下載 gated 模型用）
@@ -205,6 +211,23 @@ python3 scripts/migrate_users_json.py \
 kubectl cp /tmp/users.db "ai-platform/$POD:/app/data/users.db"
 ```
 
+### 4b. 部署 Postgres（LiteLLM store_model_in_db 專用）
+
+給外部模型自助上架用（見 [docs/external-models-ops.md「路線 C」](docs/external-models-ops.md)），跟 `users-db-pvc` 那顆 SQLite 是不同的資料庫、互不相關。單副本，自己一顆獨立 PVC（同樣走 `K8S_PVC_STORAGE_CLASS` 動態佈建）：
+
+```bash
+kubectl create secret generic postgres-secrets \
+  --from-literal=postgres-password=<跟上面 litellm-secrets 的 database-url 用同一組密碼> \
+  -n ai-platform
+
+source .env && envsubst < k8s/postgres/pvc.yaml | kubectl apply -f -
+kubectl apply -f k8s/postgres/deployment.yaml
+kubectl apply -f k8s/postgres/service.yaml
+kubectl rollout status deployment/postgres -n ai-platform
+```
+
+> 密碼只在 PVC 第一次 initdb 時生效，事後單改 Secret 不會反向更新 Postgres 裡實際的密碼，細節見 `scripts/deploy.sh` 的 `deploy_secrets()` 註解。
+
 ### 5. 部署 Admin API
 
 `k8s/admin-api/deployment.yaml` 的 `image` 欄位是 `${ADMIN_API_IMAGE}` 模板變數，需要 `envsubst` 展開，不能直接 `kubectl apply -f`。用 `./scripts/deploy.sh admin-api` 部署（會自動 build image，單節點 k3s 直接 import，設定 `.env` 的 `REGISTRY` 則 push 到 registry，多節點叢集見 [docs/deploy.md](docs/deploy.md) 第 4 節）：
@@ -245,7 +268,7 @@ kubectl get pods -n ai-platform -w
 ./scripts/deploy.sh light-models
 ```
 
-> 以上步驟 2~7 也可以直接用 `./scripts/deploy.sh`（讀取 `.env`）一鍵完成，或用 `./scripts/deploy.sh gemma-4-31b` 等指令部署單一元件。
+> 以上步驟 2~7（含 4b）也可以直接用 `./scripts/deploy.sh`（讀取 `.env`）一鍵完成，或用 `./scripts/deploy.sh gemma-4-31b` 等指令部署單一元件。
 
 ### 7. 部署 LiteLLM
 
@@ -454,6 +477,7 @@ curl http://<node-ip>:30408/api/v1/models \
 
 完整接口文件詳見 [docs/admin-api.md](docs/admin-api.md)。
 模型權限管理（OpenWebUI 主導）的架構與操作 SOP 詳見 [docs/permission-sync.md](docs/permission-sync.md)。
+新增外部模型（OpenRouter／原生 Provider API）的完整技術步驟詳見 [docs/external-models-ops.md](docs/external-models-ops.md)；給部門使用管理者的精簡版（申請流程＋自助設 key／開權限）見 [docs/external-models.md](docs/external-models.md)。
 
 ## Keycloak 使用者同步
 

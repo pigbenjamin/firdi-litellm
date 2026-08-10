@@ -16,6 +16,9 @@ Admin API 提供部門、使用者的資料管理、Keycloak 使用者同步，�
 | `GET` | `/health` | 服務健康檢查 | 無 |
 | | | | |
 | `GET` | `/api/v1/models` | 列出系統可用模型清單 | Admin Key |
+| `GET` | `/api/v1/models/external` | 列出 DB-managed（自助上架）的模型 | Admin Key |
+| `POST` | `/api/v1/models/external` | 自助上架外部模型（OpenRouter／原生 Provider） | Admin Key |
+| `DELETE` | `/api/v1/models/external/{model_id}` | 刪除 DB-managed 模型 | Admin Key |
 | | | | |
 | `GET` | `/api/v1/departments` | 列出所有部門 | Admin Key |
 | `POST` | `/api/v1/departments` | 建立部門 | Admin Key |
@@ -533,6 +536,71 @@ curl -X POST "http://<host>:30408/api/v1/me/regenerate-key" \
 curl "http://<host>:30408/api/v1/models" \
   -H "Authorization: Bearer <key>"
 ```
+
+### `GET /api/v1/models/external`
+
+列出目前 DB-managed（`store_model_in_db`，見 [external-models-ops.md「路線
+C」](external-models-ops.md)）的模型，不含 `litellm_config.yaml` `model_list` 定義的那些。
+
+**回應**（200）
+
+```json
+{
+  "models": [
+    {
+      "id": "112f74fa...",
+      "model_name": "openrouter/anthropic/claude-sonnet-4-5",
+      "model": "openai/anthropic/claude-sonnet-4-5",
+      "api_base": "https://openrouter.ai/api/v1"
+    }
+  ]
+}
+```
+
+### `POST /api/v1/models/external`
+
+自助上架一個外部模型，直接寫進 Postgres，不改 `litellm_config.yaml`、不重啟 litellm pod。
+
+**請求**
+
+```json
+{
+  "model_name": "gpt-4o-mini",
+  "model": "openai/gpt-4o-mini",
+  "api_key": "sk-xxxxxxxx",
+  "api_base": null
+}
+```
+
+- `model_name`：使用者呼叫時填的名字；`openrouter/` 前綴的模型會由
+  `custom_logger.py` 依呼叫者的部門動態注入 `openrouter_api_key`，這種情況
+  `api_key`/`api_base` 可以留空（自動帶入共用 placeholder 與 OpenRouter 端點）。
+- `model`：`litellm_params.model`，供應商前綴 + 模型 id（`openai/gpt-4o-mini`、
+  `anthropic/claude-...`……），OpenRouter 路線則是 `openai/<openrouter slug>`。
+- `api_key`：非 `openrouter/` 前綴時必填（直接存進 Postgres，LiteLLM 會加密儲存）。
+
+**回應**：201 成功；409 表示 `model_name` 已存在（YAML 或 DB-managed 皆算）；422
+表示非 openrouter 路線卻沒給 `api_key`。
+
+```bash
+curl -X POST "http://<host>:30408/api/v1/models/external" \
+  -H "Authorization: Bearer <key>" \
+  -H "Content-Type: application/json" \
+  -d '{"model_name": "gpt-4o-mini", "model": "openai/gpt-4o-mini", "api_key": "sk-xxxxxxxx"}'
+```
+
+### `DELETE /api/v1/models/external/{model_id}`
+
+刪除一個 DB-managed 模型。`model_id` 是 `GET /api/v1/models/external` 回傳的 `id`
+（不是 `model_name`）。成功回 204。
+
+```bash
+curl -X DELETE "http://<host>:30408/api/v1/models/external/<id>" \
+  -H "Authorization: Bearer <key>"
+```
+
+> 新增模型後別忘了到 OpenWebUI 開放使用權限，否則沒有人能實際呼叫，細節見
+> [external-models.md](external-models.md) 與 [permission-sync.md](permission-sync.md)。
 
 ---
 

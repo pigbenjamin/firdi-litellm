@@ -58,6 +58,8 @@ curl -X POST "http://<node-ip>:30408/api/v1/sync/openwebui/pull-models" \
 ### 新模型上線
 
 1. `config/litellm_config.yaml` 加 model entry → 更新 ConfigMap → 重啟 litellm
+   （地端模型走內部 vLLM；外部模型的完整步驟見 [external-models-ops.md](external-models-ops.md)，
+   給部門使用管理者的精簡版見 [external-models.md](external-models.md)）
 2. **立刻**到 OpenWebUI 設定該模型的授權
    （新模型預設 public：全部人看得到但 enforcement 全擋，設完授權才可用）
 3. 等 pull 或手動觸發
