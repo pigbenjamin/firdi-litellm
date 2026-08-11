@@ -73,6 +73,9 @@ deploy_secrets() {
         --from-literal=openwebui-url="${OPENWEBUI_URL:-}" \
         --from-literal=openwebui-admin-key="${OPENWEBUI_ADMIN_KEY:-}" \
         --from-literal=openwebui-service-key="${OPENWEBUI_SERVICE_KEY:-}" \
+        --from-literal=openwebui-url-b="${OPENWEBUI_URL_B:-}" \
+        --from-literal=openwebui-admin-key-b="${OPENWEBUI_ADMIN_KEY_B:-}" \
+        --from-literal=openwebui-service-key-b="${OPENWEBUI_SERVICE_KEY_B:-}" \
         --from-literal=langfuse-public-key="${LANGFUSE_PUBLIC_KEY:-}" \
         --from-literal=langfuse-secret-key="${LANGFUSE_SECRET_KEY:-}" \
         --from-literal=langfuse-host="${LANGFUSE_HOST:-}" \
