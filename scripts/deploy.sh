@@ -24,8 +24,11 @@
 # K8S_PVC_STORAGE_CLASS，單節點 k3s 預設 local-path，公司 Ceph 叢集設
 # rook-ceph-block），不再是 hostPath，admin-api 用 podAffinity 釘住 litellm 所在
 # 節點才能兩者都掛上同一顆 RWO PVC。hf-cache / marker-ingest 仍是 hostPath，多節點
-# 叢集：.env 設定 REGISTRY（推送 image 用）與 K8S_GPU_NODE_HOSTNAME（釘選 light-models
-# / marker-ingest 這組 hostPath 相關 Pod 的節點），單節點 k3s 可全部留空。
+# 叢集：.env 設定 REGISTRY（推送 image 用）與 K8S_GPU_NODE_HOSTNAME /
+# K8S_MARKER_INGEST_HOST_PATH（釘選 light-models / marker-ingest 這組 hostPath 相關
+# Pod 的節點與路徑）。單節點 k3s 可留空自動推導；**多節點叢集留空會直接報錯中止**，
+# 因為推導出來的本機 hostname 與開發機路徑在多節點上是無聲錯誤（詳見
+# resolve_node_pinning_vars 的註解）。
 # gemma-4-31b / gemma-4-26b 改走浮動 GPU 池（nodeSelector: gpu-pool=shared +
 # PriorityClass 搶佔），部署前記得先對每個 GPU 節點跑過一次
 # `./scripts/label-nodes.sh`，否則 pod 會卡 Pending。
@@ -359,6 +362,81 @@ deploy_litellm_configmaps() {
     ok "ConfigMaps 完成"
 }
 
+# ── 節點釘選變數的解析與防呆 ──────────────────────────────────────────────────
+# K8S_GPU_NODE_HOSTNAME 與 K8S_MARKER_INGEST_HOST_PATH 只有 light-models 的
+# nodeSelector 與 marker-ingest PV 的 nodeAffinity/hostPath 在吃（31b/26b 已改走
+# gpu-pool=shared 浮動池）。這兩個變數以前未設定時會**靜默** fallback 成
+# `$(hostname)` 與開發機路徑 /home/ai-x/data/docblock/ingest——在單節點開發機剛好
+# 都是對的，但在多節點叢集兩者都會出錯，而且是無聲出錯：
+#   * 2026-08-19 發現正式叢集的 light-models 被釘在「登入用的無 GPU 入口節點」，
+#     Pending 了 14 天沒人察覺（imageID 是 <none>，連 image 都沒 pull 過）。
+#   * 同一台的 marker-ingest PV 帶著開發機路徑 Bound 了 15 天。PV 的 hostPath
+#     type 是 DirectoryOrCreate，kubelet 會在節點上靜默建一個空目錄，marker 轉檔
+#     會「成功」但檔案寫進沒有人讀的地方——最難查的那種失敗。
+# 因此：單節點維持自動推導（但一定印 warn），多節點一律要求 .env 顯式設定。
+resolve_node_pinning_vars() {
+    local nodes count gpu_nodes
+    nodes="$(kubectl get nodes -o jsonpath='{.items[*].metadata.name}' 2>/dev/null)" \
+        || die "kubectl get nodes 失敗，無法判斷是單節點還是多節點叢集（請確認 kubeconfig）"
+    [[ -n "$nodes" ]] || die "kubectl get nodes 回傳空清單，無法判斷節點拓樸"
+    count="$(wc -w <<<"$nodes")"
+    # 有 nvidia.com/gpu allocatable 的節點清單（device plugin 沒裝好時會是空的）
+    gpu_nodes="$(kubectl get nodes -o go-template='{{range .items}}{{if index .status.allocatable "nvidia.com/gpu"}}{{.metadata.name}} {{end}}{{end}}' 2>/dev/null || true)"
+
+    if [[ -z "${K8S_GPU_NODE_HOSTNAME:-}" ]]; then
+        if (( count > 1 )); then
+            die "多節點叢集（$count 個節點：$nodes）必須在 .env 顯式設定 K8S_GPU_NODE_HOSTNAME，不可留空。
+       light-models 的 nodeSelector 與 marker-ingest PV 的 nodeAffinity 用它硬釘節點；留空會被推導成
+       本機 hostname「$(hostname)」，若那台沒有 GPU，pod 會永遠 Pending 且不會有明顯的錯誤訊息。
+       目前具備 nvidia.com/gpu 的節點：${gpu_nodes:-（查不到任何一台，請先確認 device plugin，見 docs/deploy.md 第 0 節）}"
+        fi
+        export K8S_GPU_NODE_HOSTNAME="$nodes"
+        warn "K8S_GPU_NODE_HOSTNAME 未設定：單節點叢集，自動使用節點名稱「$K8S_GPU_NODE_HOSTNAME」"
+    fi
+
+    grep -qw -- "$K8S_GPU_NODE_HOSTNAME" <<<"$nodes" \
+        || die "K8S_GPU_NODE_HOSTNAME=「$K8S_GPU_NODE_HOSTNAME」不是這個叢集的節點，light-models 會永遠 Pending。
+       現有節點：$nodes"
+    if ! grep -qw -- "$K8S_GPU_NODE_HOSTNAME" <<<"${gpu_nodes:- }"; then
+        warn "節點「$K8S_GPU_NODE_HOSTNAME」目前沒有可配置的 nvidia.com/gpu，而 light-models 需要 1 張卡，會卡 Pending。
+       具備 GPU 的節點：${gpu_nodes:-（無）}。device plugin 尚未裝好見 docs/deploy.md 第 0 節；
+       若這台本來就不該當 GPU 節點，請改 .env 的 K8S_GPU_NODE_HOSTNAME。"
+    fi
+
+    if [[ -z "${K8S_MARKER_INGEST_HOST_PATH:-}" ]]; then
+        if (( count > 1 )); then
+            die "多節點叢集（$count 個節點）必須在 .env 顯式設定 K8S_MARKER_INGEST_HOST_PATH，不可留空。
+       這個路徑必須與 docblock-rag-platform 的 docblock-ingest-pv 指向同一份檔案系統，否則
+       marker-service 讀不到 ingest-worker 寫入的 PDF。留空會被推導成開發機的
+       /home/ai-x/data/docblock/ingest，而 PV 的 hostPath type 是 DirectoryOrCreate——
+       kubelet 會在節點上靜默建一個空目錄，轉檔看起來成功但寫進沒有人讀的地方。"
+        fi
+        export K8S_MARKER_INGEST_HOST_PATH="/home/ai-x/data/docblock/ingest"
+        warn "K8S_MARKER_INGEST_HOST_PATH 未設定：單節點叢集，沿用預設「$K8S_MARKER_INGEST_HOST_PATH」"
+    fi
+}
+
+# PV 的 hostPath 與 nodeAffinity 建立後不可變（kubectl apply 改不動，也不會用明顯的
+# 方式抱怨），所以 apply 之前先比對叢集現況與 .env，不一致就停下來講清楚怎麼處理。
+check_marker_ingest_pv_drift() {
+    local pv="marker-ingest-pv" cur_path cur_node
+    kubectl get pv "$pv" &>/dev/null || return 0   # 還沒建立過，等下 apply 時一併建立
+
+    cur_path="$(kubectl get pv "$pv" -o jsonpath='{.spec.hostPath.path}' 2>/dev/null || true)"
+    cur_node="$(kubectl get pv "$pv" -o jsonpath='{.spec.nodeAffinity.required.nodeSelectorTerms[0].matchExpressions[0].values[0]}' 2>/dev/null || true)"
+    [[ "$cur_path" == "$K8S_MARKER_INGEST_HOST_PATH" && "$cur_node" == "$K8S_GPU_NODE_HOSTNAME" ]] && return 0
+
+    die "現有 PV「$pv」與 .env 不一致，而 PV 的 hostPath / nodeAffinity 建立後不可變：
+       叢集現況：path=${cur_path:-<空>}  node=${cur_node:-<空>}
+       .env 期望：path=$K8S_MARKER_INGEST_HOST_PATH  node=$K8S_GPU_NODE_HOSTNAME
+       要改成 .env 的值，必須刪掉重建（PV 是 Retain + hostPath，刪 PV 物件不會刪掉節點上的檔案）：
+         kubectl -n $NS scale deploy/light-models-vllm --replicas=0
+         kubectl -n $NS delete pvc marker-ingest-pvc
+         kubectl delete pv marker-ingest-pv
+         ./scripts/deploy.sh light-models
+       若叢集現況才是對的，請改 .env 對齊它，不要刪 PV。"
+}
+
 # ── vLLM 部署 helper ──────────────────────────────────────────────────────────
 deploy_vllm() {
     local name="$1"   # gemma-4-31b / gemma-4-26b / light-models
@@ -379,19 +457,19 @@ handler: nvidia
 EOF"
     fi
 
-    # 31b/26b 已改走浮動池（nodeSelector: gpu-pool=shared），不再吃這個變數；
-    # 只有 light-models（仍 hostname 硬釘，見該 deployment.yaml 註解）與
-    # marker-ingest-pvc 還需要它
-    export K8S_GPU_NODE_HOSTNAME="${K8S_GPU_NODE_HOSTNAME:-$(hostname)}"
-
+    # K8S_GPU_NODE_HOSTNAME / K8S_MARKER_INGEST_HOST_PATH 只有 light-models 與
+    # marker-ingest PV 在吃（31b/26b 已改走浮動池 nodeSelector: gpu-pool=shared），
+    # 所以只在這個分支解析與檢查——部署 31b/26b 不該被這兩個變數擋住。
     if [[ "$name" == "light-models" ]]; then
+        resolve_node_pinning_vars
+        check_marker_ingest_pv_drift
+
         info "Build light-models combo image..."
         build_and_publish_image "firdi-light-models:latest" "$REPO_ROOT" "$REPO_ROOT/marker-service/Dockerfile"
         export LIGHT_MODELS_IMAGE="$IMAGE_REF"
         export LIGHT_MODELS_IMAGE_PULL_POLICY="$IMAGE_PULL_POLICY"
 
-        info "套用 marker 共用 ingest-data PV/PVC..."
-        export K8S_MARKER_INGEST_HOST_PATH="${K8S_MARKER_INGEST_HOST_PATH:-/home/ai-x/data/docblock/ingest}"
+        info "套用 marker 共用 ingest-data PV/PVC（node: $K8S_GPU_NODE_HOSTNAME，path: $K8S_MARKER_INGEST_HOST_PATH）..."
         envsubst < "$REPO_ROOT/k8s/shared-storage/marker-ingest-pvc.yaml" | kubectl apply -f -
     fi
 
@@ -400,7 +478,10 @@ EOF"
     else
         info "部署 $name vLLM（浮動池：gpu-pool=shared）..."
     fi
-    export K8S_HF_CACHE_HOST_PATH="${K8S_HF_CACHE_HOST_PATH:-/opt/firdi/hf-cache}"
+    if [[ -z "${K8S_HF_CACHE_HOST_PATH:-}" ]]; then
+        export K8S_HF_CACHE_HOST_PATH="/opt/firdi/hf-cache"
+        warn "K8S_HF_CACHE_HOST_PATH 未設定，沿用預設「$K8S_HF_CACHE_HOST_PATH」——若節點上既有的快取在別的路徑，模型會整份重新下載"
+    fi
     for f in "$dir"/*.yaml; do
         envsubst < "$f" | kubectl apply -f -
     done

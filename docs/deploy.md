@@ -185,7 +185,13 @@ kubectl get nodes   # 確認節點名稱
 K8S_GPU_NODE_HOSTNAME=node-b       # 承載 K8S_MARKER_INGEST_HOST_PATH 的節點（light-models 所在節點）
 ```
 
-單節點 k3s 這個變數留空即可，`deploy.sh` 會自動帶入 `$(hostname)`。
+**單節點 k3s 才可以留空**（`deploy.sh` 會自動帶入 `kubectl get nodes` 那唯一一個節點的名稱，並印一行 `[WARN]`）；**多節點叢集留空會直接報錯中止**，`K8S_MARKER_INGEST_HOST_PATH` 也一樣。這是 2026-08-19 補上的防呆——在那之前留空是靜默 fallback 成 `$(hostname)` 與開發機路徑 `/home/ai-x/data/docblock/ingest`，結果正式叢集的 light-models 被釘在「登入用的無 GPU 入口節點」Pending 了 14 天沒人發現，同一台的 `marker-ingest-pv` 也帶著開發機路徑 Bound 了 15 天（PV 的 hostPath `type: DirectoryOrCreate`，kubelet 會靜默建一個空目錄，marker 轉檔看起來成功但寫進沒人讀的地方）。
+
+`deploy.sh light-models` 現在還會多做三件檢查，都是為了讓上面那類問題當場就爆出來、而不是變成幾週後才發現的 Pending：
+
+- `K8S_GPU_NODE_HOSTNAME` 指的節點**不存在** → 中止（以前會排到永遠 Pending）。
+- 該節點沒有 `nvidia.com/gpu` allocatable → 大聲 `[WARN]`（不中止，因為 device plugin 可能還沒裝，見第 0 節）。
+- 既有 `marker-ingest-pv` 的 `hostPath` / `nodeAffinity` 與 `.env` 不一致 → 中止，並把重建指令印出來（PV 這兩個欄位不可變，`kubectl apply` 改不動它）。
 
 `users-db-pvc`（admin-api + litellm 共用）不再靠節點釘選，而是 admin-api 用 `podAffinity` 主動釘住 litellm Pod 所在節點（見 `k8s/admin-api/deployment.yaml`），滿足 Ceph RBD / local-path 這類 storageClassName 的 ReadWriteOnce 限制；`litellm-logs-pvc` 只有 litellm 自己掛，沒有跨 Deployment 共用問題，不需要 affinity。
 
