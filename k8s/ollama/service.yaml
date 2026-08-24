@@ -1,0 +1,33 @@
+# 地端 Ollama 在叢集內的固定 DNS 名稱。
+#
+# Ollama 本身跑在節點主機上（systemd / 手動啟動），不由 K8s 管理，這個檔案也不會
+# 安裝或啟動它——只是給它一個叢集內解析得到的名字。
+#
+# 刻意不帶 selector：這個 Service 後面沒有任何 Pod，實際位址由 endpointslice.yaml
+# 手動指向主機的 IP:11434。沒有 selector 時 endpointslice controller 不會去管這個
+# Service，手寫的 EndpointSlice 才不會被它覆蓋掉。
+#
+# 有了這個名字之後：
+#   * config/litellm_config.yaml 既有的 `ollama/*` 那筆（api_base:
+#     http://ollama-service:11434）不用改就解析得到——但那條 wildcard 路線在
+#     權限層是不可用的，原因見 docs/external-models-ops.md「地端 Ollama」。
+#   * 用 admin-api 逐個註冊 Ollama 模型時，api_base 填 http://ollama-service:11434
+#     而不是節點 IP，模型定義裡就不會硬編碼一個換機器就失效的位址。
+#
+# 【已規劃】Ollama 之後會改成由 K8s 啟動。這個 Service 名稱刻意設計成遷移時不用改：
+# 屆時只要補上 selector 並刪掉 endpointslice.yaml，已註冊的模型定義（api_base 指向
+# ollama-service）完全不用動。前置問題見 docs/external-models-ops.md。
+apiVersion: v1
+kind: Service
+metadata:
+  name: ollama-service
+  namespace: ai-platform
+  labels:
+    app: ollama
+spec:
+  # 沒有 selector：後端由 endpoints.yaml 手動指定
+  ports:
+    - name: http
+      port: 11434
+      targetPort: 11434
+      protocol: TCP

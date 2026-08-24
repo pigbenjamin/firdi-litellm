@@ -1,0 +1,40 @@
+# ollama-service 的實際後端：節點主機上的 Ollama（監聽 11434）。
+#
+# ${OLLAMA_HOST_IP} 由 scripts/deploy.sh 以 envsubst 帶入（.env 的 OLLAMA_HOST_IP；
+# 未設定時單節點自動取該節點的 InternalIP 並印 warn，多節點一律要求顯式設定——
+# Ollama 跑在哪一台無法從叢集推導，猜錯會指向一台沒有 Ollama 的機器）。
+#
+# 用 discovery.k8s.io/v1 EndpointSlice 而非 core/v1 Endpoints：後者在 K8s 1.33+
+# 已標記 deprecated，apply 時會每次印警告（本專案叢集是 v1.35）。手寫一筆固定
+# 位址兩者都可行，但新設定不該建在已棄用的 API 上。
+#
+# 【已規劃】Ollama 之後會改成由 K8s 啟動。屆時做法是刪掉這個檔案、給 service.yaml
+# 補上 selector，讓 endpointslice controller 自己管，而不是繼續維護手寫的 slice。
+# Ollama pod 本身的 GPU 配額與模型儲存有已知的前置問題，見
+# docs/external-models-ops.md「地端 Ollama」的「日後改由 K8s 啟動」。
+#
+# 前提：Ollama 必須監聽 0.0.0.0（OLLAMA_HOST=0.0.0.0:11434），只綁 127.0.0.1
+# 的話 Pod 網路過來的連線會被拒絕。
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
+metadata:
+  name: ollama-service
+  namespace: ai-platform
+  labels:
+    app: ollama
+    # 這個 label 是 EndpointSlice 與 Service 唯一的關聯方式（不是靠同名），
+    # 拼錯或漏掉的話 Service 會是空後端，且不會有任何錯誤訊息
+    kubernetes.io/service-name: ollama-service
+addressType: IPv4
+endpoints:
+  - addresses:
+      - "${OLLAMA_HOST_IP}"
+    conditions:
+      # 手寫的 slice 沒有 controller 幫忙做健康判定，這裡固定標 ready；
+      # Ollama 沒在跑時流量照樣會被送過去，症狀是 connection refused
+      ready: true
+ports:
+  # name 必須與 Service 的 port name 一致，否則流量對不上
+  - name: http
+    port: 11434
+    protocol: TCP

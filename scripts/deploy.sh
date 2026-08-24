@@ -19,6 +19,7 @@
 #   ./scripts/deploy.sh monitoring    # 只套用 Prometheus + node-exporter（精簡版，選配）
 #   ./scripts/deploy.sh keda         # 只套用 KEDA ScaledObject（KEDA operator 需先用 Helm 裝好）
 #   ./scripts/deploy.sh internal-lb  # 只套用內部 Traefik p2c 負載平衡（all 已包含；gemma-4-31b/26b 唯一入口，不論副本數）
+#   ./scripts/deploy.sh ollama       # 只建立指向主機 Ollama 的 ollama-service（不啟動 Ollama 本身；選配，不在 all 內）
 #
 # users-db-pvc / litellm-logs-pvc 走 storageClassName 動態佈建（.env 的
 # K8S_PVC_STORAGE_CLASS，單節點 k3s 預設 local-path，公司 Ceph 叢集設
@@ -617,6 +618,64 @@ deploy_internal_lb() {
     ok "Internal LB 套用完成"
 }
 
+# ── 地端 Ollama 的 Service/Endpoints ─────────────────────────────────────────
+#
+# 只建立「叢集內指向主機 Ollama 的固定 DNS 名稱」，**不會安裝、不會啟動、也不會
+# 設定 Ollama 本身**——Ollama 跑在節點主機上（systemd 或手動），生命週期不由這裡管。
+#
+# 刻意不納入 deploy_all：Ollama 是選配的臨時地端來源，正式模型走 k8s/vllm/。
+# 見 k8s/ollama/、docs/external-models-ops.md「地端 Ollama」。
+resolve_ollama_host_ip() {
+    local nodes count ip
+    if [[ -n "${OLLAMA_HOST_IP:-}" ]]; then
+        export OLLAMA_HOST_IP
+        return 0
+    fi
+    nodes="$(kubectl get nodes -o jsonpath='{.items[*].metadata.name}' 2>/dev/null)" \
+        || die "kubectl get nodes 失敗，無法推導 OLLAMA_HOST_IP（請確認 kubeconfig）"
+    [[ -n "$nodes" ]] || die "kubectl get nodes 回傳空清單，無法推導 OLLAMA_HOST_IP"
+    count="$(wc -w <<<"$nodes")"
+
+    # 多節點一律要求顯式設定：Ollama 跑在哪一台主機上完全無法從叢集狀態推導
+    # （它不是 K8s 資源），猜錯的話 ollama-service 會指向一台沒有 Ollama 的機器，
+    # 症狀是呼叫模型時 connection refused——跟 light-models 那個節點釘錯的坑同一類，
+    # 所以照同樣的規則處理：單節點自動推導但一定印 warn，多節點中止。
+    if (( count > 1 )); then
+        die "多節點叢集（$count 個節點：$nodes）必須在 .env 顯式設定 OLLAMA_HOST_IP，不可留空。
+       各節點的 InternalIP：
+$(kubectl get nodes -o custom-columns=NAME:.metadata.name,INTERNAL-IP:.status.addresses[?\(@.type==\"InternalIP\"\)].address --no-headers 2>/dev/null | sed 's/^/         /')
+       若 Ollama 根本不在叢集節點上（例如另一台開發機），直接填那台的 IP 即可。"
+    fi
+
+    ip="$(kubectl get node "$nodes" -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null)"
+    [[ -n "$ip" ]] || die "查不到節點「$nodes」的 InternalIP，請在 .env 顯式設定 OLLAMA_HOST_IP"
+    export OLLAMA_HOST_IP="$ip"
+    warn "OLLAMA_HOST_IP 未設定：單節點叢集，自動使用節點 InternalIP「$OLLAMA_HOST_IP」"
+}
+
+deploy_ollama() {
+    resolve_ollama_host_ip
+    info "套用 ollama-service（指向 ${OLLAMA_HOST_IP}:11434 的主機 Ollama）..."
+    kubectl apply -f "$REPO_ROOT/k8s/ollama/service.yaml"
+    envsubst < "$REPO_ROOT/k8s/ollama/endpointslice.yaml" | kubectl apply -f -
+
+    # 可達性檢查刻意用 warn 而非 die：這支指令的用途就是「先把管線接好」，
+    # Ollama 還沒啟動是完全合理的狀態，之後啟動不需要重跑這裡。
+    if curl -sf --max-time 3 "http://${OLLAMA_HOST_IP}:11434/api/tags" > /dev/null 2>&1; then
+        local n
+        n="$(curl -sf --max-time 3 "http://${OLLAMA_HOST_IP}:11434/api/tags" \
+             | grep -o '"model":' | wc -l)"
+        ok "ollama-service 套用完成，主機 Ollama 有回應（${n} 個模型）"
+    else
+        warn "ollama-service 套用完成，但 ${OLLAMA_HOST_IP}:11434 目前沒有回應。
+       Ollama 還沒啟動的話這是預期的，啟動後不需要重跑這個指令。
+       若 Ollama 已經在跑卻連不到，通常是它只綁了 127.0.0.1——要設 OLLAMA_HOST=0.0.0.0:11434。
+       注意這裡是從執行 deploy.sh 的機器測的，真正要通的是 Pod 網路，驗證方式：
+         kubectl run -n $NS ollama-probe --rm -i --restart=Never --image=curlimages/curl:8.7.1 -- \\
+           curl -sf http://ollama-service:11434/api/tags"
+    fi
+}
+
 # ── Status ────────────────────────────────────────────────────────────────────
 show_status() {
     echo ""
@@ -684,8 +743,9 @@ main() {
         monitoring)   deploy_monitoring ;;
         keda)         deploy_keda ;;
         internal-lb)  deploy_internal_lb ;;
+        ollama)       deploy_ollama ;;
         *)
-            echo "用法: $0 [all|storage|postgres|priorityclasses|users-db|service-accounts|secrets|gemma-4-31b|gemma-4-26b|light-models|litellm|admin-api|openwebui-functions|monitoring|keda|internal-lb|status]"
+            echo "用法: $0 [all|storage|postgres|priorityclasses|users-db|service-accounts|secrets|gemma-4-31b|gemma-4-26b|light-models|litellm|admin-api|openwebui-functions|monitoring|keda|internal-lb|ollama|status]"
             exit 1
             ;;
     esac
