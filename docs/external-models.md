@@ -64,7 +64,43 @@ curl -X PATCH "http://<node-ip>:30408/api/v1/departments/<你的部門代碼>" \
 
 模型接進系統後，預設沒有任何人能用（等同上架但沒開賣），一定要手動開通：
 
-1. 到 OpenWebUI → Workspace → Models → 選這個模型 → 設定你的部門（group）或個別使用者的授權
-2. 最多等 2 分鐘會自動生效；需要立即生效可以請平台管理員協助手動觸發
+1. OpenWebUI → 設定 → 連線 → 編輯 LiteLLM 那條連線 → 在「模型 IDs」新增一筆，
+   **字串必須跟步驟 1 的 `model_name` 逐字完全相同**（見下方警告）
+2. OpenWebUI → Workspace → Models → 選這個模型 → 設定你的部門（group）或個別使用者的授權
+3. 最多等 2 分鐘會自動生效；需要立即生效可以請平台管理員協助手動觸發
 
 > 權限異動請一律透過 OpenWebUI 畫面設定，不要透過其他管道調整，否則可能在下次自動同步時被覆蓋。
+
+### ⚠️ 最容易踩的坑：OpenWebUI 的模型 ID 必須等於 `model_name`
+
+## 完整範例：上架 OpenRouter 的 `openai/gpt-5.6-terra`
+
+以「把 OpenRouter 上的 `openai/gpt-5.6-terra` 開給 DE5000 使用」為例，把三個步驟串起來
+（節點位址 `10.0.220.54:30408` 請換成你環境的實際位址）：
+
+```bash
+# 步驟 1：接進系統。model_name 保留 openrouter/ 前綴，api_key/api_base 留空
+curl -X POST "http://10.0.220.54:30408/api/v1/models/external" \
+  -H "Authorization: Bearer <admin-api-key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+        "model_name": "openrouter/openai/gpt-5.6-terra",
+        "model": "openai/gpt-5.6-terra"
+      }'
+# → {"model_name":"openrouter/openai/gpt-5.6-terra","status":"created"}
+
+# 步驟 2：設定 DE5000 自己的 OpenRouter key（費用算在該部門帳號）
+curl -X PATCH "http://10.0.220.54:30408/api/v1/departments/DE5000" \
+  -H "Authorization: Bearer <admin-api-key>" \
+  -H "Content-Type: application/json" \
+  -d '{"openrouter_api_key": "sk-or-v1-xxxxxxxx"}'
+# → 回應會帶出該部門完整設定，確認 openrouter_api_key 已寫入
+```
+
+步驟 3 在 OpenWebUI 畫面上做：
+
+1. 設定 → 連線 → 編輯 LiteLLM 連線 → 「模型 IDs」加一筆
+   `openrouter/openai/gpt-5.6-terra`（**跟上面 `model_name` 逐字相同**）
+2. Workspace → Models → 選 `openrouter/openai/gpt-5.6-terra` → 授權給 group `DE5000`
+
+

@@ -94,6 +94,103 @@ curl -X DELETE "http://<node-ip>:30408/api/v1/models/external/<id>" \
 接著做本文件後半的「開放使用權限」。**不需要**做「部署＋重啟」那一節——那一節只
 適用路線 A/B 的 YAML 改動。
 
+### 地端 Ollama（跑在主機上、不進 YAML 的地端來源）
+
+路線 C 不限於雲端模型——`api_base` 可以指向任何 LiteLLM 連得到的位址，所以「主機上
+跑著的 Ollama」也走這條路。跟 `k8s/vllm/` 那幾個地端模型的分工是：
+
+| | 走哪裡 |
+|---|---|
+| 長期正式服務、需要 KEDA 擴縮與 internal-lb least-request 分流 | `k8s/vllm/` ＋ YAML `model_list`（牽涉 Deployment 本身） |
+| 臨時、應急、不需要擴縮的地端來源（例如主機上的 Ollama） | **路線 C** |
+
+#### 1. 建立 `ollama-service`（一次性）
+
+Ollama 跑在節點主機上，不是 K8s 資源，所以叢集內沒有名字可用。`k8s/ollama/` 用一個
+**沒有 selector 的 Service ＋ 手寫 EndpointSlice** 給它一個固定 DNS 名稱：
+
+```bash
+# .env 設 OLLAMA_HOST_IP（多節點必填；單節點留空會自動取節點 InternalIP 並印 warn）
+./scripts/deploy.sh ollama
+```
+
+這支指令**不會安裝也不會啟動 Ollama**，只建立指向它的 Service/Endpoints；Ollama 還沒
+啟動時照樣可以先跑，之後啟動不需要重跑。它也刻意不在 `deploy.sh all` 裡（選配元件）。
+
+前提是 Ollama 要監聽 `0.0.0.0`（`OLLAMA_HOST=0.0.0.0:11434`）——只綁 `127.0.0.1` 的話
+Pod 網路過來會被拒絕。驗證 Pod 真的連得到：
+
+```bash
+kubectl run -n ai-platform ollama-probe --rm -i --restart=Never \
+  --image=curlimages/curl:8.7.1 -- curl -sf http://ollama-service:11434/api/tags
+```
+
+#### 2. 逐個註冊要開放的模型
+
+```bash
+curl -X POST "http://<node-ip>:30408/api/v1/models/external" \
+  -H "Authorization: Bearer <admin-api-key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+        "model_name": "ollama/gemma4:31b",
+        "model": "ollama/gemma4:31b",
+        "api_base": "http://ollama-service:11434",
+        "api_key": "EMPTY"
+      }'
+```
+
+- `api_key` 是必填的（`create_external_model` 對非 `openrouter/` 路線少了它會回 422），
+  但 Ollama 不驗證，填 `EMPTY` 即可——跟 YAML 裡地端 vLLM 那幾筆一致。
+- `ollama/` 是 LiteLLM 原生 provider 前綴，`api_base` **不帶 `/v1`**。要帶 `/v1` 的話
+  `model` 得改成 `openai/gemma4:31b`（走 Ollama 的 OpenAI 相容端點）。
+- `api_base` 填 `ollama-service` 而不是節點 IP，模型定義裡才不會硬編碼一個換機器就
+  失效的位址。
+- 地端 vLLM 同理，`model` 用 `hosted_vllm/<served-model-name>`、`api_base` 指向該
+  Service，跟 `config/litellm_config.yaml` 現有那幾筆的寫法一致。
+
+#### 為什麼不能靠 `ollama/*` wildcard
+
+`config/litellm_config.yaml` 有一筆 `model_name: ollama/*`（`api_base:
+http://ollama-service:11434`）。建好 Service 之後它會解析得到，但**這條路線在權限層
+是不可用的**，不要拿它當正式方案：
+
+- LiteLLM 的 `/models` 對 wildcard 條目回的是 `ollama/*` 這個字串本身，不會列舉實際
+  的模型，所以 OpenWebUI 只看得到一個叫 `ollama/*` 的模型，permission sync 也只能
+  授權這個字串。
+- 而 `custom_auth.py` 的 `_check_model_allowed` 是精確字串比對，`_effective_models`
+  只認字面上的 `"*"` 代表不限制，不會把 `"ollama/*"` 展開。使用者實際發的請求是
+  `ollama/gemma4:31b`，跟 `ollama/*` 不相等 → 403。
+- 結果是這筆 wildcard 只有 master key 打得到（master key 走 `custom_auth` 的
+  PROXY_ADMIN 分支，跳過模型檢查），一般使用者完全用不了。
+
+所以它的定位只有「管理員拿 master key 快速試打某個 Ollama 模型」，要給人用一定要照
+上面第 2 步逐個註冊。
+
+#### 日後改由 K8s 啟動
+
+已規劃把 Ollama 從主機搬進 K8s。**這條管道不受影響**：`ollama-service` 這個名稱就是
+遷移的接縫，已註冊模型的 `api_base` 都指向它，屆時只要給 `k8s/ollama/service.yaml`
+補上 selector、刪掉 `endpointslice.yaml`，模型定義一行都不用改。
+
+真正要處理的是 Ollama pod 本身，兩件事已知會卡住，留給做遷移的人先評估：
+
+- **GPU 配額**：這個叢集的 device plugin 配的是整張卡、不是記憶體切片。以 ai-x-dev 為例
+  `nvidia.com/gpu` allocatable 是 2，gemma-4-26b 與 light-models 各佔 1、已經配完，
+  所以宣告 `nvidia.com/gpu: 1` 的 pod 會永遠 Pending——即使卡上還有大量 VRAM 閒著。
+  主機版能跑正是因為它繞過 scheduler 直接用閒置 VRAM。
+- **模型儲存**：主機上 `/usr/share/ollama/.ollama` 約 265GB（24 個模型）。用 PVC 要
+  同等容量，用 hostPath 免搬移但會把 pod 釘死在該節點（`marker-ingest-pvc` 踩過這個坑）。
+
+#### 運維注意：GPU 爭用
+
+主機上的 Ollama **不受 KEDA 管、不會排隊**，它跟 vLLM 搶同幾張卡是先搶先贏。開放大
+模型（例如 `gpt-oss:120b` 約 65GB、`llama4:scout` 約 67GB）之前先確認卡上還有多少
+餘量，否則可能把正在服務的 vLLM 擠掉。查法：
+
+```bash
+nvidia-smi --query-gpu=index,memory.used,memory.total --format=csv
+```
+
 ---
 
 ## 路線 A：透過 OpenRouter
@@ -224,13 +321,32 @@ kubectl rollout status deployment/litellm -n ai-platform
 **權威來源是 OpenWebUI**，正常流程（使用管理者可自行操作，見
 [external-models.md](external-models.md)）：
 
-1. OpenWebUI → Workspace → Models → 選這個模型 → 設定 group（部門）／user 授權
-2. 等 CronJob（最多 2 分鐘）自動 pull，或手動立即生效：
+1. OpenWebUI → 設定 → 連線 → 編輯 LiteLLM 連線 → 「模型 IDs」加一筆，字串必須等於
+   `model_name`（見下方「模型 ID 必須逐字相同」）
+2. OpenWebUI → Workspace → Models → 選這個模型 → 設定 group（部門）／user 授權
+3. 等 CronJob（最多 2 分鐘）自動 pull，或手動立即生效：
 
 ```bash
 curl -X POST "http://<node-ip>:30408/api/v1/sync/openwebui/pull-models" \
   -H "Authorization: Bearer <admin-api-key>"
 ```
+
+### 模型 ID 必須逐字相同（三條路線都適用的常見故障）
+
+`pull_openwebui_model_access`（[openwebui.py](../admin-api/routers/openwebui.py)）的第一件事
+是拿 LiteLLM `/models` 的 id 集合當白名單，OpenWebUI 上 `id` 不在集合裡的模型直接歸入回應的
+`ignored_models` 跳過——這是為了不去碰 OpenWebUI 自己的連線模型（`local-ollama.*`）與 pipe。
+副作用是：OpenWebUI 那邊模型 ID 打錯時，同步**不會報錯**（HTTP 200、`changed_departments` 空），
+只是那筆授權永遠不會進 DB，使用者照樣 403。實務上最常見的填錯是把路線 C 的 `model` 供應商
+slug（`openai/gpt-5.6-terra`）當成模型 ID，而正確的是 `model_name`
+（`openrouter/openai/gpt-5.6-terra`）。
+
+排查：`?dry_run=true` 跑一次 pull，看目標模型是落在 `changed_departments` 還是 `ignored_models`。
+
+`dept_id` 的粒度也常被問到：`dept_id` = Keycloak group path 第一層
+（`keycloak/SETUP.md`、`sync.py` 的 `parts[0]`），**沒有階層繼承**——授權 `DE0000` 不會及於
+`DE1200`。目前 realm 的 `DExxxx` 都是各自獨立的第一層 group，所以四位數部門代碼就是
+group 授權能到的最細層級；再細只能走個人授權（`users.models`）。
 
 ### 例外流程：直接 PATCH DB（例如 OpenWebUI 那邊還沒排到、想先開放測試）
 
