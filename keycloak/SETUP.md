@@ -80,10 +80,21 @@ Clients → Create client
 儲存後進入 `Settings`，設定：
 
 ```
-Valid redirect URIs：<ADMIN_API_PUBLIC_URL>/api/v1/me/web/callback
-Valid post logout redirect URIs：<ADMIN_API_PUBLIC_URL>/api/v1/me/web/login
+Valid redirect URIs：
+  <ADMIN_API_PUBLIC_URL>/api/v1/me/web/callback
+  <ADMIN_API_PUBLIC_URL>/api/v1/admin/web/callback
+Valid post logout redirect URIs：
+  <ADMIN_API_PUBLIC_URL>/api/v1/me/web/login
+  <ADMIN_API_PUBLIC_URL>/api/v1/admin/web/login
 Web origins：<ADMIN_API_PUBLIC_URL>（或設 +，讓 Web origins 直接沿用 redirect URI 的來源）
 ```
+
+後面兩行是給部門管理入口（`/api/v1/admin/web`，見 [docs/admin-web.md](../docs/admin-web.md)）用的——
+沿用同一個 client，不用另外建。**Keycloak 對 redirect URI 是精確比對**（實測過：
+少加這兩行，`/api/v1/admin/web/callback` 會直接回 `400 redirect_uri 未註冊`，即使
+`/api/v1/me/web/callback` 那行已經設定正確也一樣）。三個環境（ai-x-dev/k8s01/gpu01）
+各自的 Keycloak realm 都要補這兩行，因為 `firdiadm` 這個管理帳號在三個環境是各自
+建立的、且這個設定是 client 層級、不會跨環境同步。
 
 `<ADMIN_API_PUBLIC_URL>` 就是 `.env` 裡同名變數的值——**使用者瀏覽器實際連得到**的
 admin-api 網址（反向代理位址，或單節點測試用 `http://<node-ip>:30408`），跟叢集

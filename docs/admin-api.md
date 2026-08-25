@@ -48,6 +48,12 @@ Admin API 提供部門、使用者的資料管理、Keycloak 使用者同步，�
 | | | | |
 | `POST` | `/api/v1/sync/openwebui/pull-models` | OpenWebUI 授權 → DB（主同步，CronJob 自動）| Admin Key |
 | `POST` | `/api/v1/sync/openwebui/models` | DB → OpenWebUI 完整鏡像 push | Admin Key |
+| | | | |
+| `GET` | `/api/v1/admin/web` | **部門管理入口**：瀏覽器版，涵蓋上架/下架模型、部門 provider key、觸發同步 | Keycloak Session（白名單） |
+
+> 部門管理入口的完整畫面、環境變數與操作說明見 [admin-web.md](admin-web.md)；規劃背景見
+> [admin-web-plan.md](admin-web-plan.md)。本文件其餘端點（`ADMIN_API_KEY`）能力更廣、
+> 持續保留，不會被網頁版取代。
 
 > 模型權限同步的架構說明與 SOP 見 [permission-sync.md](permission-sync.md)。
 > **注意**：DB 側用 PATCH 改權限必須遵守 `pull → PATCH → push` 順序，否則會被下次 pull 還原。
@@ -145,6 +151,7 @@ enforcement 在 `config/custom_auth.py` 的 `_effective_models()`，兩邊邏輯
   "allowed_models": ["gemma-4-31B-it", "gemma-4-26B-A4B-it"],
   "dept_rpm_limit": 300,
   "dept_tpm_limit": 1000000,
+  "provider_keys": {"openrouter": "sk-or-...", "openai": "sk-..."},
   "created_at": "2025-01-01T00:00:00",
   "updated_at": "2025-01-01T00:00:00"
 }
@@ -154,10 +161,15 @@ enforcement 在 `config/custom_auth.py` 的 `_effective_models()`，兩邊邏輯
 |------|------|------|
 | `dept_id` | string | 部門唯一識別碼（主鍵，不可更改） |
 | `dept_name` | string | 部門顯示名稱 |
-| `openrouter_api_key` | string | 此部門存取雲端 OpenRouter 的 API Key |
+| `openrouter_api_key` | string | 此部門存取雲端 OpenRouter 的 API Key（`provider_keys.openrouter` 的同義寫法，見下） |
 | `allowed_models` | string[] | 部門白名單模型清單，`["*"]` 代表全部允許 |
 | `dept_rpm_limit` | int \| null | 部門每分鐘請求數上限，`null` 為不限制 |
 | `dept_tpm_limit` | int \| null | 部門每分鐘 token 數上限，`null` 為不限制 |
+| `provider_keys` | object | provider → key 的 dict（決策 E，見 [admin-web.md](admin-web.md)）。`openrouter_api_key` 與這裡的 `"openrouter"` 這一格由 admin-api 自動同步，寫哪邊都可以；其他 provider（`openai`/`anthropic`/`gemini`/`other`）只能透過這個欄位設定 |
+
+PATCH 時 `provider_keys` 是**淺層合併**：只有出現在請求 body 裡的 provider 會被
+覆蓋，沒提到的維持原值（要清除某個 provider 的 key，把它的值設成空字串一樣是
+覆寫，不是特殊語法）。
 
 ---
 
@@ -551,7 +563,8 @@ C」](external-models-ops.md)）的模型，不含 `litellm_config.yaml` `model_
       "id": "112f74fa...",
       "model_name": "openrouter/anthropic/claude-sonnet-4-5",
       "model": "openai/anthropic/claude-sonnet-4-5",
-      "api_base": "https://openrouter.ai/api/v1"
+      "api_base": "https://openrouter.ai/api/v1",
+      "key_policy": "dept:openrouter"
     }
   ]
 }
@@ -568,19 +581,27 @@ C」](external-models-ops.md)）的模型，不含 `litellm_config.yaml` `model_
   "model_name": "gpt-4o-mini",
   "model": "openai/gpt-4o-mini",
   "api_key": "sk-xxxxxxxx",
-  "api_base": null
+  "api_base": null,
+  "key_policy": "model"
 }
 ```
 
-- `model_name`：使用者呼叫時填的名字；`openrouter/` 前綴的模型會由
-  `custom_logger.py` 依呼叫者的部門動態注入 `openrouter_api_key`，這種情況
-  `api_key`/`api_base` 可以留空（自動帶入共用 placeholder 與 OpenRouter 端點）。
+- `model_name`：使用者呼叫時填的名字。`openrouter/` 前綴只是命名慣例（決策 E
+  之後不再是功能開關），純粹方便人看得懂來源。
 - `model`：`litellm_params.model`，供應商前綴 + 模型 id（`openai/gpt-4o-mini`、
   `anthropic/claude-...`……），OpenRouter 路線則是 `openai/<openrouter slug>`。
-- `api_key`：非 `openrouter/` 前綴時必填（直接存進 Postgres，LiteLLM 會加密儲存）。
+- `key_policy`：這個模型的 key 從哪來，跟 `model_name`/`model`（上游是誰）解耦
+  （決策 E，見 [admin-web.md](admin-web.md)）。`"model"` = 用這筆的 `api_key`；
+  `"dept:<provider>"`（如 `"dept:openai"`）= 執行期改用呼叫者部門
+  `provider_keys` 裡對應 provider 的 key，此時 `api_key` 可留空。**留空**這個
+  欄位時後端會推導預設值：`openrouter/` 開頭 → `dept:openrouter`，其餘 →
+  `"model"`（維持決策 E 之前的唯一行為，既有呼叫者不受影響）。
+- `api_key`：`key_policy` 解析為 `"model"` 時必填（直接存進 Postgres，LiteLLM
+  會加密儲存）；`"dept:<provider>"` 時可留空，會自動帶入共用 placeholder。
 
-**回應**：201 成功；409 表示 `model_name` 已存在（YAML 或 DB-managed 皆算）；422
-表示非 openrouter 路線卻沒給 `api_key`。
+**回應**：201 成功；409 表示 `model_name` 已存在（回應會註明是 YAML 定義還是
+DB-managed）；422 表示 `key_policy="model"` 卻沒給 `api_key`，或 `key_policy`
+格式錯誤。
 
 ```bash
 curl -X POST "http://<host>:30408/api/v1/models/external" \

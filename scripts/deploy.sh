@@ -66,6 +66,7 @@ deploy_secrets() {
     [[ -z "${OPENWEBUI_ADMIN_KEY:-}" ]]   && warn "OPENWEBUI_ADMIN_KEY 未設定"
     [[ -z "${OPENWEBUI_SERVICE_KEY:-}" ]] && warn "OPENWEBUI_SERVICE_KEY 未設定"
     [[ -z "${POSTGRES_PASSWORD:-}" ]]     && warn "POSTGRES_PASSWORD 未設定，將使用預設密碼（僅供本機測試，正式環境請在 .env 設定）"
+    [[ -z "${ADMIN_WEB_USERNAMES:-}" ]]   && warn "ADMIN_WEB_USERNAMES 未設定，部門管理入口（/api/v1/admin/web）沒有人能登入（fail-closed，不影響既有 curl 端點）"
 
     # store_model_in_db 用（外部模型自助上架，見 docs/external-models-ops.md
     # 「路線 C」與 k8s/postgres/）。DATABASE_URL 組成的 host 固定指向
@@ -120,6 +121,7 @@ deploy_secrets() {
         --from-literal=keycloak-selfservice-client-secret="${KEYCLOAK_SELFSERVICE_CLIENT_SECRET:-}" \
         --from-literal=admin-api-public-url="${ADMIN_API_PUBLIC_URL:-}" \
         --from-literal=keycloak-browser-url="${KEYCLOAK_BROWSER_URL:-}" \
+        --from-literal=admin-web-usernames="${ADMIN_WEB_USERNAMES:-}" \
         --namespace="$NS" \
         --dry-run=client -o yaml | kubectl apply -f -
 

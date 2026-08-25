@@ -20,11 +20,13 @@ from keycloak import (
     build_logout_url,
     exchange_code_for_token,
     fetch_userinfo,
+    redirect_uri_for,
 )
 from routers.me import regenerate_key_for, resolve_db_user, to_me_out
 
 router = APIRouter(prefix="/api/v1/me/web")
 
+_CALLBACK_PATH = "/api/v1/me/web/callback"
 _STATE_COOKIE = "me_oauth_state"
 _SESSION_COOKIE = "me_session"
 # 跟 me_session 一起設、一起清；只用來登出時當 id_token_hint 帶給 Keycloak，
@@ -63,7 +65,8 @@ def _page(body: str, status_code: int = 200) -> HTMLResponse:
 @router.get("/login")
 def login() -> RedirectResponse:
     state = secrets.token_urlsafe(24)
-    url = build_authorize_url(state)  # 未設定 KEYCLOAK_SELFSERVICE_* 時這裡會拋 500
+    # 未設定 KEYCLOAK_SELFSERVICE_* 時這裡會拋 500
+    url = build_authorize_url(state, redirect_uri_for(_CALLBACK_PATH))
     resp = RedirectResponse(url, status_code=302)
     resp.set_cookie(
         _STATE_COOKIE, state, max_age=300, httponly=True, samesite="lax"
@@ -99,7 +102,7 @@ async def callback(request: Request, code: str = "", state: str = "", error: str
     # 冒泡出去變成原始 JSON 錯誤——這個頁面本來就是設計給不熟終端機/API 的使用者看的，
     # 半路噴一段 JSON 會直接破壞整個「像網頁一樣好懂」的體驗。
     try:
-        token_resp = await exchange_code_for_token(code)
+        token_resp = await exchange_code_for_token(code, redirect_uri_for(_CALLBACK_PATH))
         access_token = token_resp["access_token"]
         claims = await fetch_userinfo(access_token)
     except HTTPException as exc:

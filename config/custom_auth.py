@@ -163,6 +163,10 @@ def _load_config() -> dict:
             for r in conn.execute("SELECT * FROM departments").fetchall():
                 d = dict(r)
                 d["allowed_models"] = json.loads(d.get("allowed_models") or "[]")
+                # 決策 E：provider → key 的 dict（見 docs/admin-web-plan.md）。舊 DB
+                # 可能還沒有這個欄位（尚未跑過 admin-api 的 ALTER TABLE），.get 讓它
+                # 安全退化成空 dict，而不是讓整個熱路徑的設定載入失敗。
+                d["provider_keys"] = json.loads(d.get("provider_keys") or "{}")
                 depts.append(d)
 
             users = []
@@ -174,7 +178,17 @@ def _load_config() -> dict:
                 u["blocked"] = bool(u.get("blocked", 0))
                 users.append(u)
 
-            _CACHE_DATA = {"departments": depts, "users": users}
+            # 決策 E：model_name → key_policy。表可能還不存在（admin-api 尚未跑過
+            # 建表的 ALTER），比照上面同樣退化成空 dict，不讓認證整個掛掉。
+            try:
+                model_key_policies = {
+                    row["model_name"]: row["key_policy"]
+                    for row in conn.execute("SELECT model_name, key_policy FROM model_key_policies").fetchall()
+                }
+            except sqlite3.OperationalError:
+                model_key_policies = {}
+
+            _CACHE_DATA = {"departments": depts, "users": users, "model_key_policies": model_key_policies}
             _CACHE_VERSION = current_version
             _CACHE_LOADED_AT = now
             return _CACHE_DATA
@@ -221,6 +235,37 @@ def _find_dept(dept_id: str) -> dict | None:
         if dept.get("dept_id") == dept_id:
             return dept
     return None
+
+
+# ── 決策 E：key 來源政策（見 docs/admin-web-plan.md）───────────────────────────
+# 「上游是誰」（litellm_params.model）跟「key 從哪來」解耦。這個判斷本來在
+# config/custom_logger.py 用 model 字串的 openrouter/ 前綴硬判斷；現在移來這裡，
+# 因為這裡本來就在讀 SQLite（db_version + 30 秒 TTL 快取）、本來就知道請求的
+# model 是什麼，解析完直接把結果放進 metadata，custom_logger 退化成「metadata
+# 有就套用」，前綴檢查整段刪掉。決策 E 落地後 openrouter/ 前綴只是命名慣例，
+# 不再是功能開關。
+
+
+def _infer_default_key_policy(model_name: str) -> str:
+    """沒有明確政策的模型：openrouter/ 開頭視為 dept:openrouter，其餘視為 model——
+    跟決策 E 之前的唯一行為完全一致，既有模型不需要任何資料回填。
+    """
+    return "dept:openrouter" if model_name.startswith("openrouter/") else "model"
+
+
+def _resolve_injected_key(model_name: str, dept: dict) -> str:
+    """回傳這次請求該注入的 api_key；"" 表示不注入（沿用模型自己定義的 key）。"""
+    policies = _load_config().get("model_key_policies", {})
+    policy = policies.get(model_name) or _infer_default_key_policy(model_name)
+
+    if not policy.startswith("dept:"):
+        return ""
+
+    provider = policy.split(":", 1)[1]
+    key = (dept.get("provider_keys") or {}).get(provider, "")
+    if key.startswith("sk-or-CHANGE"):
+        return ""  # 未換過的 placeholder，視同未設定，不注入（見「容易做錯的五件事」#5）
+    return key
 
 
 # ── 部門層 Rate Limit（in-memory，單 replica 適用）────────────────────────────
@@ -339,11 +384,15 @@ def _effective_models(user: dict, dept: dict) -> list[str] | None:
     return merged
 
 
-def _build_auth_response(user: dict, dept: dict, api_key: str, source: str = "api_key") -> UserAPIKeyAuth:
+def _build_auth_response(
+    user: dict, dept: dict, api_key: str, source: str = "api_key", requested_model: str | None = None
+) -> UserAPIKeyAuth:
     metadata: dict = dict(user.get("metadata", {}))
     metadata["dept_id"] = dept["dept_id"]
     metadata["dept_name"] = dept.get("dept_name", "")
-    metadata["dept_openrouter_api_key"] = dept.get("openrouter_api_key", "")
+    # 決策 E：這裡已經解析完「這次請求該用哪把 key」，custom_logger 不再需要自己
+    # 判斷 model 字串前綴——metadata 裡有值就套用，沒有就維持模型自己定義的 key。
+    metadata["injected_api_key"] = _resolve_injected_key(requested_model, dept) if requested_model else ""
     metadata["portal"] = source  # 請求來源入口（portal-a / portal-b / api_key），供用量分流
 
     eff = _effective_models(user, dept)
@@ -508,7 +557,7 @@ async def user_api_key_auth(request: Request, api_key: str) -> UserAPIKeyAuth:
     _check_model_allowed(user, dept, requested_model)
     _check_dept_rate_limit(dept)
 
-    return _build_auth_response(user, dept, _normalize_api_key(api_key), source)
+    return _build_auth_response(user, dept, _normalize_api_key(api_key), source, requested_model)
 
 if __name__ == "__main__":
     import asyncio

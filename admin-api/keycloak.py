@@ -49,14 +49,24 @@ ADMIN_API_PUBLIC_URL = os.getenv("ADMIN_API_PUBLIC_URL", "").rstrip("/")
 # 只有「後端連線位址」跟「Keycloak 官方 hostname」不同的環境才需要另外指定。
 KEYCLOAK_BROWSER_URL = os.getenv("KEYCLOAK_BROWSER_URL", "").rstrip("/") or KEYCLOAK_URL
 
-CALLBACK_PATH = "/api/v1/me/web/callback"
+# admin-web 的 session cookie 存的也是 access token 本身，理當加 Secure；但三環境
+# 目前都是 NodePort 純 HTTP（ADMIN_API_PUBLIC_URL 開頭是 http://），Secure cookie
+# 在純 HTTP origin 下瀏覽器根本不會存也不會送，寫死 True 會直接讓登入壞掉。改成跟著
+# ADMIN_API_PUBLIC_URL 的 scheme 走：之後這個值換成 https:// 就自動補上，不用兩邊改。
+COOKIE_SECURE = ADMIN_API_PUBLIC_URL.startswith("https://")
 
 
-def selfservice_redirect_uri() -> str:
-    return f"{ADMIN_API_PUBLIC_URL}{CALLBACK_PATH}"
+def redirect_uri_for(callback_path: str) -> str:
+    """把 callback path 接上 ADMIN_API_PUBLIC_URL，組成 Keycloak 要求的完整 redirect_uri。
+
+    每個瀏覽器登入流程（me_web、admin_web……）有各自的 callback 路徑，且同一次
+    登入裡 build_authorize_url／exchange_code_for_token 兩步用的 redirect_uri
+    Keycloak 要求逐字相同，所以由呼叫端的路由模組決定 callback_path，這裡不寫死。
+    """
+    return f"{ADMIN_API_PUBLIC_URL}{callback_path}"
 
 
-def build_authorize_url(state: str) -> str:
+def build_authorize_url(state: str, redirect_uri: str) -> str:
     """回傳導向 Keycloak 登入畫面的網址（Authorization Code flow 第一步）。
 
     刻意用 KEYCLOAK_BROWSER_URL（瀏覽器可見的官方 hostname）而非 KEYCLOAK_URL
@@ -73,7 +83,7 @@ def build_authorize_url(state: str) -> str:
     params = httpx.QueryParams({
         "response_type": "code",
         "client_id": KEYCLOAK_SELFSERVICE_CLIENT_ID,
-        "redirect_uri": selfservice_redirect_uri(),
+        "redirect_uri": redirect_uri,
         "scope": "openid email profile",
         "state": state,
     })
@@ -99,15 +109,19 @@ def build_logout_url(post_logout_path: str, id_token_hint: str | None = None) ->
     return f"{KEYCLOAK_BROWSER_URL}/realms/{KEYCLOAK_REALM}/protocol/openid-connect/logout?{httpx.QueryParams(params)}"
 
 
-async def exchange_code_for_token(code: str) -> dict:
-    """Authorization Code → token response（含 access_token / expires_in）。"""
+async def exchange_code_for_token(code: str, redirect_uri: str) -> dict:
+    """Authorization Code → token response（含 access_token / expires_in）。
+
+    redirect_uri 必須跟該次 build_authorize_url 用的逐字相同，Keycloak 會比對，
+    不同就換 token 失敗。
+    """
     url = f"{KEYCLOAK_URL}/realms/{KEYCLOAK_REALM}/protocol/openid-connect/token"
     try:
         async with httpx.AsyncClient(timeout=10, verify=KEYCLOAK_SSL_VERIFY) as client:
             resp = await client.post(url, data={
                 "grant_type": "authorization_code",
                 "code": code,
-                "redirect_uri": selfservice_redirect_uri(),
+                "redirect_uri": redirect_uri,
                 "client_id": KEYCLOAK_SELFSERVICE_CLIENT_ID,
                 "client_secret": KEYCLOAK_SELFSERVICE_CLIENT_SECRET,
             })

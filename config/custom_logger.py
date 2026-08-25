@@ -32,11 +32,12 @@ class FirdiLogger(CustomLogger):
         if dept_id:
             data.setdefault("metadata", {})["dept_id"] = dept_id
 
-        model: str = data.get("model", "")
-        if model.startswith("openrouter/"):
-            dept_key = user_meta.get("dept_openrouter_api_key", "")
-            if dept_key and not dept_key.startswith("sk-or-CHANGE"):
-                data["api_key"] = dept_key
+        # 決策 E（見 docs/admin-web-plan.md）：要不要注入、注入哪個部門的哪把 key，
+        # 判斷已經在 config/custom_auth.py 做完並放進 metadata——這裡不再看 model
+        # 字串前綴，metadata 有值就套用，沒有就維持模型自己定義的 key。
+        injected_key = user_meta.get("injected_api_key", "")
+        if injected_key:
+            data["api_key"] = injected_key
         return data
 
     async def async_log_success_event(self, kwargs: dict, response_obj: Any, start_time: Any, end_time: Any) -> None:

@@ -20,6 +20,18 @@ CREATE TABLE IF NOT EXISTS departments (
     updated_at         TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- 決策 E（見 docs/admin-web-plan.md）：模型的上游（litellm_params.model）與
+-- key 從哪來（部門 provider key 或模型自帶）解耦。key_policy 是
+-- "model"（用模型自己定義的 key）或 "dept:<provider>"（用部門 provider_keys
+-- 裡該 provider 的 key，例如 "dept:openai"）。用 model_name（呼叫者請求時填的
+-- 名字）當主鍵，因為 custom_auth 熱路徑上只看得到這個字串，看不到 LiteLLM
+-- 內部的 deployment id。沒有紀錄的 model_name 由 custom_auth 自行推導預設值
+-- （openrouter/ 開頭 → dept:openrouter，其餘 → model），不需要為既有模型補資料。
+CREATE TABLE IF NOT EXISTS model_key_policies (
+    model_name TEXT PRIMARY KEY,
+    key_policy TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS users (
     api_key         TEXT PRIMARY KEY,
     key_name        TEXT NOT NULL,
@@ -57,6 +69,25 @@ def init_db(db_path: str = DB_PATH) -> None:
         conn.commit()
     except sqlite3.OperationalError:
         pass  # 欄位已存在，略過
+
+    # 決策 E：departments.openrouter_api_key 升級成 provider_keys（JSON，key 為
+    # provider 名稱）。純超集、零遷移——舊欄位不動、不刪，新欄位補上後從舊欄位
+    # 回填一次，之後兩者由 service 層保持同步（見 services/departments_service.py）。
+    try:
+        conn.execute("ALTER TABLE departments ADD COLUMN provider_keys TEXT NOT NULL DEFAULT '{}'")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # 欄位已存在，略過
+    else:
+        rows = conn.execute(
+            "SELECT dept_id, openrouter_api_key FROM departments WHERE provider_keys = '{}' AND openrouter_api_key != ''"
+        ).fetchall()
+        for dept_id, openrouter_api_key in rows:
+            conn.execute(
+                "UPDATE departments SET provider_keys = ? WHERE dept_id = ?",
+                (json.dumps({"openrouter": openrouter_api_key}, ensure_ascii=False), dept_id),
+            )
+        conn.commit()
     conn.close()
 
 

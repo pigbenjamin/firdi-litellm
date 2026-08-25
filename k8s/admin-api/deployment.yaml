@@ -137,6 +137,15 @@ spec:
                   name: litellm-secrets
                   key: openwebui-admin-key-b
                   optional: true
+            # 部門管理入口（/api/v1/admin/web）的管理帳號白名單，逗號分隔、比對
+            # preferred_username（不是 sub，見 admin-api/admin_auth.py）。未設定時
+            # 白名單是空的、任何人都登不進去（fail-closed），不是全放行。
+            - name: ADMIN_WEB_USERNAMES
+              valueFrom:
+                secretKeyRef:
+                  name: admin-api-secrets
+                  key: admin-web-usernames
+                  optional: true
           resources:
             requests:
               cpu: "100m"
@@ -147,6 +156,11 @@ spec:
           volumeMounts:
             - name: users-db
               mountPath: /app/data
+            # admin-web 稽核 jsonl 預設寫這裡（ADMIN_AUDIT_LOG_PATH 預設
+            # /app/logs/admin-web-audit.jsonl，見 admin-api/audit.py）；跟
+            # litellm 共用同一顆 PVC（見 k8s/shared-storage/pvc.yaml 的註解）。
+            - name: logs
+              mountPath: /app/logs
           livenessProbe:
             httpGet:
               path: /health
@@ -163,3 +177,6 @@ spec:
         - name: users-db
           persistentVolumeClaim:
             claimName: users-db-pvc
+        - name: logs
+          persistentVolumeClaim:
+            claimName: litellm-logs-pvc

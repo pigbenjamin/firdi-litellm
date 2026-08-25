@@ -17,6 +17,11 @@ class DepartmentPatch(BaseModel):
     allowed_models: list[str] | None = None
     dept_rpm_limit: int | None = None
     dept_tpm_limit: int | None = None
+    # 決策 E：provider → key 的 dict（如 {"openai": "sk-...", "anthropic": "sk-ant-..."}）。
+    # 淺層合併進現有 provider_keys，只有出現在這個 dict 裡的 provider 會被改動；
+    # 值為空字串視同不修改該 provider（跟 openrouter_api_key 的既有慣例一致，
+    # 見 docs/admin-web-plan.md「已定案」#5——UI 不提供清除功能）。
+    provider_keys: dict[str, str] | None = None
 
 
 class DepartmentOut(BaseModel):
@@ -26,6 +31,7 @@ class DepartmentOut(BaseModel):
     allowed_models: list[str]
     dept_rpm_limit: int | None
     dept_tpm_limit: int | None
+    provider_keys: dict[str, str]
     created_at: str
     updated_at: str
 
@@ -85,6 +91,12 @@ class ExternalModelIn(BaseModel):
     model: str  # litellm_params.model，如 "openai/gpt-4o-mini" 或 openrouter 路線的 "openai/anthropic/claude-sonnet-4-5"
     api_key: str | None = None  # 原生 Provider 路線必填；openrouter 路線留空則用共用 placeholder，實際 key 由部門設定動態注入
     api_base: str | None = None  # 原生 Provider 若非官方預設端點才需要；openrouter 路線留空則自動帶 https://openrouter.ai/api/v1
+    # 決策 E：這個模型的 key 從哪來，跟上面的 model_name/model（上游是誰）解耦。
+    # "model" = 用這筆 litellm_params.api_key；"dept:<provider>" = 執行期改用
+    # 呼叫者部門 provider_keys 裡對應 provider 的 key（見 config/custom_auth.py）。
+    # 留空時由後端推導預設值：openrouter/ 開頭 → "dept:openrouter"，其餘 → "model"，
+    # 跟決策 E 之前的唯一行為（只有 openrouter/ 前綴會觸發部門 key 注入）完全一致。
+    key_policy: str | None = None
 
 
 class ExternalModelOut(BaseModel):

@@ -49,9 +49,10 @@ admin-api 包了一層薄代理（`admin-api/routers/models.py`，`/api/v1/model
 ### 新增模型
 
 ```bash
-# OpenRouter 路線：model_name 保留 openrouter/ 前綴（custom_logger.py 靠這個前綴
-# 決定要不要注入部門 key），api_key/api_base 都留空即可，會自動帶入共用 placeholder
-# 與 https://openrouter.ai/api/v1
+# OpenRouter 路線：model_name 保留 openrouter/ 前綴只是命名慣例（決策 E 之後，
+# 要不要注入部門 key 是 model_key_policies 的明確 key_policy 欄位決定，不再是前綴
+# 本身；沒給 key_policy 時後端會用這個前綴推導預設值，效果跟以前一樣），
+# api_key/api_base 都留空即可，會自動帶入共用 placeholder 與 https://openrouter.ai/api/v1
 curl -X POST "http://<node-ip>:30408/api/v1/models/external" \
   -H "Authorization: Bearer <admin-api-key>" \
   -H "Content-Type: application/json" \
@@ -139,7 +140,9 @@ curl -X POST "http://<node-ip>:30408/api/v1/models/external" \
       }'
 ```
 
-- `api_key` 是必填的（`create_external_model` 對非 `openrouter/` 路線少了它會回 422），
+- `api_key` 是必填的（`model_name` 沒有 `openrouter/` 前綴時，`create_external_model`
+  推導出的 `key_policy` 預設是 `"model"`，也就是必須自帶 `api_key`，少了會回 422；
+  要改成從部門 key 注入，上架時明確帶 `key_policy: "dept:<provider>"` 即可），
   但 Ollama 不驗證，填 `EMPTY` 即可——跟 YAML 裡地端 vLLM 那幾筆一致。
 - `ollama/` 是 LiteLLM 原生 provider 前綴，`api_base` **不帶 `/v1`**。要帶 `/v1` 的話
   `model` 得改成 `openai/gemma4:31b`（走 Ollama 的 OpenAI 相容端點）。
@@ -196,9 +199,12 @@ nvidia-smi --query-gpu=index,memory.used,memory.total --format=csv
 ## 路線 A：透過 OpenRouter
 
 平台既有機制：`model_list` 裡的 OpenRouter 模型其實是用 `openai/` provider 打
-OpenRouter 的 OpenAI 相容端點；真正的 API key **不寫死在 YAML 裡**，而是
-[config/custom_logger.py](../config/custom_logger.py) 的 `async_pre_call_hook` 在每次呼叫時，
-依發話者的部門動態塞入該部門的 `openrouter_api_key`。
+OpenRouter 的 OpenAI 相容端點；真正的 API key **不寫死在 YAML 裡**。
+[config/custom_auth.py](../config/custom_auth.py) 在每次請求驗證時，依這個模型的
+`key_policy`（預設是 `dept:openrouter`）解析出該用哪個部門的哪把 key，放進
+metadata；[config/custom_logger.py](../config/custom_logger.py) 的 `async_pre_call_hook`
+只負責「metadata 有值就套用」，不再自己判斷前綴（決策 E，見
+[admin-web-plan.md](admin-web-plan.md)）。
 
 ### 1. 加一筆 model_list
 
@@ -216,7 +222,8 @@ OpenRouter 的 OpenAI 相容端點；真正的 API key **不寫死在 YAML 裡**
 - `litellm_params.model`：真正打 OpenRouter 的 model id，`openrouter.ai/models` 頁面上的
   slug 就是 `anthropic/claude-sonnet-4-5` 這種格式，前面加 `openai/` 是因為走的是 OpenAI
   相容端點，不是 LiteLLM 原生 OpenRouter provider。
-- `api_key` 那行**不用改**，只是佔位符，實際 key 由 pre_call_hook 動態注入。
+- `api_key` 那行**不用改**，只是佔位符，實際 key 由 `custom_auth.py` 解析、
+  `custom_logger.py` 的 pre_call_hook 動態注入。
 
 ### 2. 部門的 OpenRouter key
 
@@ -234,6 +241,11 @@ curl -X PATCH "http://<node-ip>:30408/api/v1/departments/RD" \
 
 沒設定 key 的部門呼叫這類模型時會用回 `OPENROUTER_API_KEY_PLACEHOLDER`，打 OpenRouter 一定
 失敗（401），跟「有沒有 `allowed_models` 授權」是兩回事，兩個都要設對才能真的打通。
+
+> `openrouter_api_key` 這個獨立欄位仍然可用、行為不變。決策 E 之後它實際上是
+> `departments.provider_keys`（JSON，key 為 provider 名稱）裡 `"openrouter"` 這一格
+> 的同義寫法，兩者由 admin-api 自動同步——要設定其他 provider（如 `openai`）的部門
+> key，PATCH `provider_keys`，例如 `{"provider_keys": {"openai": "sk-..."}}`。
 
 ---
 

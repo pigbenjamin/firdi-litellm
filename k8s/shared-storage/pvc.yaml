@@ -20,6 +20,9 @@ spec:
     requests:
       storage: 1Gi
 ---
+# admin-api 掛這顆存 admin-web 的稽核 jsonl（見 admin-api/audit.py），跟 litellm 的
+# usage.jsonl 不同檔名、同一個目錄——admin-api 本來就靠 podAffinity 釘在 litellm
+# 所在節點（跟 users-db-pvc 同理），RWO 才能同時掛上兩個 Deployment。
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
