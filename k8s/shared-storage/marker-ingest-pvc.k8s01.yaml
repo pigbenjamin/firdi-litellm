@@ -1,0 +1,77 @@
+# CephFS 靜態綁定版本 marker-ingest-pv/pvc —— 取代 hostPath 版
+# （k8s/shared-storage/marker-ingest-pvc.yaml），給多節點且已有 CephFS CSI 的叢集
+# （例如 k8s01）用。啟用方式：.env 設 K8S_MARKER_INGEST_STORAGE=cephfs + 下面 5 個
+# K8S_MARKER_INGEST_CEPHFS_* 變數，deploy.sh 的 light-models 步驟會自動改套用這份
+# 檔案，並把 light-models 的 nodeSelector 從 hostname 硬釘改成跟 31b/26b 一樣的
+# gpu-pool=shared 浮動池（見 k8s/vllm/light-models/deployment.yaml）。
+#
+# 這份檔案本身不會建立新的 CephFS subvolume——它綁定的是 docblock-rag-platform
+# 那邊已經動態佈建出來的同一個 subvolume（docblock-ingest-pvc，storageClassName:
+# rook-cephfs），兩邊指到同一份實體檔案，marker-service 才讀得到 ingest-worker
+# 寫入的 PDF。**順序有方向性**：docblock 那邊必須先部署、產生 subvolume，這份
+# 才有東西可以綁——完整背景見 docblock-rag-platform repo 的
+# deployments/K8S01-DEPLOY.md 第 3 節。
+#
+# 取得下面 5 個值的方法（在 docblock-ingest-pvc 已經 Bound 之後跑）：
+#   kubectl get pv $(kubectl -n docblock get pvc docblock-ingest-pvc \
+#     -o jsonpath='{.spec.volumeName}') -o jsonpath='{.spec.csi}' | python3 -m json.tool
+#   對應關係：driver → 下面 csi.driver 是否一致（多半就是 rook-ceph.cephfs.csi.ceph.com，
+#   不同版本 rook 可能不同，以實際查到的為準）；volumeAttributes.clusterID →
+#   K8S_MARKER_INGEST_CEPHFS_CLUSTER_ID；volumeAttributes.fsName →
+#   K8S_MARKER_INGEST_CEPHFS_FS_NAME；volumeAttributes.subvolumePath →
+#   K8S_MARKER_INGEST_CEPHFS_ROOT_PATH；nodeStageSecretRef.name/namespace →
+#   K8S_MARKER_INGEST_CEPHFS_SECRET_NAME / K8S_MARKER_INGEST_CEPHFS_SECRET_NAMESPACE。
+#
+# ⚠️ 兩個最容易填錯、且錯了不會馬上報錯的欄位（PVC 會顯示 Bound，直到 pod 掛載
+# 才會失敗，K8S01-DEPLOY.md 記錄過這個事故）：
+#   - rootPath 的值取自動態 PV 的 subvolumePath，但 key 名稱必須是 rootPath——
+#     靜態模式的 driver 不認 subvolumePath 這個 key，直接整段複製
+#     volumeAttributes 過來會讓 rootPath 變成 null。
+#   - nodeStageSecretRef.name 要填 Secret 的名字（例如 rook-csi-cephfs-node），
+#     不是任何 /volumes/csi/... 路徑字串。
+#   填完 apply 前自己核對一次：K8S_MARKER_INGEST_CEPHFS_ROOT_PATH 應該長得像路徑，
+#   K8S_MARKER_INGEST_CEPHFS_SECRET_NAME 應該長得像一個短的 Secret 名稱。
+#
+# 套用前請先 source .env，再用 envsubst 展開變數（deploy.sh 的 light-models 步驟已處理）：
+#   source .env && envsubst < k8s/shared-storage/marker-ingest-pvc.k8s01.yaml | kubectl apply -f -
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: marker-ingest-pv
+spec:
+  capacity:
+    storage: 50Gi
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  csi:
+    driver: rook-ceph.cephfs.csi.ceph.com
+    # 任意唯一字串，不要跟 docblock 那個動態 PV 的 volumeHandle 一樣
+    volumeHandle: marker-ingest-static
+    volumeAttributes:
+      clusterID: ${K8S_MARKER_INGEST_CEPHFS_CLUSTER_ID}
+      fsName: ${K8S_MARKER_INGEST_CEPHFS_FS_NAME}
+      rootPath: ${K8S_MARKER_INGEST_CEPHFS_ROOT_PATH}
+      staticVolume: "true"
+    nodeStageSecretRef:
+      name: ${K8S_MARKER_INGEST_CEPHFS_SECRET_NAME}
+      namespace: ${K8S_MARKER_INGEST_CEPHFS_SECRET_NAMESPACE}
+  claimRef:
+    name: marker-ingest-pvc
+    namespace: ai-platform
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: marker-ingest-pvc
+  namespace: ai-platform
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 50Gi
+  storageClassName: ""
+  volumeName: marker-ingest-pv

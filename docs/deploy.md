@@ -114,6 +114,7 @@ cp .env.example .env
 | HuggingFace | `HF_TOKEN` | 新機器自己的 token，需先在 HF 網站接受 Gemma 授權 |
 | Langfuse | `LANGFUSE_PUBLIC_KEY` / `_SECRET_KEY` / `_HOST` | 要觀測性才需要，可留空 |
 | Postgres | `POSTGRES_PASSWORD` | LiteLLM `store_model_in_db` 用（見 [external-models-ops.md「路線 C」](external-models-ops.md)），必須改，不可沿用 `change-me` |
+| 部門管理入口 | `ADMIN_WEB_USERNAMES` | 新環境的 Keycloak 管理帳號 `preferred_username`（逗號分隔）；另外要在 Keycloak 幫 `firdi-admin-api-selfservice` client 補兩個 redirect URI，見 [keycloak/SETUP.md](../keycloak/SETUP.md) 一之二與 [admin-web.md](admin-web.md) |
 | K8s PVC / hostPath | `K8S_PVC_STORAGE_CLASS`（users-db-pvc/litellm-logs-pvc/postgres-data-pvc 用）、`K8S_HF_CACHE_HOST_PATH` / `K8S_MARKER_INGEST_HOST_PATH`（仍是 hostPath，改成這台機器要用的路徑；不用預先 `mkdir`，`deploy.sh` 會自動建立） | 見下方說明 |
 | 多節點（單節點可留空） | `REGISTRY` / `K8S_GPU_NODE_HOSTNAME` | 見第 4 節 |
 
@@ -219,6 +220,64 @@ kubectl delete pv marker-ingest-pv
 ```
 
 換節點前記得確認新節點上已有 `K8S_HF_CACHE_HOST_PATH`（沒有的話會重新下載模型 + 重新 `torch.compile`，首次啟動約 15~25 分鐘）與 `K8S_MARKER_INGEST_HOST_PATH` 目錄；若走 `REGISTRY` 流程，`deploy.sh` 會自動處理 image 分發，不用額外操作。`litellm` / `admin-api` / `secrets` / `storage` 不受影響（`users-db-pvc` / `litellm-logs-pvc` 是動態佈建的 PVC，跟 `K8S_GPU_NODE_HOSTNAME` 無關）。
+
+#### 4.2.1 讓 light-models 也浮動：marker-ingest 改用 CephFS（多節點叢集，例如 k8s01）
+
+上面「hostPath 硬釘」是預設模式（`.env` 的 `K8S_MARKER_INGEST_STORAGE=hostpath`），單節點或沒有 RWX 網路儲存的叢集用這個，行為跟以前完全一樣。**如果叢集已經有 CephFS CSI**（`kubectl get storageclass` 能看到一個支援 RWX 的 CephFS StorageClass，例如 k8s01 的 `rook-cephfs`），可以把 `marker-ingest-pvc` 換成靜態綁定同一個 CephFS subvolume，讓 `light-models` 不用再釘死一個節點——跟 31b/26b 一樣改走 `gpu-pool=shared` 浮動池。
+
+**為什麼要做**：hostPath 模式下 `light-models` 只能排到 `K8S_GPU_NODE_HOSTNAME` 那一個節點；如果那個節點的 GPU 已經被別的 workload（例如 31b/26b）佔滿，`light-models` 就會永遠 `Pending`，即使叢集裡其他節點還有空卡也沒用。這正是 k8s01 目前卡住的原因——`gpu02` 上 31b/26b 已各佔一張卡，`light-models` 被釘在 `gpu02` 就沒有空卡可排。
+
+**前提（方向不能顛倒）**：這個功能依賴 `docblock-rag-platform` 那邊先把它的 `docblock-ingest-pvc` 換成 `rook-cephfs` 動態佈建（`deployments/k8s/03-pv-pvc.k8s01.yaml`）並成功 `Bound`——firdi-litellm 這邊綁的是**同一個** CephFS subvolume，不是自己新建一個，所以必須等 docblock 那邊先建出來、拿到 subvolume 資訊。完整步驟見該 repo 的 `deployments/K8S01-DEPLOY.md` 第 2、3 節。
+
+**在 firdi-litellm 這邊要做的事：**
+
+1. 確認 `docblock-ingest-pvc` 已經 `Bound`，挖出綁定資訊（5 個值都要記下來）：
+
+   ```bash
+   kubectl get pv $(kubectl -n docblock get pvc docblock-ingest-pvc -o jsonpath='{.spec.volumeName}') \
+     -o jsonpath='{.spec.csi}' | python3 -m json.tool
+   ```
+
+2. `.env` 填入模式切換 + 5 個值（見 `.env.example` 對應區塊，`K8S_GPU_NODE_HOSTNAME`/`K8S_MARKER_INGEST_HOST_PATH` 這兩個 cephfs 模式下不需要）：
+
+   ```bash
+   K8S_MARKER_INGEST_STORAGE=cephfs
+   K8S_MARKER_INGEST_CEPHFS_CLUSTER_ID=<步驟 1 查到的 clusterID>
+   K8S_MARKER_INGEST_CEPHFS_FS_NAME=<步驟 1 查到的 fsName>
+   K8S_MARKER_INGEST_CEPHFS_ROOT_PATH=<步驟 1 查到的 subvolumePath>
+   K8S_MARKER_INGEST_CEPHFS_SECRET_NAME=<步驟 1 查到的 nodeStageSecretRef.name>
+   K8S_MARKER_INGEST_CEPHFS_SECRET_NAMESPACE=<步驟 1 查到的 nodeStageSecretRef.namespace>
+   ```
+
+   > ⚠️ 兩個最容易填錯、且錯了不會馬上報錯的欄位（PVC 會顯示 `Bound`，直到 pod 真的要掛載才會失敗）：`K8S_MARKER_INGEST_CEPHFS_ROOT_PATH` 的值是 `subvolumePath`，但**不要**把整段 `volumeAttributes` 原樣複製過來——靜態模式認的 key 叫 `rootPath`；`K8S_MARKER_INGEST_CEPHFS_SECRET_NAME` 要填 Secret 的**名字**（例如 `rook-csi-cephfs-node`），不是任何路徑字串。
+
+3. 確認 GPU 節點都貼過 `gpu-pool=shared` label（cephfs 模式下 `light-models` 也要靠這個 label 才排得上去，不再靠 `K8S_GPU_NODE_HOSTNAME`）：
+
+   ```bash
+   ./scripts/label-nodes.sh gpu02   # 依實際 GPU 節點名稱調整
+   ```
+
+4. 如果 `marker-ingest-pv` 之前已經是 hostPath 版本被建立過，PV 的 spec 不可原地變更（hostPath ⇄ csi 不能用 `kubectl apply` 切換），要先刪掉重建：
+
+   ```bash
+   kubectl -n ai-platform scale deployment/light-models-vllm --replicas=0
+   kubectl -n ai-platform delete pvc marker-ingest-pvc
+   kubectl delete pv marker-ingest-pv   # reclaimPolicy 是 Retain，不會動到舊 hostPath 上的資料
+   ```
+
+   > 舊 hostPath 目錄裡若已經有檔案，記得先搬進新的 CephFS volume 再往下做（docblock 若是全新環境，那個目錄通常是空的）。
+
+5. 重新部署，`deploy.sh` 會自動挑到 `marker-ingest-pvc.k8s01.yaml`（CephFS 版）並把 `light-models` 的 `nodeSelector` 換成 `gpu-pool: shared`：
+
+   ```bash
+   ./scripts/deploy.sh light-models
+   kubectl -n ai-platform get pvc marker-ingest-pvc   # 要 Bound
+   kubectl -n ai-platform get pods -l app=light-models-vllm -o wide   # 確認排到哪個節點
+   ```
+
+6. **驗證兩邊真的看到同一份檔案**（這步不要跳過——這個耦合出錯是靜默失敗，marker 轉檔目錄會一直是空的，事後很難查）：用兩個臨時 pod 分別掛自己 namespace 的 PVC 寫/讀同一個檔案，完整指令見 docblock-rag-platform repo 的 `deployments/K8S01-DEPLOY.md` 第 3.3 節。
+
+`resolve_node_pinning_vars`/`check_marker_ingest_pv_drift` 這兩個 `deploy.sh` 內部函式在 cephfs 模式下走的是不同分支：不會再檢查 `K8S_GPU_NODE_HOSTNAME` 是否為有效節點，改成檢查 5 個 CephFS 變數是否齊全，以及既有 PV 的 `rootPath` 是否與 `.env` 一致（不一致一樣會 `die` 並印出重建指令，因為 `csi` 區塊建立後也不可變）。
 
 ## 5. GPU 資源核對
 

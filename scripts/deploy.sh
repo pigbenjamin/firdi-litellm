@@ -364,6 +364,28 @@ deploy_litellm_configmaps() {
 }
 
 # ── 節點釘選變數的解析與防呆 ──────────────────────────────────────────────────
+# marker-ingest 有兩種儲存模式，用 .env 的 K8S_MARKER_INGEST_STORAGE 切換
+# （預設 hostpath，行為與之前完全相同，既有環境不用改任何東西）：
+#   hostpath（預設）── 單節點/沒有 RWX 網路儲存的叢集，PV 用 hostPath +
+#                       nodeAffinity 硬釘一個節點，light-models 的 nodeSelector
+#                       也要釘同一個節點才掛得上那顆 PV。
+#   cephfs            ── 多節點叢集已有 CephFS CSI（例如 k8s01），PV 改成靜態
+#                       綁定 docblock-rag-platform 那邊已存在的 CephFS
+#                       subvolume（k8s/shared-storage/marker-ingest-pvc.k8s01.yaml），
+#                       不再需要釘節點，light-models 跟 31b/26b 一樣走
+#                       gpu-pool=shared 浮動池。完整背景見 docblock-rag-platform
+#                       repo 的 deployments/K8S01-DEPLOY.md 第 3 節。
+# 兩種模式都會把最終決定寫進 LIGHT_MODELS_NODE_SELECTOR_KEY/VALUE，供
+# k8s/vllm/light-models/deployment.yaml 的 envsubst 使用。
+resolve_node_pinning_vars() {
+    export K8S_MARKER_INGEST_STORAGE="${K8S_MARKER_INGEST_STORAGE:-hostpath}"
+    case "$K8S_MARKER_INGEST_STORAGE" in
+        hostpath) resolve_node_pinning_vars_hostpath ;;
+        cephfs)   resolve_node_pinning_vars_cephfs ;;
+        *) die "K8S_MARKER_INGEST_STORAGE=「$K8S_MARKER_INGEST_STORAGE」無效，只接受 hostpath 或 cephfs" ;;
+    esac
+}
+
 # K8S_GPU_NODE_HOSTNAME 與 K8S_MARKER_INGEST_HOST_PATH 只有 light-models 的
 # nodeSelector 與 marker-ingest PV 的 nodeAffinity/hostPath 在吃（31b/26b 已改走
 # gpu-pool=shared 浮動池）。這兩個變數以前未設定時會**靜默** fallback 成
@@ -375,7 +397,7 @@ deploy_litellm_configmaps() {
 #     type 是 DirectoryOrCreate，kubelet 會在節點上靜默建一個空目錄，marker 轉檔
 #     會「成功」但檔案寫進沒有人讀的地方——最難查的那種失敗。
 # 因此：單節點維持自動推導（但一定印 warn），多節點一律要求 .env 顯式設定。
-resolve_node_pinning_vars() {
+resolve_node_pinning_vars_hostpath() {
     local nodes count gpu_nodes
     nodes="$(kubectl get nodes -o jsonpath='{.items[*].metadata.name}' 2>/dev/null)" \
         || die "kubectl get nodes 失敗，無法判斷是單節點還是多節點叢集（請確認 kubeconfig）"
@@ -415,22 +437,84 @@ resolve_node_pinning_vars() {
         export K8S_MARKER_INGEST_HOST_PATH="/home/ai-x/data/docblock/ingest"
         warn "K8S_MARKER_INGEST_HOST_PATH 未設定：單節點叢集，沿用預設「$K8S_MARKER_INGEST_HOST_PATH」"
     fi
+
+    export LIGHT_MODELS_NODE_SELECTOR_KEY="kubernetes.io/hostname"
+    export LIGHT_MODELS_NODE_SELECTOR_VALUE="$K8S_GPU_NODE_HOSTNAME"
 }
 
-# PV 的 hostPath 與 nodeAffinity 建立後不可變（kubectl apply 改不動，也不會用明顯的
-# 方式抱怨），所以 apply 之前先比對叢集現況與 .env，不一致就停下來講清楚怎麼處理。
+# CephFS 模式不需要節點釘選（RWX 網路儲存，任何節點都掛得上），只需要確認
+# docblock 那邊挖出來的 5 個綁定值都填了，並提醒 gpu-pool=shared label 這個
+# 31b/26b 已經在依賴的前置條件（light-models 現在也跟著吃這個 label）。
+resolve_node_pinning_vars_cephfs() {
+    local var
+    for var in K8S_MARKER_INGEST_CEPHFS_CLUSTER_ID K8S_MARKER_INGEST_CEPHFS_FS_NAME \
+               K8S_MARKER_INGEST_CEPHFS_ROOT_PATH K8S_MARKER_INGEST_CEPHFS_SECRET_NAME \
+               K8S_MARKER_INGEST_CEPHFS_SECRET_NAMESPACE; do
+        [[ -n "${!var:-}" ]] || die "K8S_MARKER_INGEST_STORAGE=cephfs 時必須在 .env 設定 $var，不可留空。
+       取得方式：先確認 docblock-rag-platform 那邊的 docblock-ingest-pvc 已經 Bound，
+       再照 docblock-rag-platform repo 的 deployments/K8S01-DEPLOY.md 第 3.1 節指令挖出這 5 個值。"
+    done
+
+    if ! kubectl get nodes -l gpu-pool=shared -o name 2>/dev/null | grep -q .; then
+        warn "找不到貼了 gpu-pool=shared label 的節點，light-models 現在跟 31b/26b 一樣走這個浮動池，會卡 Pending。
+       先對 GPU 節點跑過 ./scripts/label-nodes.sh。"
+    fi
+
+    export LIGHT_MODELS_NODE_SELECTOR_KEY="gpu-pool"
+    export LIGHT_MODELS_NODE_SELECTOR_VALUE="shared"
+}
+
+# PV 的 hostPath/nodeAffinity 或 csi 區塊建立後都不可變（kubectl apply 改不動，也
+# 不會用明顯的方式抱怨），所以 apply 之前先比對叢集現況與 .env，不一致就停下來
+# 講清楚怎麼處理。兩種儲存模式的比對欄位不同，分開判斷。
 check_marker_ingest_pv_drift() {
-    local pv="marker-ingest-pv" cur_path cur_node
+    local pv="marker-ingest-pv"
     kubectl get pv "$pv" &>/dev/null || return 0   # 還沒建立過，等下 apply 時一併建立
 
+    if [[ "$K8S_MARKER_INGEST_STORAGE" == "cephfs" ]]; then
+        check_marker_ingest_pv_drift_cephfs "$pv"
+    else
+        check_marker_ingest_pv_drift_hostpath "$pv"
+    fi
+}
+
+check_marker_ingest_pv_drift_hostpath() {
+    local pv="$1" cur_path cur_node
     cur_path="$(kubectl get pv "$pv" -o jsonpath='{.spec.hostPath.path}' 2>/dev/null || true)"
     cur_node="$(kubectl get pv "$pv" -o jsonpath='{.spec.nodeAffinity.required.nodeSelectorTerms[0].matchExpressions[0].values[0]}' 2>/dev/null || true)"
     [[ "$cur_path" == "$K8S_MARKER_INGEST_HOST_PATH" && "$cur_node" == "$K8S_GPU_NODE_HOSTNAME" ]] && return 0
 
     die "現有 PV「$pv」與 .env 不一致，而 PV 的 hostPath / nodeAffinity 建立後不可變：
-       叢集現況：path=${cur_path:-<空>}  node=${cur_node:-<空>}
+       叢集現況：path=${cur_path:-<空/非 hostPath>}  node=${cur_node:-<空>}
        .env 期望：path=$K8S_MARKER_INGEST_HOST_PATH  node=$K8S_GPU_NODE_HOSTNAME
-       要改成 .env 的值，必須刪掉重建（PV 是 Retain + hostPath，刪 PV 物件不會刪掉節點上的檔案）：
+       要改成 .env 的值，必須刪掉重建（PV 是 Retain，刪 PV 物件不會刪掉節點上/CephFS 上的檔案）：
+         kubectl -n $NS scale deploy/light-models-vllm --replicas=0
+         kubectl -n $NS delete pvc marker-ingest-pvc
+         kubectl delete pv marker-ingest-pv
+         ./scripts/deploy.sh light-models
+       若叢集現況才是對的，請改 .env 對齊它，不要刪 PV。"
+}
+
+check_marker_ingest_pv_drift_cephfs() {
+    local pv="$1" cur_driver cur_root
+    cur_driver="$(kubectl get pv "$pv" -o jsonpath='{.spec.csi.driver}' 2>/dev/null || true)"
+    if [[ -z "$cur_driver" ]]; then
+        die "現有 PV「$pv」目前是 hostPath 版本，但 .env 現在設定 K8S_MARKER_INGEST_STORAGE=cephfs：
+       PV 的 spec 建立後不可變（hostPath ⇄ csi 無法用 kubectl apply 原地切換），必須刪掉重建：
+         kubectl -n $NS scale deploy/light-models-vllm --replicas=0
+         kubectl -n $NS delete pvc marker-ingest-pvc
+         kubectl delete pv marker-ingest-pv   # reclaimPolicy 是 Retain，不會動到舊 hostPath 上的資料
+         ./scripts/deploy.sh light-models
+       切換前建議先確認舊 hostPath 目錄裡的檔案是否需要搬進新的 CephFS volume（見
+       docblock-rag-platform repo 的 deployments/K8S01-DEPLOY.md 第 3.2 節）。"
+    fi
+
+    cur_root="$(kubectl get pv "$pv" -o jsonpath='{.spec.csi.volumeAttributes.rootPath}' 2>/dev/null || true)"
+    [[ "$cur_root" == "$K8S_MARKER_INGEST_CEPHFS_ROOT_PATH" ]] && return 0
+
+    die "現有 PV「$pv」的 CephFS rootPath（${cur_root:-<空>}）與 .env 的
+       K8S_MARKER_INGEST_CEPHFS_ROOT_PATH（$K8S_MARKER_INGEST_CEPHFS_ROOT_PATH）不一致，
+       而 PV 的 spec 建立後不可變，必須刪掉重建：
          kubectl -n $NS scale deploy/light-models-vllm --replicas=0
          kubectl -n $NS delete pvc marker-ingest-pvc
          kubectl delete pv marker-ingest-pv
@@ -470,12 +554,18 @@ EOF"
         export LIGHT_MODELS_IMAGE="$IMAGE_REF"
         export LIGHT_MODELS_IMAGE_PULL_POLICY="$IMAGE_PULL_POLICY"
 
-        info "套用 marker 共用 ingest-data PV/PVC（node: $K8S_GPU_NODE_HOSTNAME，path: $K8S_MARKER_INGEST_HOST_PATH）..."
-        envsubst < "$REPO_ROOT/k8s/shared-storage/marker-ingest-pvc.yaml" | kubectl apply -f -
+        local marker_pvc_manifest="$REPO_ROOT/k8s/shared-storage/marker-ingest-pvc.yaml"
+        if [[ "$K8S_MARKER_INGEST_STORAGE" == "cephfs" ]]; then
+            marker_pvc_manifest="$REPO_ROOT/k8s/shared-storage/marker-ingest-pvc.k8s01.yaml"
+            info "套用 marker 共用 ingest-data PV/PVC（CephFS 靜態綁定，rootPath: $K8S_MARKER_INGEST_CEPHFS_ROOT_PATH）..."
+        else
+            info "套用 marker 共用 ingest-data PV/PVC（node: $K8S_GPU_NODE_HOSTNAME，path: $K8S_MARKER_INGEST_HOST_PATH）..."
+        fi
+        envsubst < "$marker_pvc_manifest" | kubectl apply -f -
     fi
 
     if [[ "$name" == "light-models" ]]; then
-        info "部署 $name vLLM（GPU node: $K8S_GPU_NODE_HOSTNAME，hostname 硬釘）..."
+        info "部署 $name vLLM（節點選擇：$LIGHT_MODELS_NODE_SELECTOR_KEY=$LIGHT_MODELS_NODE_SELECTOR_VALUE）..."
     else
         info "部署 $name vLLM（浮動池：gpu-pool=shared）..."
     fi

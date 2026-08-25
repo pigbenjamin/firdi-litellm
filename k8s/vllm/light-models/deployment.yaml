@@ -23,11 +23,16 @@ spec:
         prometheus.io/path: "/metrics"
     spec:
       runtimeClassName: nvidia
-      # 尚未加入浮動池（gpu-pool: shared）：marker-ingest-pvc 的 PV 用 nodeAffinity 硬釘同一
-      # hostname（hostPath 儲存限制），即使這裡改成 label 選擇器，pod 實際上仍只能落在那個節點，
-      # 沒有真正的浮動效果，故暫維持 hostname 硬釘。日後 marker-ingest 換成 RWX 網路儲存後再改。
+      # 節點選擇依 .env 的 K8S_MARKER_INGEST_STORAGE 而定，deploy.sh 的
+      # resolve_node_pinning_vars() 會算好填入下面兩個變數，這裡不用手動改：
+      #   hostpath（預設）── marker-ingest-pvc 的 PV 用 nodeAffinity 硬釘同一
+      #                       hostname（hostPath 儲存限制），這裡必須用同一個
+      #                       hostname 硬釘，否則 pod 排到別的節點會掛不上那顆 PV。
+      #   cephfs            ── marker-ingest 換成 RWX 網路儲存後不用再釘節點，跟
+      #                       31b/26b 一樣走 gpu-pool=shared 浮動池，靠
+      #                       PriorityClass 搶佔（見 k8s/priorityclasses.yaml）。
       nodeSelector:
-        kubernetes.io/hostname: ${K8S_GPU_NODE_HOSTNAME}
+        ${LIGHT_MODELS_NODE_SELECTOR_KEY}: ${LIGHT_MODELS_NODE_SELECTOR_VALUE}
       # 浮動池最低優先權（先設定好，等未來真正浮動時直接生效；目前 hostname 硬釘下，若同節點
       # 上 31b/26b 需要搶佔資源，仍會依此優先權驅逐 light-models）
       priorityClassName: gpu-priority-low
