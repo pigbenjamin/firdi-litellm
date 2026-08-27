@@ -98,6 +98,20 @@ class ExternalModelIn(BaseModel):
     # 跟決策 E 之前的唯一行為（只有 openrouter/ 前綴會觸發部門 key 注入）完全一致。
     key_policy: str | None = None
 
+    # ── WP1：管理面欄位（存 admin-api 自己的 SQLite model_metadata 表，不進 LiteLLM）──
+    display_name: str = ""          # 顯示名稱，跟呼叫用的 model_name 分開
+    model_type: Literal["chat", "embedding", "rerank"] = "chat"
+    cost_center: str = ""           # 成本歸屬部門（dept_id），可留空
+    budget_limit_usd: float | None = None   # 額度上限；None = 不設額度
+    budget_enforce: bool = False    # True＝超額真的擋下來；False＝只記錄
+    budget_period: Literal["monthly", "total"] = "monthly"
+    notes: str = ""
+    upstream: str = ""              # model_upstreams.UPSTREAMS 的 key，供停用後重建時還原表單
+    # WP2 的生命週期狀態。預設 published 是為了讓既有的 curl 上架流程行為完全不變
+    # （見 docs/external-models.md）——admin-web 的表單會明確帶 draft 進來，走
+    # 「草稿 →（測試通過）→ 發布」那條路。
+    status: Literal["draft", "published"] = "published"
+
 
 class ExternalModelOut(BaseModel):
     id: str

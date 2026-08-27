@@ -188,7 +188,45 @@ def _load_config() -> dict:
             except sqlite3.OperationalError:
                 model_key_policies = {}
 
-            _CACHE_DATA = {"departments": depts, "users": users, "model_key_policies": model_key_policies}
+            # WP1/WP2：模型的狀態閘門與額度上限。表可能還不存在（admin-api 尚未
+            # 建表）→ 空 dict → 所有模型一律放行，跟這個功能上線前的行為完全一樣。
+            # 這裡刻意 fail-open：DB 讀不到不該變成「全平台打不通」。
+            try:
+                model_meta = {
+                    row["model_name"]: {
+                        "status": row["status"],
+                        "budget_limit_usd": row["budget_limit_usd"],
+                        "budget_enforce": int(row["budget_enforce"] or 0),
+                        "budget_period": row["budget_period"] or "monthly",
+                    }
+                    for row in conn.execute(
+                        "SELECT model_name, status, budget_limit_usd, budget_enforce, budget_period "
+                        "FROM model_metadata"
+                    ).fetchall()
+                }
+            except sqlite3.OperationalError:
+                model_meta = {}
+
+            # (model_name, period) → 已花費。period 是 'YYYY-MM' 或 'total'。
+            # 這份資料由 config/custom_logger.py 每次成功呼叫累加，它不會 bump
+            # db_version（每筆請求都 bump 會讓所有 replica 的快取一直失效），所以
+            # 額度用完之後最多要等 _CACHE_TTL（30 秒）才會開始擋。這是刻意的取捨：
+            # 額度上限是成本護欄不是硬性配額，換 30 秒的誤差省掉熱路徑上的 DB 查詢。
+            try:
+                model_spend = {
+                    (row["model_name"], row["period"]): float(row["spend_usd"] or 0)
+                    for row in conn.execute("SELECT model_name, period, spend_usd FROM model_spend").fetchall()
+                }
+            except sqlite3.OperationalError:
+                model_spend = {}
+
+            _CACHE_DATA = {
+                "departments": depts,
+                "users": users,
+                "model_key_policies": model_key_policies,
+                "model_metadata": model_meta,
+                "model_spend": model_spend,
+            }
             _CACHE_VERSION = current_version
             _CACHE_LOADED_AT = now
             return _CACHE_DATA
@@ -342,6 +380,88 @@ def _check_model_allowed(user: dict, dept: dict, model: str | None) -> None:
     )
 
 
+# ── Model 狀態閘門與額度上限（WP1／WP2）───────────────────────────────────────
+#
+# 狀態機的權威來源是 admin-api 的 model_metadata 表（見 admin-api/database.py）。
+# draft（草稿，還沒通過測試呼叫）與 disabled（停用）都不該放給一般使用者——
+# 停用的模型本來就已經從 LiteLLM 刪掉了，這裡擋的主要是草稿：草稿一定要先註冊
+# 到 LiteLLM 才測得起來，沒有這道閘門的話，只要某個部門的 allowed_models 含 "*"
+# 就會立刻看到還沒驗證過的模型。
+#
+# 沒有紀錄的 model_name 一律放行（視為 published）——YAML model_list 定義的地端
+# 模型與這個功能上線前上架的外部模型都不會有紀錄，零資料回填。
+
+
+def _model_meta(model: str) -> dict | None:
+    return _load_config().get("model_metadata", {}).get(model)
+
+
+def _check_model_status(user: dict, model: str | None) -> None:
+    meta = _model_meta(model) if model else None
+    if meta is None or meta.get("status") == "published":
+        return
+
+    status = meta.get("status")
+    reason = (
+        "這個模型還在草稿狀態（尚未通過上架前的測試呼叫），管理者發布後才能使用"
+        if status == "draft" else "這個模型已被管理者停用"
+    )
+    write_log({
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "event": "auth_denied",
+        "reason": f"model_{status}",
+        "user_id": user["user_id"],
+        "model": model,
+    })
+    raise ProxyException(
+        message=f"Model '{model}' is not available: {reason}",
+        type="auth_error",
+        param="model",
+        code=403,
+    )
+
+
+def _check_model_budget(user: dict, model: str | None) -> None:
+    """額度上限。budget_enforce=0 時只累計、不擋（管理者可以先觀察一個月再決定）。
+
+    額度是「整個模型」的總量，不是每個部門各自的——model_metadata.cost_center
+    只是成本歸屬的標記，不切分額度。
+    """
+    meta = _model_meta(model) if model else None
+    if meta is None or not meta.get("budget_enforce"):
+        return
+    limit = meta.get("budget_limit_usd")
+    if limit is None:
+        return
+
+    period = "total" if meta.get("budget_period") == "total" else datetime.now(timezone.utc).strftime("%Y-%m")
+    used = _load_config().get("model_spend", {}).get((model, period), 0.0)
+    if used < limit:
+        return
+
+    write_log({
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "event": "auth_denied",
+        "reason": "model_budget_exceeded",
+        "user_id": user["user_id"],
+        "dept_id": user.get("dept_id"),
+        "model": model,
+        "budget_limit_usd": limit,
+        "spend_usd": used,
+        "budget_period": period,
+    })
+    raise ProxyException(
+        message=(
+            f"Model '{model}' has exhausted its budget "
+            f"(used {used:.4f} / {limit:.4f} USD, period {period}). "
+            "請聯絡平台管理員調整額度上限。"
+        ),
+        type="rate_limit_error",
+        param="budget",
+        code=429,
+    )
+
+
 # ── Request body 解析 ─────────────────────────────────────────────────────────
 
 async def _get_requested_model(request: Request) -> str | None:
@@ -394,6 +514,11 @@ def _build_auth_response(
     # 判斷 model 字串前綴——metadata 裡有值就套用，沒有就維持模型自己定義的 key。
     metadata["injected_api_key"] = _resolve_injected_key(requested_model, dept) if requested_model else ""
     metadata["portal"] = source  # 請求來源入口（portal-a / portal-b / api_key），供用量分流
+    # WP1 額度累計用：呼叫者請求的那個 model_name（＝ model_metadata / allowed_models
+    # 認的字串）。kwargs["model"] 在 logger 端拿到的可能是上游的 litellm_params.model
+    # （如 openai/gpt-4o-mini），跟這裡的公開名稱不是同一個東西，花費會記錯模型。
+    # 走 metadata 是這個專案已經驗證過的傳遞方式（dept_id 就是這樣傳的）。
+    metadata["requested_model"] = requested_model or ""
 
     eff = _effective_models(user, dept)
     if eff is None:
@@ -555,6 +680,8 @@ async def user_api_key_auth(request: Request, api_key: str) -> UserAPIKeyAuth:
 
     requested_model = await _get_requested_model(request)
     _check_model_allowed(user, dept, requested_model)
+    _check_model_status(user, requested_model)
+    _check_model_budget(user, requested_model)
     _check_dept_rate_limit(dept)
 
     return _build_auth_response(user, dept, _normalize_api_key(api_key), source, requested_model)

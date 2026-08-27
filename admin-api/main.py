@@ -5,7 +5,18 @@ from fastapi.exception_handlers import http_exception_handler
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from database import DB_PATH, init_db
-from routers import admin_web, admin_web_write, departments, me, me_web, models, openwebui, sync, users
+from routers import (
+    admin_web,
+    admin_web_access,
+    admin_web_write,
+    departments,
+    me,
+    me_web,
+    models,
+    openwebui,
+    sync,
+    users,
+)
 
 
 @asynccontextmanager
@@ -25,6 +36,7 @@ app.include_router(me.router)
 app.include_router(me_web.router)
 app.include_router(admin_web.router)
 app.include_router(admin_web_write.router)
+app.include_router(admin_web_access.router)
 
 
 @app.exception_handler(StarletteHTTPException)
