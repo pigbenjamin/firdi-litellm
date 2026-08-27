@@ -536,6 +536,20 @@ async def model_detail(model_name: str, admin: dict = Depends(require_admin), ms
   <button type="submit">儲存</button>
 </form>"""
 
+    # 反斜線不能出現在 f-string 的 {} 表達式裡（Python 3.11 限制，容器跑的就是
+    # 3.11）。這段確認訊息有 \n，所以先算成變數，外層只插入變數名。
+    delete_form = "" if yaml_managed else f"""<form method="post" action="{PREFIX}/models/hard-delete"
+  onsubmit="return confirm('永久刪除 {html.escape(model_name)}？\n\n影響 {impact['total_headcount']} 人、{len(impact['departments']) + len(impact['wildcard_departments'])} 個部門。\n所有設定與額度紀錄都會消失，無法復原。\n\n只是想暫停的話請用「停用」。');">
+  {hidden}
+  <p><label><input type="checkbox" name="confirm" required>
+     我確認要永久刪除，且知道這會影響上面列出的 {impact['total_headcount']} 個人</label></p>
+  <button type="submit">永久刪除</button>
+</form>"""
+    yaml_delete_note = (
+        '<p class="hint">地端模型不提供刪除——要下架請改 <code>config/litellm_config.yaml</code> '
+        "的 model_list 並重啟 litellm pod。</p>" if yaml_managed else ""
+    )
+
     routing_block = f"""
 <fieldset><legend>上游設定{'（已鎖定）' if status != 'draft' else ''}</legend>
 <table>
@@ -585,14 +599,8 @@ async def model_detail(model_name: str, admin: dict = Depends(require_admin), ms
   <tr><td>個別授權的使用者</td><td>{len(impact['users'])} 人</td></tr>
   <tr><td>總影響人數</td><td><b>{impact['total_headcount']}</b> 人</td></tr>
 </table>
-{'<p class="hint">地端模型不提供刪除——要下架請改 <code>config/litellm_config.yaml</code> 的 model_list 並重啟 litellm pod。</p>' if yaml_managed else ''}
-{'' if yaml_managed else f'''<form method="post" action="{PREFIX}/models/hard-delete"
-  onsubmit="return confirm('永久刪除 {html.escape(model_name)}？\n\n影響 {impact['total_headcount']} 人、{len(impact['departments']) + len(impact['wildcard_departments'])} 個部門。\n所有設定與額度紀錄都會消失，無法復原。\n\n只是想暫停的話請用「停用」。');">
-  {hidden}
-  <p><label><input type="checkbox" name="confirm" required>
-     我確認要永久刪除，且知道這會影響上面列出的 {impact['total_headcount']} 個人</label></p>
-  <button type="submit">永久刪除</button>
-</form>'''}
+{yaml_delete_note}
+{delete_form}
 </fieldset>
 """)
 

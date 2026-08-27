@@ -610,6 +610,14 @@ deploy_litellm() {
 # ── Admin API ─────────────────────────────────────────────────────────────────
 deploy_admin_api() {
     info "部署 Admin API..."
+
+    # 開發機是 Python 3.12，容器是 3.11（admin-api/Dockerfile）。語法規則不完全
+    # 一樣——最容易中招的是 f-string 的 {} 表達式不能有反斜線，3.12 放寬了、3.11
+    # 沒有。本機全過、推上去卻 CrashLoopBackOff + SyntaxError，實際發生過一次。
+    # 擋在 build 之前，省掉 build → push → rollout 逾時 → 進 pod 撈日誌那一輪。
+    info "用容器的 Python 版本檢查語法..."
+    "$REPO_ROOT/scripts/check_target_python.sh" || die "語法檢查沒過，先修好再部署"
+
     info "Build admin-api image..."
     build_and_publish_image "firdi-admin-api:latest" "$REPO_ROOT/admin-api"
     export ADMIN_API_IMAGE="$IMAGE_REF"
