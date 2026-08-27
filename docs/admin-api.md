@@ -564,11 +564,40 @@ C」](external-models-ops.md)）的模型，不含 `litellm_config.yaml` `model_
       "model_name": "openrouter/anthropic/claude-sonnet-4-5",
       "model": "openai/anthropic/claude-sonnet-4-5",
       "api_base": "https://openrouter.ai/api/v1",
-      "key_policy": "dept:openrouter"
+      "key_policy": "dept:openrouter",
+      "registered": true,
+      "meta": {
+        "display_name": "Claude Sonnet 4.5",
+        "model_type": "chat",
+        "status": "published",
+        "cost_center": "RD",
+        "budget_limit_usd": 200.0,
+        "budget_enforce": 1,
+        "budget_period": "monthly",
+        "notes": "",
+        "last_test_ok": 1,
+        "last_test_at": "2026-08-27T02:11:00+00:00",
+        "last_test_result": "成功（chat 最小請求回 200）",
+        "has_record": true
+      },
+      "spend": {"period": "2026-08", "monthly": 12.34, "calls": 421, "total": 58.9}
     }
   ]
 }
 ```
+
+- **這個端點刻意只列 DB-managed 模型**，不含 `litellm_config.yaml` `model_list` 定義
+  的地端模型——這是既有契約。admin-web 的模型清單頁則兩者都列（地端模型標「既有」、
+  路由唯讀），因為管理者需要在同一個地方看到平台上所有的模型。
+- `meta` 是 admin-api 自己 SQLite `model_metadata` 表的內容（不在 LiteLLM 裡）。
+  `has_record: false` 代表這個 model_name 沒有管理紀錄——這個功能上線前就存在的
+  模型都是這樣，欄位是合成的預設值（`status: "published"`），不受狀態機管理。
+- `registered: false` 代表這筆只存在於 `model_metadata`，LiteLLM 那邊沒有——正常
+  情況就是 `status: "disabled"`（停用＝真的從 LiteLLM 刪掉、但保留設定）。這種
+  項目的 `id` 是 `null`，不能拿去打 `DELETE /api/v1/models/external/{id}`。
+- `spend` 是本專案自己累計的用量（`model_spend` 表，由 `config/custom_logger.py`
+  寫入）。LiteLLM 內建的 spend tracking 在本專案是關掉的，見
+  `config/litellm_config.yaml` 的 `disable_spend_logs`。
 
 ### `POST /api/v1/models/external`
 
@@ -599,6 +628,25 @@ C」](external-models-ops.md)）的模型，不含 `litellm_config.yaml` `model_
 - `api_key`：`key_policy` 解析為 `"model"` 時必填（直接存進 Postgres，LiteLLM
   會加密儲存）；`"dept:<provider>"` 時可留空，會自動帶入共用 placeholder。
 
+**管理面欄位（全部選填，存進 admin-api 的 `model_metadata` 表，不進 LiteLLM）**
+
+| 欄位 | 預設 | 說明 |
+|---|---|---|
+| `display_name` | `""` | 顯示名稱，可跟呼叫用的 `model_name` 不同 |
+| `model_type` | `"chat"` | `chat` / `embedding` / `rerank`，決定測試呼叫送哪種請求 |
+| `cost_center` | `""` | 成本歸屬部門（`dept_id`），純標記、不影響權限也不切分額度 |
+| `budget_limit_usd` | `null` | 額度上限（USD）；`null` = 不設額度 |
+| `budget_enforce` | `false` | `true` = 超額時 `config/custom_auth.py` 直接回 429；`false` = 只累計 |
+| `budget_period` | `"monthly"` | `monthly`（每月 UTC 歸零）或 `total`（累計不歸零） |
+| `notes` | `""` | 備註 |
+| `upstream` | `""` | `admin-api/model_upstreams.py` 的 key，供停用後重建時還原表單 |
+| `status` | `"published"` | `draft` 或 `published`。**預設 published 是為了讓既有的 curl 流程行為完全不變**；網頁表單會明確帶 `draft`，走「草稿 →（測試通過）→ 發布」那條路 |
+
+`status: "draft"` 的模型雖然已經註冊到 LiteLLM（不然測不起來），但
+`config/custom_auth.py` 會擋掉所有一般使用者的呼叫（403），要先通過測試呼叫、
+再發布才放得出去。狀態機的操作只有網頁介面有（見 [admin-web.md](admin-web.md)），
+curl 這條路只負責建立與刪除。
+
 **回應**：201 成功；409 表示 `model_name` 已存在（回應會註明是 YAML 定義還是
 DB-managed）；422 表示 `key_policy="model"` 卻沒給 `api_key`，或 `key_policy`
 格式錯誤。
@@ -613,7 +661,13 @@ curl -X POST "http://<host>:30408/api/v1/models/external" \
 ### `DELETE /api/v1/models/external/{model_id}`
 
 刪除一個 DB-managed 模型。`model_id` 是 `GET /api/v1/models/external` 回傳的 `id`
-（不是 `model_name`）。成功回 204。
+（不是 `model_name`）。成功回 204，同時清掉這個 model_name 的 `model_metadata`
+與 key policy 紀錄（用量累計 `model_spend` 刻意保留，避免同名模型重新上架時歷史
+花費被歸零）。
+
+**這是硬刪除，沒有影響範圍確認。** 想暫停一個模型但保留設定、之後一鍵復原，請用
+網頁介面的「停用」（見 [admin-web.md](admin-web.md)），那邊會先算出影響幾個部門、
+幾個人再讓你確認。
 
 ```bash
 curl -X DELETE "http://<host>:30408/api/v1/models/external/<id>" \

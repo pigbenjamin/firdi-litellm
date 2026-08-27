@@ -3,7 +3,8 @@
 把現在只能用 curl 做的平台管理動作（上架外部模型、設定部門 provider key、觸發權限同步），
 變成中央管理帳號在網頁上就能完成的流程。掛在 admin-api 的 `/api/v1/admin/web`。
 
-**狀態：階段 01～06（見下方階段拆解）程式碼與文件皆已完成。** 使用說明、畫面、
+**狀態：第一期（階段 01～06）與第二期（WP1～WP5，見下方「第二期」）程式碼與文件
+皆已完成。** 使用說明、畫面、
 環境變數見 [admin-web.md](admin-web.md)；本文件保留架構決策的脈絡與「為什麼這樣
 做」，供之後改動時參考。唯一還沒做的是**三個環境各自的 Keycloak redirect URI
 註冊**（見下方「開工前的手動設定」）與實際部署——這兩步驟需要 Keycloak 管理
@@ -50,6 +51,9 @@ service 函式，兩個 router 各自認證後呼叫同一個函式。
 **D. 第一期範圍。** 可寫：上架／下架模型、部門 provider key（可勾選多部門一次套用）、立即同步。
 唯讀：模型清單、各部門 `allowed_models`、dry-run 診斷。
 **模型授權一律唯讀**——權威來源是 OpenWebUI，寫 DB 會在 2 分鐘內被 pull 覆寫。
+
+> **這一條在第二期已經翻轉**（見下方「WP4 授權寫入」）。翻轉的方式不是關掉 pull，
+> 而是寫完立刻 push 回 OpenWebUI，讓兩邊一致——之後不管什麼時候 pull 回來結果都一樣。
 
 **E. 把「上游是誰」和「key 從哪來」解耦。** 現在這兩件事被 `openrouter/` 前綴綁在一起
 （[custom_logger.py:36-39](../config/custom_logger.py#L36-L39) 只看 `data["model"]` 是否以該前綴開頭）。
@@ -117,14 +121,138 @@ Web origins 不用改。`user-sync-service` 這個 service account 沒有 `view-
 - admin-api 目前完全沒有操作稽核。UI 化之後建議補 jsonl（寫法照
   [custom_logger.py](../config/custom_logger.py)），且不記完整 key。
 
-## 第二期（翻轉授權權威來源）：建議先不排程
+## 第二期：客戶回饋 v0.5 的五個工作包（已完成）
 
-原本支持第二期最有力的論點是「OpenWebUI 的授權編輯是管理員全有或全無，表達不了部門委派」。
-既然已定案不做委派，這個能力缺口就不存在了，而 OpenWebUI 本來就有一套能用、
-且是別人維護的授權介面。
+第一期上線後客戶實測 `curl` + `ADMIN_API_KEY` 流程並提出正式回饋（v0.5），三個核心
+痛點：(1) curl 流程複雜易錯，使用者要自己拼 JSON、猜 provider slug、決定哪個欄位放
+哪裡；(2) 失敗沒有回饋（例如漏設部門 key 就是靜默失效，一個提示都沒有）；(3) 文件
+落後於程式碼。訴求歸納起來是：把整個生命週期搬到瀏覽器上。
 
-剩下的理由只有生效變快（2 分鐘 → 30 秒）與少掉 pull → PATCH → push 的 SOP；
-成本則是要自己寫授權矩陣、為約 435 名使用者寫個人授權介面、並接管正確性——
-而 push 是**取代式**語意，一個計算錯誤就能清掉全平台權限。
+實作成果與使用說明見 [admin-web.md](admin-web.md)，這裡只留架構決策的脈絡。
 
-建議第一期上線後先實際用一段時間，再決定。細節保留在規劃文件裡。
+### WP1 模型的必要欄位
+
+顯示名稱、模型類型（chat/embedding/rerank）、成本歸屬部門、額度上限、備註，加上
+「常用範本」。**存 admin-api 自己的 SQLite（`model_metadata` 表），不推進 LiteLLM 的
+`model_info`**——跟決策 E 的 `model_key_policies` 同一個理由：`custom_auth` 在每個
+請求的熱路徑上讀的就是這顆 SQLite，狀態閘門與額度都要在那裡判斷，塞進 `model_info`
+等於在熱路徑多一個 Postgres 相依。
+
+**主鍵用 `model_name` 而不是 LiteLLM 的 deployment id**：id 在「草稿改設定＝刪除
+重建」與「停用→啟用」之後都會換一個，只有 `model_name` 從頭到尾不變，而且它正是
+授權（`allowed_models` / `users.models`）與 OpenWebUI `access_grants` 認的那個字串。
+
+### WP1 補充：額度要「真的擋得下來」
+
+原本規劃是純記錄，實作前確認要能真的限制、且可選擇是否啟用。這牽出一件事：
+**LiteLLM 內建的 budget 機制在本專案沒有資料可用**——`config/litellm_config.yaml` 刻意
+關掉了 `disable_spend_logs` / `disable_spend_updates`（用量走 `custom_logger` 的 jsonl
++ Langfuse，那顆 Postgres 只存模型定義）。
+
+所以額度是自己累計的：新增 `model_spend` 表，`config/custom_logger.py` 每次成功呼叫
+把 `response_cost` 加進去，`config/custom_auth.py` 在認證階段比對。三個刻意的取捨：
+
+- **累計不 bump `db_version`**：每筆請求都 bump 會讓 `custom_auth` 的設定快取一直
+  失效，整個快取就白做了。代價是額度用完後最多 30 秒（`_CACHE_TTL`）才開始擋。額度
+  是成本護欄不是硬性配額，這個誤差可以接受。
+- **花費記在「呼叫者請求的公開 `model_name`」上**，不是 `kwargs["model"]`（那可能已經
+  是上游的 `litellm_params.model`，如 `openai/gpt-4o-mini`）。傳遞方式沿用這個專案
+  已經驗證過的那條路：`custom_auth` 放進 `metadata`，`custom_logger` 的
+  `async_pre_call_hook` 複製到 `data["metadata"]`——`dept_id` 就是這樣傳的。
+- **算不出成本就記 `null` 而不是 0**：0 會讓「算不出成本」看起來像「這次免費」，
+  額度永遠用不完卻沒人發現。`usage.jsonl` 多了 `response_cost` 欄位可以查。
+
+### WP2 生命週期狀態機
+
+`draft` →（測試通過）→ `published` →（停用）→ `disabled` →（重新啟用）。三個實作上
+非做不可的決定：
+
+- **LiteLLM 沒有 `/model/update`**，只有 `/model/new` 跟 `/model/delete`。所以「編輯」
+  一律是刪除重建，也因此只開放給 `draft`——草稿還沒有人在用。
+- **停用要能一鍵復原，就得自己留住 `api_key`**：`/model/info` 會遮罩它，撈不回來。
+  存在 `model_metadata`，跟 `departments.provider_keys`、`users.api_key` 同一顆 DB、
+  同樣明文，UI 與稽核一律只顯示末四碼。
+- **停用刻意不動 `allowed_models` / `users.models`**。副作用是停用期間 pull 會把
+  DB 裡的授權拿掉（pull 以 LiteLLM `/models` 過濾），但 OpenWebUI 的 `access_grants`
+  不受影響（push 同樣跳過不在 LiteLLM 清單的模型），所以重新啟用後下一次 pull 會
+  自動補回來。這個自癒路徑要記得，不然會誤以為停用弄丟了授權。
+- **重新啟用回到哪個狀態看 `last_test_ok`**：沒測過的回 `draft`，不然「停用一個草稿
+  再啟用」就成了繞過發布閘門的後門。
+
+`model_name` 一律走 query string 或表單欄位，**不當路徑參數**——名稱含斜線，
+百分比編碼的 `%2F` 會被 ASGI 伺服器解碼回真正的斜線，路徑就切錯段了。
+
+### WP3 發布前的測試呼叫
+
+依 `model_type` 送不同形狀的最小請求（chat / embeddings / rerank）——用 chat 的形狀
+去測 embedding 模型只會拿到看不懂的 400，那正是客戶抱怨的那種錯誤訊息。失敗依狀態碼
+分類成人話（401/403 金鑰、429 額度、400/404 找不到模型、逾時）。結果存回
+`model_metadata`，並**當作 `draft` → `published` 的前置條件**。
+
+測試走 LiteLLM master key，那條路在 `custom_auth` 是 `PROXY_ADMIN` 的早退路徑，
+不經過狀態閘門，所以草稿測得起來。
+
+### WP4 授權寫入（翻轉決策 D）
+
+**決策 D 的「模型授權一律唯讀」在這一期翻轉。** 當初唯讀的理由是「權威來源是
+OpenWebUI，寫 DB 會在下次 pull 被覆寫」；解法不是關掉 pull，而是**寫完立刻 push 回
+OpenWebUI**，讓兩邊一致——之後不管什麼時候 pull 回來結果都一樣。等於把文件裡原本的
+手動 SOP（pull → PATCH → push）包成一次「儲存」。
+
+好消息是難的部分早就有了：`services/openwebui_sync_service.py` 的
+`push_model_access_to_openwebui(target="a")` 是現成的全鏡像 push，CronJob 已經在用。
+新增的只有 UI 與自動串接。
+
+**風險控制**：push 是取代式的全平台鏡像，一次錯誤寫入可以清掉所有人的權限。所以
+強制兩段式，沒有例外——表單 → 預覽差異（純計算，一個字都不寫）→ 確認 → 寫 DB +
+push，且每次寫入都把 before/after 記進稽核。另外三個刻意的限制：`*`（不限制）的
+部門不列進矩陣（編輯會把 `*` 換成逐筆清單、語意不同）、授權 LiteLLM 不存在的模型
+擋成 422（不然會變成「畫面上有、實際上沒有」的鬼授權）、只 push 入口 A（B 是唯讀
+鏡像，CronJob 會對齊）。
+
+### WP5 稽核擴充
+
+`write_audit` 的 `detail` 標準化成一定帶 `before`/`after`；新增生命週期與授權相關的
+動作代碼與中文對照；加上查詢頁與 CSV 匯出（UTF-8 with BOM，欄位標題中文）。查詢直接
+線性掃 jsonl，沒有另開資料表——寫入量只有管理者的手動操作，多一份資料就多一個會跟
+jsonl 對不起來的地方。沒做 xlsx（要多裝 `openpyxl`，CSV 已滿足需求）。
+
+### 這一輪刻意不做
+
+- **GCP Vertex AI / AWS Bedrock 當上游**：認證形狀（service account JSON 上傳、
+  AWS access key + secret + region）跟目前的單一 `api_key` 字串不同，不是在
+  `model_upstreams.py` 加一個枚舉項就好。
+- **prompt caching 的成本歸帳**（客戶回饋第十節）：cache read/write token 的
+  passthrough、per-model cache 定價、用量記錄的三分法、cache-hit 率報表。整個 repo
+  目前零相關程式碼。**這一節在客戶文件裡本身就標注為「我方觀察，待客戶確認」**，
+  建議先跟客戶確認要不要做，再排程。
+
+### 回溯相容
+
+- `POST /api/v1/models/external`（curl 路徑）的 `status` 預設是 `published`，既有
+  流程行為完全不變；網頁表單才明確帶 `draft`。
+- 沒有 `model_metadata` 紀錄的 model_name 一律視為 `published`——YAML `model_list`
+  定義的地端模型與這個功能上線前上架的外部模型都是這樣，**零資料回填**。
+- `GET /api/v1/models/external` 的回應是純增加欄位（`meta`/`spend`/`registered`），
+  另外會多列停用中的模型（`registered: false`、`id: null`）。
+
+### 驗證
+
+`scripts/test_model_lifecycle.py` 是離線整合測試：同一個 process 裡跑 admin-api 的
+FastAPI app，LiteLLM 用 `httpx.MockTransport` 假造，DB 用暫存檔，**不需要任何叢集或
+執行中的服務**。涵蓋狀態機、授權矩陣的取代式寫入、額度累計與強制、稽核與匯出，以及
+每一頁真的渲染得出來（那些頁面是很長的 f-string，少一個變數只有送出請求時才會炸）。
+
+```bash
+python3 scripts/test_model_lifecycle.py
+```
+
+## 第二期原始評估（保留脈絡）
+
+當初建議先不排程的理由是：委派已定案不做，OpenWebUI 本來就有一套能用且是別人維護的
+授權介面，剩下的好處只有生效變快與少掉 SOP，成本則是要自己寫授權矩陣、接管正確性，
+而 push 是取代式語意、一個計算錯誤就能清掉全平台權限。
+
+實際上線後客戶回饋把「生效變快、少掉 SOP」這件事的權重拉高了（那正是他們抱怨的
+「curl 流程複雜易錯」的一部分），而風險則用「強制先看 dry-run 差異 + 每筆寫入記
+before/after」來對沖，於是決定做。
