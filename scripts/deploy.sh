@@ -587,10 +587,23 @@ EOF"
 
 # ── LiteLLM ───────────────────────────────────────────────────────────────────
 deploy_litellm() {
+    local existed=false
+    kubectl get deployment litellm -n "$NS" &>/dev/null && existed=true
+
     deploy_litellm_configmaps
     info "部署 LiteLLM..."
     envsubst < "$REPO_ROOT/k8s/litellm/deployment.yaml" | kubectl apply -f -
     kubectl apply -f "$REPO_ROOT/k8s/litellm/service.yaml"
+
+    # ConfigMap 改了但 Deployment 的 spec 沒變時，kubectl apply 不會產生新的
+    # ReplicaSet，pod 也就不會重啟。掛載的檔案雖然會被 kubelet 同步更新，但
+    # custom_auth.py / custom_logger.py 是 Python module——litellm 早就 import
+    # 過了，不重啟等於改了沒生效。`./scripts/deploy.sh litellm` 單獨跑的時候
+    # 特別容易中招（secrets 那段的重啟不會執行到）。
+    if [[ "$existed" == true ]]; then
+        info "重啟 litellm 讓它重新 import custom_auth.py / custom_logger.py..."
+        kubectl rollout restart deployment/litellm -n "$NS"
+    fi
     ok "LiteLLM 套用完成"
 }
 
