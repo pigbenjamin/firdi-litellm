@@ -449,6 +449,25 @@ except Exception as exc:
 section("B 額度：只記錄 vs 真的擋下來")
 custom_logger.record_spend(NAME, 0.6)
 custom_logger.record_spend(NAME, 0.5)
+# 成本來源的優先序（2026-08-28 在 ai-x-dev 驗收 W-51 時踩到的真實 bug）：
+# LiteLLM 的 response_cost 是用內建定價表算的，查不到的模型一律回 0.0 而不是
+# None——透過 OpenRouter 上架的模型 litellm_params.model 是 openai/<slug>，
+# 定價表裡通常沒有。於是每筆都記 0、額度永遠不觸發，而且沒有任何錯誤訊息。
+# 真正的金額 OpenRouter 有給，在 usage.cost 裡。
+class _Resp:
+    def __init__(self, usage): self.usage = usage
+
+_REAL_USAGE = {"completion_tokens": 56, "prompt_tokens": 9, "total_tokens": 65,
+               "cost": 0.000108375, "is_byok": False}
+check(custom_logger._extract_cost({"response_cost": 0.0}, _Resp(_REAL_USAGE)) == 0.000108375,
+      "上游 usage.cost 優先於 LiteLLM 算出來的 0.0")
+check(custom_logger._extract_cost({"response_cost": 0.0042}, _Resp({"total_tokens": 100})) == 0.0042,
+      "上游沒給價時才用 LiteLLM 算的")
+check(custom_logger._extract_cost({}, _Resp({"total_tokens": 215})) is None,
+      "兩邊都沒有 → None 而不是 0（0 會讓「算不出成本」看起來像「免費」）")
+check(custom_logger._extract_cost({"response_cost": 0.0}, None) == 0.0,
+      "沒有 response_obj 也不會爆，且 LiteLLM 明講的 0 就記 0（地端模型確實免費）")
+
 spend = model_metadata_service.get_spend(NAME)
 check(abs(spend["monthly"] - 1.1) < 1e-9, "用量累加正確", str(spend))
 check(spend["calls"] == 2, "呼叫次數累加正確")

@@ -22,18 +22,49 @@ def write_log(record: dict) -> None:
             fh.write(line + "\n")
 
 
-def _extract_cost(kwargs: dict) -> float | None:
+def _as_float(value) -> float | None:
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _usage_field(response_obj, name: str):
+    """從回應的 usage 取一個欄位。LiteLLM 的 usage 有時是物件、有時是 dict。"""
+    usage = getattr(response_obj, "usage", None)
+    if usage is None:
+        return None
+    value = getattr(usage, name, None)
+    if value is None and isinstance(usage, dict):
+        value = usage.get(name)
+    return value
+
+
+def _extract_cost(kwargs: dict, response_obj) -> float | None:
     """這次呼叫的花費（USD）。拿不到就回 None——回 0 會讓「算不出成本」看起來像
     「這次免費」，額度就會永遠用不完卻沒有人發現。回 None 時上層會把它記進
     usage.jsonl 的 response_cost 欄位（null），至少查得出來。
+
+    來源的優先序很重要：
+
+    1. **上游在 usage.cost 回報的實際金額**（OpenRouter 會給，那是真正的帳單
+       金額）。這一項必須排在 LiteLLM 自己算的前面——LiteLLM 的 response_cost
+       是用它內建的定價表算的，查不到的模型一律回 **0.0（不是 None）**，而透過
+       OpenRouter 上架的模型 litellm_params.model 是 openai/<slug>，定價表裡
+       通常沒有。於是每一筆都記成 0、額度永遠不會觸發，而且完全沒有錯誤訊息。
+       2026-08-28 在 ai-x-dev 驗收時實際踩到：同一次呼叫 usage.cost 是
+       0.000108375，response_cost 卻是 0.0。
+    2. kwargs["response_cost"] / standard_logging_object：LiteLLM 認得的模型
+       （原生 provider 路線）才會有值。
     """
+    upstream = _as_float(_usage_field(response_obj, "cost"))
+    if upstream:   # 0 或 None 都往下找——上游沒給價，才輪到 LiteLLM 自己算的
+        return upstream
+
     cost = kwargs.get("response_cost")
     if cost is None:
         cost = (kwargs.get("standard_logging_object") or {}).get("response_cost")
-    try:
-        return float(cost) if cost is not None else None
-    except (TypeError, ValueError):
-        return None
+    return _as_float(cost)
 
 
 def record_spend(model_name: str, cost: float) -> None:
@@ -120,7 +151,7 @@ class FirdiLogger(CustomLogger):
             # 額度累計要記在「呼叫者請求的公開 model_name」上，跟 model_metadata
             # 的主鍵一致；退回 model_group、再退回 kwargs["model"]（上游名稱）。
             billing_model = meta.get("billing_model") or meta.get("model_group") or kwargs.get("model")
-            cost = _extract_cost(kwargs)
+            cost = _extract_cost(kwargs, response_obj)
 
             write_log({
                 "timestamp": datetime.now(timezone.utc).isoformat(),
