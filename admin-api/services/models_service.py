@@ -617,9 +617,37 @@ _TEST_SHAPES = {
 }
 
 
+def _known_upstream_problem(status: int, text: str) -> str | None:
+    """認得出來的特定上游問題，直接講「接下來要做什麼」。
+
+    **只放實際遇過的樣本。** 憑印象猜上游的錯誤字串，猜錯的話會給出比原文更誤導
+    的指引——那比不分類還糟。每加一條都應該是有人真的踩過、且訊息抄得到的。
+    """
+    lowered = text.lower()
+
+    # 2026-08-28 實際遇到：OpenRouter 帳號有 allowed-providers 白名單，模型存在、
+    # key 也有效，是帳號層級的設定擋掉的。原本只會被歸到「slug 拼錯或沒有權限」，
+    # 方向對但沒點破，使用者還是得自己讀英文原文才知道要去改哪裡。
+    if "allowed provider" in lowered or "allowed-providers" in lowered:
+        return (
+            f"HTTP {status}：這個模型的「供應商」不在你 OpenRouter 帳號的 allowed providers "
+            "白名單裡。模型是存在的、key 也有效，是帳號層級的設定擋掉的。\n"
+            "解法二選一：到 OpenRouter → Settings → Allowed Providers 把下面訊息裡提到的"
+            "那個供應商加進去；或改用白名單內供應商的模型。"
+        )
+    return None
+
+
 def _classify_test_failure(status: int, text: str) -> str:
     """把上游錯誤翻成看得懂的一句話——客戶回饋的第二個痛點就是「失敗沒有回饋」。"""
-    snippet = text.strip()[:300]
+    # 上游回應留長一點：像 allowed-providers 那種訊息，白名單本身就佔掉兩百多個
+    # 字元，切在 300 會剛好把「到底允許哪些」截掉，等於把最有用的部分丟了。
+    snippet = text.strip()[:800]
+
+    known = _known_upstream_problem(status, text)
+    if known:
+        return f"{known}\n\n上游回應：{snippet}"
+
     if status in (401, 403):
         return (
             f"HTTP {status}：金鑰被拒。key 來源是「各部門自己」的話，檢查該部門的 provider key "

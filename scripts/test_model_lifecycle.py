@@ -322,6 +322,23 @@ FAKE.calls.clear()
 run(models_service.test_model(EMB))
 check(FAKE.calls[-1][0] == "/v1/embeddings", "embedding 模型打 embeddings 端點", FAKE.calls[-1][0])
 
+# 認得出來的特定上游問題（真實樣本，2026-08-28 在 ai-x-dev 上遇到）：
+# OpenRouter 帳號有 allowed-providers 白名單，模型存在、key 也有效，被帳號設定擋掉。
+# 原本會被歸到「slug 拼錯或沒有權限」，方向對但沒點破要去改哪裡。
+REAL_ALLOWED_PROVIDERS = (
+    '{"error":{"message":"litellm.NotFoundError: NotFoundError: OpenAIException - '
+    "No allowed providers are available for the selected model. Providers serving "
+    "qwen/qwen3.8-flash-20260826: alibaba, but your account's allowed-providers setting "
+    'permits only: xai, google-vertex, nvidia, openai, anthropic, perplexity, deepinfra, '
+    'together, fireworks","type":"invalid_request_error"}}'
+)
+msg = models_service._classify_test_failure(404, REAL_ALLOWED_PROVIDERS)
+check("allowed providers" in msg and "白名單" in msg,
+      "allowed-providers 的 404 認得出來，不會被誤導成「slug 拼錯」", msg[:120])
+check("Allowed Providers" in msg, "訊息講得出到 OpenRouter 哪裡去改")
+check("fireworks" in msg,
+      "上游原文沒有被截掉關鍵資訊（白名單清單本身就佔兩百多字元）", msg[-80:])
+
 # ══ L4：測試通過 → 發布 → 使用者打得通 ════════════════════════════════════════
 section("L4 測試通過後發布，使用者才打得通")
 FAKE.infer_status = 200
