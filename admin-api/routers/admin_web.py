@@ -418,7 +418,9 @@ async def model_list(admin: dict = Depends(require_admin)):
 
 
 @router.get("/models/detail")
-async def model_detail(model_name: str, admin: dict = Depends(require_admin), msg: str = ""):
+async def model_detail(
+    model_name: str, admin: dict = Depends(require_admin), msg: str = "", level: str = "ok",
+):
     """單一模型的詳情頁：所有欄位 + 生命週期操作 + 影響範圍。
 
     用 query string 而不是路徑參數傳 model_name——model_name 本身就含斜線
@@ -435,7 +437,10 @@ async def model_detail(model_name: str, admin: dict = Depends(require_admin), ms
     depts = departments_service.list_departments()
     enc = quote(model_name, safe="")
 
-    banner = f'<p class="ok">{html.escape(msg)}</p>' if msg else ""
+    # msg 來自 query string（使用者可控），一律 escape、絕不當 HTML 渲染。
+    # 要醒目就靠 level 這個受控的旗標選 class，不是讓呼叫端塞標籤進來。
+    banner_class = "err" if level == "warn" else "ok"
+    banner = f'<p class="{banner_class}">{html.escape(msg)}</p>' if msg else ""
 
     state = model_metadata_service.budget_state(meta, spend)
     budget_line = (

@@ -30,6 +30,8 @@ import os
 import re
 import sys
 import tempfile
+import types
+from urllib.parse import unquote
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -150,6 +152,49 @@ async def _fake_push(dry_run: bool = False):
 
 
 model_access_service.push_now = _fake_push
+
+# ── 白名單同步走的是真的 openwebui_sync_service，接到假的 OpenWebUI ──────────
+# 只替換那個模組命名空間裡的 httpx，不動全域——全域被換掉會連 TestClient 一起壞。
+from services import openwebui_sync_service  # noqa: E402
+
+OWUI_CONFIG = {
+    "ENABLE_OPENAI_API": True,
+    "OPENAI_API_BASE_URLS": ["http://other:9099", "http://litellm:4000"],
+    "OPENAI_API_KEYS": ["", "svc-key"],
+    "OPENAI_API_CONFIGS": {
+        # "0" 是空白名單（顯示全部）——識別邏輯要跳過它，不能誤選
+        "0": {"enable": True, "model_ids": []},
+        # "1" 才是有維護白名單的 LiteLLM 連線
+        "1": {"enable": True, "model_ids": ["gemma-4-31B-it"]},
+    },
+}
+
+
+def _route(request: httpx.Request) -> httpx.Response:
+    if request.url.host != "owui-mock":
+        return FAKE.handler(request)
+    path = request.url.path
+    if path == "/openai/config":
+        return httpx.Response(200, json=OWUI_CONFIG)
+    if path == "/openai/config/update":
+        body = json.loads(request.content)
+        OWUI_CONFIG.clear()
+        OWUI_CONFIG.update(body)
+        return httpx.Response(200, json=body)
+    return httpx.Response(404, json={"error": f"unmocked {path}"})
+
+
+def _mock_async_client(*a, **kw):
+    kw.pop("transport", None)
+    return httpx.AsyncClient(*a, transport=httpx.MockTransport(_route), **kw)
+
+
+openwebui_sync_service.httpx = types.SimpleNamespace(
+    AsyncClient=_mock_async_client, RequestError=httpx.RequestError,
+)
+openwebui_sync_service.OWUI_A = {"name": "portal-a", "url": "http://owui-mock", "admin_key": "k"}
+openwebui_sync_service.LITELLM_URL = "http://litellm-mock"
+openwebui_sync_service.LITELLM_MASTER_KEY = "sk-test-master"
 
 from models import ExternalModelIn  # noqa: E402
 import audit  # noqa: E402
@@ -602,6 +647,71 @@ check("…</summary>" in resp.text, "收合時有「…」提示後面還有內�
 check("...9876" in resp.text, "展開後看得到完整內容（含 key 末四碼）", "找不到 ...9876")
 check('{"status": "draft"}' in resp.text or "&quot;status&quot;" in resp.text,
       "短的變更內容仍然直接顯示，不用點開")
+
+# ── OpenWebUI 連線的「模型 IDs」白名單 ────────────────────────────────────
+# 2026-08-28 實測踩到的洞：模型上架、發布、授權、push 全都成功，OpenWebUI 裡連
+# 模型記錄跟 group grant 都建好了，使用者的下拉選單就是沒有它——因為那條 LiteLLM
+# 連線的 model_ids 白名單沒被維護。整條鏈零錯誤訊息。
+section("O OpenWebUI 的模型 IDs 白名單")
+
+OWUI_CONFIG["OPENAI_API_CONFIGS"]["1"]["model_ids"] = ["gemma-4-31B-it"]
+WL = "openrouter/whitelist-check"
+run(models_service.create_external_model(ExternalModelIn(
+    model_name=WL, model="openai/whitelist-check", key_policy="dept:openrouter",
+    upstream="openrouter", status="draft",
+)))
+run(models_service.test_model(WL))
+
+resp = client.post("/api/v1/admin/web/models/publish", data={"model_name": WL},
+                   follow_redirects=False)
+check(resp.status_code == 303, "發布成功", str(resp.status_code))
+ids = OWUI_CONFIG["OPENAI_API_CONFIGS"]["1"]["model_ids"]
+check(WL in ids, "發布時自動加進 OpenWebUI 的模型 IDs 白名單", str(ids))
+check(OWUI_CONFIG["OPENAI_API_CONFIGS"]["0"]["model_ids"] == [],
+      "空白名單的連線沒被誤改（那條本來就顯示全部）")
+check("gemma-4-31B-it" in ids, "原本清單裡的其他模型沒被洗掉（取代式寫入要先讀再合併）")
+
+resp = client.post("/api/v1/admin/web/models/disable", data={"model_name": WL},
+                   follow_redirects=False)
+ids = OWUI_CONFIG["OPENAI_API_CONFIGS"]["1"]["model_ids"]
+check(WL not in ids, "停用時自動移出白名單", str(ids))
+check("gemma-4-31B-it" in ids, "移除時也沒動到別人")
+
+resp = client.post("/api/v1/admin/web/models/enable", data={"model_name": WL},
+                   follow_redirects=False)
+ids = OWUI_CONFIG["OPENAI_API_CONFIGS"]["1"]["model_ids"]
+check(WL in ids, "重新啟用回到已發布時，白名單也加回來", str(ids))
+
+# 沒通過測試的模型啟用後是草稿，不該出現在使用者的下拉選單裡
+NOWL = "openrouter/never-published"
+run(models_service.create_external_model(ExternalModelIn(
+    model_name=NOWL, model="openai/nwp", key_policy="dept:openrouter",
+    upstream="openrouter", status="draft",
+)))
+run(models_service.disable_model(NOWL))
+client.post("/api/v1/admin/web/models/enable", data={"model_name": NOWL}, follow_redirects=False)
+check(NOWL not in OWUI_CONFIG["OPENAI_API_CONFIGS"]["1"]["model_ids"],
+      "啟用後仍是草稿的模型不會被放進白名單")
+
+# 白名單同步失敗不能擋掉主操作——發布本身（LiteLLM + DB）已經成功了
+SOFT = "openrouter/failsoft-check"
+run(models_service.create_external_model(ExternalModelIn(
+    model_name=SOFT, model="openai/failsoft", key_policy="dept:openrouter",
+    upstream="openrouter", status="draft",
+)))
+run(models_service.test_model(SOFT))          # 先讓它通過發布閘門
+_saved = openwebui_sync_service.OWUI_A
+# 指向一個打不通的位址（不是「未設定」——未設定會安全 skipped 且刻意不打擾，
+# 這裡要驗的是「設定了但同步失敗」該明確提醒）
+openwebui_sync_service.OWUI_A = {"name": "portal-a", "url": "http://unreachable", "admin_key": "k"}
+resp = client.post("/api/v1/admin/web/models/publish", data={"model_name": SOFT},
+                   follow_redirects=False)
+openwebui_sync_service.OWUI_A = _saved
+check(resp.status_code == 303, "OpenWebUI 連不上時，發布本身仍然成功", str(resp.status_code))
+check(model_metadata_service.get_metadata(SOFT)["status"] == "published",
+      "狀態確實已改成已發布（白名單只是輔助動作，不能擋掉主操作）")
+check("沒有自動同步" in unquote(resp.headers.get("location", "")),
+      "但會明講白名單沒同步，要手動補", unquote(resp.headers.get("location", ""))[:160])
 
 # ── YAML model_list 定義的地端模型 ──────────────────────────────────────────
 # 授權矩陣本來就含它們（走 LiteLLM /models），模型清單卻不含，同一個介面對

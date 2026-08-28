@@ -135,12 +135,48 @@ def _parse_metadata_form(
     }
 
 
-def _detail_redirect(model_name: str, msg: str) -> RedirectResponse:
-    """寫入完一律 302 回詳情頁（POST/Redirect/GET）：重新整理不會把同一個操作再做一次。"""
+def _detail_redirect(model_name: str, msg: str, level: str = "ok") -> RedirectResponse:
+    """寫入完一律 302 回詳情頁（POST/Redirect/GET）：重新整理不會把同一個操作再做一次。
+
+    level 只能是 ok／warn，詳情頁據此選 CSS class——訊息本身一律當純文字 escape，
+    因為它會經過 query string，是外部可控的輸入。
+    """
     return RedirectResponse(
-        f"{PREFIX}/models/detail?model_name={quote(model_name, safe='')}&msg={quote(msg)}",
+        f"{PREFIX}/models/detail?model_name={quote(model_name, safe='')}"
+        f"&msg={quote(msg)}&level={quote(level)}",
         status_code=303,
     )
+
+
+def _listing_note(results: list[dict]) -> tuple[str, str]:
+    """把「OpenWebUI 白名單同步」的結果翻成給操作者看的一句話。
+
+    這是盡力而為的輔助動作：模型在 LiteLLM 的註冊與 DB 的授權才是主體。失敗時
+    要明講「請手動加一筆」，不能靜默——白名單沒補上的症狀是「上架、發布、授權
+    全部成功，使用者的下拉選單就是沒有它」，整條鏈沒有任何錯誤訊息，是最難查的
+    那種故障。
+    """
+    updated = [r for r in results if r.get("status") == "updated"]
+    failed = [r for r in results if r.get("status") == "failed"]
+    if failed:
+        reasons = "；".join(f'入口 {r["target"]}：{r.get("reason", "")}' for r in failed)
+        return (
+            "但 OpenWebUI 的「模型 IDs」沒有自動同步——請手動到 OpenWebUI → 管理員設定 → "
+            "連線 → 編輯 LiteLLM 那條 → 模型 IDs 補上這個名稱，否則使用者的下拉選單不會"
+            f"跟著變。原因：{reasons}",
+            "warn",
+        )
+    if updated:
+        return ("同時已同步 OpenWebUI 連線的「模型 IDs」，使用者重整後就會看到變化。", "ok")
+    return ("", "ok")
+
+
+async def _sync_listing(model_name: str, present: bool) -> list[dict]:
+    """絕不讓白名單同步的失敗擋掉主操作（發布／停用本身已經成功了）。"""
+    try:
+        return await openwebui_sync_service.sync_model_listing(model_name, present)
+    except Exception as exc:  # noqa: BLE001 — 輔助動作，任何例外都只記錄不中斷
+        return [{"status": "failed", "target": "a", "reason": f"未預期的錯誤：{exc}"}]
 
 
 # ── 上架模型 ──────────────────────────────────────────────────────────────────
@@ -402,14 +438,6 @@ def delete_preset(admin: dict = Depends(require_admin), preset_name: str = Form(
 # （openrouter/anthropic/claude-sonnet-4-5），百分比編碼的 %2F 會被 ASGI 伺服器
 # 解碼成真正的斜線，路徑就切錯段了。
 
-def _audit_lifecycle(admin: dict, action: str, model_name: str, before: dict, after: dict) -> None:
-    """WP5：生命週期的每一次寫入都留下狀態的前後值。"""
-    write_audit(admin, action, model_name, "success", {
-        "before": {"status": before.get("status")},
-        "after": {"status": after.get("status")},
-    })
-
-
 @router.post("/models/test")
 async def test_model(admin: dict = Depends(require_admin), model_name: str = Form(...)):
     """WP3：依模型類型送一次最小請求，結果存回 model_metadata 並當作發布的前置條件。"""
@@ -436,8 +464,14 @@ async def publish_model(admin: dict = Depends(require_admin), model_name: str = 
                     {"before": {"status": before.get("status")},
                      "status_code": exc.status_code, "detail": str(exc.detail)})
         raise
-    _audit_lifecycle(admin, "publish_model", model_name, before, after)
-    return _detail_redirect(model_name, "已發布。授權過的使用者現在打得到了。")
+    listing = await _sync_listing(model_name, present=True)
+    write_audit(admin, "publish_model", model_name, "success", {
+        "before": {"status": before.get("status")},
+        "after": {"status": after.get("status")},
+        "openwebui_listing": listing,
+    })
+    note, level = _listing_note(listing)
+    return _detail_redirect(model_name, "已發布。授權過的使用者現在打得到了。" + (" " + note if note else ""), level)
 
 
 @router.post("/models/disable")
@@ -452,15 +486,20 @@ async def disable_model(admin: dict = Depends(require_admin), model_name: str = 
                     {"before": {"status": before.get("status")},
                      "status_code": exc.status_code, "detail": str(exc.detail)})
         raise
+    listing = await _sync_listing(model_name, present=False)
     write_audit(admin, "disable_model", model_name, "success", {
         "before": {"status": before.get("status")},
         "after": {"status": after.get("status")},
         "affected_headcount": impact["total_headcount"],
         "affected_departments": [d["dept_id"] for d in impact["departments"]],
+        "openwebui_listing": listing,
     })
+    note, level = _listing_note(listing)
     return _detail_redirect(
         model_name,
-        f"已停用，影響 {impact['total_headcount']} 人。設定完整保留，隨時可以重新啟用。",
+        f"已停用，影響 {impact['total_headcount']} 人。設定完整保留，隨時可以重新啟用。"
+        + (" " + note if note else ""),
+        level,
     )
 
 
@@ -474,15 +513,23 @@ async def enable_model(admin: dict = Depends(require_admin), model_name: str = F
                     {"before": {"status": before.get("status")},
                      "status_code": exc.status_code, "detail": str(exc.detail)})
         raise
-    _audit_lifecycle(admin, "enable_model", model_name, before, after)
+    listing = await _sync_listing(model_name, present=(after.get("status") == "published"))
+    write_audit(admin, "enable_model", model_name, "success", {
+        "before": {"status": before.get("status")},
+        "after": {"status": after.get("status")},
+        "openwebui_listing": listing,
+    })
     msg = (
         "已重新啟用並回到「已發布」。"
         if after.get("status") == "published" else
         "已重新啟用，回到「草稿」（這個模型還沒通過測試呼叫）。"
     )
+    note, level = _listing_note(listing)
     return _detail_redirect(
         model_name,
-        msg + " 停用期間 DB 的授權可能被同步流程清掉，下一次從 OpenWebUI 拉回（≤2 分鐘）會自動補回來。",
+        msg + " 停用期間 DB 的授權可能被同步流程清掉，下一次從 OpenWebUI 拉回（≤2 分鐘）會自動補回來。"
+        + (" " + note if note else ""),
+        level,
     )
 
 
@@ -637,7 +684,9 @@ async def hard_delete_model(
         write_audit(admin, "delete_external_model", model_name, "failed",
                     {"status_code": exc.status_code, "detail": str(exc.detail)})
         raise
+    listing = await _sync_listing(model_name, present=False)
     write_audit(admin, "delete_external_model", model_name, "success", {
+        "openwebui_listing": listing,
         "before": {"status": before.get("status"), "litellm_model": before.get("litellm_model"),
                    "api_base": before.get("api_base"), "api_key": _audit_key(before.get("api_key"))},
         "after": None,

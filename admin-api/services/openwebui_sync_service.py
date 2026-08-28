@@ -402,3 +402,107 @@ async def push_model_access_to_openwebui(target: str = "a", dry_run: bool = Fals
         "missing_groups": sorted(missing_groups),
         "missing_users": sorted(missing_users),
     }
+
+# ── OpenWebUI 連線的「模型 IDs」白名單 ──────────────────────────────────────
+#
+# OpenWebUI 的每條 OpenAI 相容連線可以設一份 model_ids 白名單：非空時只有清單裡
+# 的模型會被拉進來，**不管上游 /models 回什麼、也不管 access_grants 怎麼設**。
+# 空陣列則代表「全部」。
+#
+# 2026-08-28 在 ai-x-dev 實際踩到：模型上架、發布、授權、push 全部成功，OpenWebUI
+# 裡連模型記錄跟 group grant 都建好了，使用者的下拉選單就是看不到——因為那條
+# LiteLLM 連線的白名單只列了三個舊模型。整條鏈沒有任何錯誤訊息，是最難查的那種
+# 「看起來都好但沒生效」。
+#
+# 認哪條連線是 LiteLLM 用「model_ids 與 LiteLLM 模型清單的交集最大」：admin-api
+# 沒有 OpenWebUI 的 service key 可以比對，而 URL 也對不起來（OpenWebUI 設的是
+# NodePort 位址，admin-api 用的是叢集內 Service DNS）。空白名單的連線一律跳過
+# ——它本來就顯示全部，不需要維護。
+
+OPENAI_CONFIG_PATH = "/openai/config"
+OPENAI_CONFIG_UPDATE_PATH = "/openai/config/update"
+
+
+def _pick_litellm_connection(configs: dict, litellm_models: set[str]) -> str | None:
+    """回傳最像 LiteLLM 的那條連線的 key；找不到回 None（呼叫端據此 no-op）。"""
+    best, best_overlap = None, 0
+    for key, cfg in (configs or {}).items():
+        if not isinstance(cfg, dict) or not cfg.get("enable", True):
+            continue
+        ids = cfg.get("model_ids") or []
+        if not ids:
+            continue  # 空白名單＝顯示全部，不需要維護
+        overlap = len(set(ids) & litellm_models)
+        if overlap > best_overlap:
+            best, best_overlap = key, overlap
+    return best
+
+
+async def ensure_model_listed(model_name: str, present: bool, target: str = "a") -> dict:
+    """把 model_name 加進（present=True）或移出（False）OpenWebUI 連線的白名單。
+
+    **這是盡力而為的輔助動作，不是關鍵路徑。** 呼叫端一定要容忍它失敗——模型在
+    LiteLLM 的註冊與 DB 的授權才是主體，白名單沒補上頂多是「使用者暫時看不到，
+    管理者手動加一筆就好」，不該讓整個發布失敗。
+
+    回傳 {"status": updated|unchanged|skipped|failed, ...}，讓 UI 據此決定要不要
+    提醒操作者手動處理。
+    """
+    owui = _resolve_owui_target(target)
+    if owui is None or not owui["url"] or not owui["admin_key"]:
+        return {"status": "skipped", "reason": f"入口 {target} 未設定", "target": target}
+    if not LITELLM_MASTER_KEY:
+        return {"status": "skipped", "reason": "LITELLM_MASTER_KEY 未設定", "target": target}
+
+    async with httpx.AsyncClient(timeout=20) as client:
+        try:
+            litellm_models = await _fetch_litellm_models(client)
+        except HTTPException as exc:
+            return {"status": "failed", "reason": f"讀不到 LiteLLM 模型清單：{exc.detail}", "target": target}
+
+        try:
+            resp = await client.get(
+                f"{owui['url']}{OPENAI_CONFIG_PATH}", headers=_owui_headers(owui["admin_key"])
+            )
+        except httpx.RequestError as exc:
+            return {"status": "failed", "reason": f"連不上 OpenWebUI：{exc}", "target": target}
+        if resp.status_code != 200:
+            return {"status": "failed",
+                    "reason": f"讀 {OPENAI_CONFIG_PATH} 失敗（HTTP {resp.status_code}）", "target": target}
+
+        config = resp.json()
+        configs = config.get("OPENAI_API_CONFIGS") or {}
+        key = _pick_litellm_connection(configs, litellm_models)
+        if key is None:
+            # 沒有任何連線在用白名單 → OpenWebUI 本來就會顯示全部，不需要動
+            return {"status": "skipped", "reason": "沒有使用白名單的 LiteLLM 連線", "target": target}
+
+        ids = list(configs[key].get("model_ids") or [])
+        if present and model_name not in ids:
+            ids.append(model_name)
+        elif not present and model_name in ids:
+            ids = [m for m in ids if m != model_name]
+        else:
+            return {"status": "unchanged", "target": target, "connection": key, "model_ids": ids}
+
+        # 取代式寫入：一定要送回完整的設定物件，只改我們要動的那一格，
+        # 不然會把其他連線一起洗掉。
+        configs[key]["model_ids"] = ids
+        config["OPENAI_API_CONFIGS"] = configs
+        try:
+            put = await client.post(
+                f"{owui['url']}{OPENAI_CONFIG_UPDATE_PATH}",
+                headers=_owui_headers(owui["admin_key"]), json=config,
+            )
+        except httpx.RequestError as exc:
+            return {"status": "failed", "reason": f"寫入 OpenWebUI 失敗：{exc}", "target": target}
+        if put.status_code != 200:
+            return {"status": "failed",
+                    "reason": f"寫入失敗（HTTP {put.status_code}）：{put.text[:200]}", "target": target}
+
+    return {"status": "updated", "target": target, "connection": key, "model_ids": ids}
+
+
+async def sync_model_listing(model_name: str, present: bool) -> list[dict]:
+    """兩個 OpenWebUI 入口都同步。B 未設定時會安全回 skipped。"""
+    return [await ensure_model_listed(model_name, present, t) for t in ("a", "b")]
