@@ -579,7 +579,8 @@ for p in ["/api/v1/admin/web/models/detail", "/api/v1/admin/web/models/test",
           "/api/v1/admin/web/models/publish", "/api/v1/admin/web/models/disable",
           "/api/v1/admin/web/models/enable", "/api/v1/admin/web/models/hard-delete",
           "/api/v1/admin/web/models/fields", "/api/v1/admin/web/models/edit",
-          "/api/v1/admin/web/access", "/api/v1/admin/web/access/departments/preview",
+          "/api/v1/admin/web/access", "/api/v1/admin/web/access/dept/edit",
+          "/api/v1/admin/web/access/departments/preview",
           "/api/v1/admin/web/access/departments/apply", "/api/v1/admin/web/access/users",
           "/api/v1/admin/web/access/users/edit", "/api/v1/admin/web/audit",
           "/api/v1/admin/web/audit/export"]:
@@ -608,7 +609,8 @@ for label, url in [
     ("上架第二步", "/api/v1/admin/web/models/new?upstream=openrouter"),
     ("上架表單", "/api/v1/admin/web/models/new?upstream=openrouter&key_source=dept"),
     ("上架表單（地端 vLLM）", "/api/v1/admin/web/models/new?upstream=vllm"),
-    ("授權矩陣", "/api/v1/admin/web/access"),
+    ("授權總覽", "/api/v1/admin/web/access"),
+    ("部門授權編輯", "/api/v1/admin/web/access/dept/edit?dept_id=RD"),
     ("使用者搜尋", "/api/v1/admin/web/access/users?q=rd"),
     ("個人授權編輯", "/api/v1/admin/web/access/users/edit?user_id=uid-rd-0"),
     ("Provider Key 選單", "/api/v1/admin/web/keys"),
@@ -809,13 +811,85 @@ with get_conn(DB_PATH) as conn:
     conn.execute("UPDATE departments SET allowed_models=? WHERE dept_id='RD'",
                  (json.dumps(["gemma-4-31B-it", "deleted-long-ago"]),))
 resp = client.get("/api/v1/admin/web/access")
-check("失效：deleted-long-ago" in resp.text, "矩陣頁把失效的授權標出來", resp.text[:200])
+check("deleted-long-ago" in resp.text and "chip-stale" in resp.text,
+      "總覽頁把失效的授權標出來", resp.text[:200])
+resp = client.get("/api/v1/admin/web/access/dept/edit?dept_id=RD")
+check("儲存時會被一併清掉" in resp.text and "deleted-long-ago" in resp.text,
+      "部門編輯頁也講明失效的授權會被清掉", resp.text[:200])
 resp = client.post("/api/v1/admin/web/access/departments/apply",
                    data={"grants": ["RD|gemma-4-31B-it"], "scope": ["RD"]})
 check(resp.status_code == 200 and "已生效" in resp.text,
       "失效授權不會讓儲存變成 422", f"HTTP {resp.status_code}: {resp.text[:200]}")
 check(model_access_service.get_dept("RD")["allowed_models"] == ["gemma-4-31B-it"],
       "失效授權被正常清理掉")
+
+# ── 逐部門編輯的動線（總覽唯讀 → 一次改一個部門）────────────────────────────
+#
+# 舊的大矩陣一次送出所有部門，「沒被勾的就收回」的取代語意涵蓋全表：漏看一格就
+# 靜默收回別的部門的授權，而 push 是全平台鏡像，錯了就是全公司少模型。新動線靠
+# scope 把取代範圍鎖在正在編輯的那一個部門，這幾條就是在守這件事。
+model_access_service.apply_dept("RD", ["gemma-4-31B-it"], known)
+model_access_service.apply_dept("SALES", ["gemma-4-31B-it"], known)
+
+resp = client.get("/api/v1/admin/web/access")
+check('name="grants"' not in resp.text, "總覽頁是唯讀的（沒有任何可勾的 checkbox）")
+check("access/dept/edit?dept_id=RD" in resp.text, "總覽頁每個部門有編輯入口")
+check('class="matrix"' in resp.text, "總覽頁附一份唯讀的部門×模型矩陣")
+
+resp = client.get("/api/v1/admin/web/access/dept/edit?dept_id=RD")
+check('data-was="1"' in resp.text and 'data-was="0"' in resp.text,
+      "編輯頁把原設定寫進 data-was（全選之後才還原得回去）")
+check(resp.text.count("原本：已授權") == 1, "原本已授權的模型只有一個，標示對得上",
+      str(resp.text.count("原本：已授權")))
+check("本組全選" in resp.text and "還原成原設定" in resp.text, "有分組全選與整頁還原")
+check("地端 vLLM" in resp.text and "OpenRouter" in resp.text, "模型按上游分組")
+
+# 只帶 RD 的 scope：SALES 完全不該被動到
+PUSHES.clear()
+resp = client.post("/api/v1/admin/web/access/departments/preview",
+                   data={"grants": [f"RD{'|'}{NAME}"], "scope": ["RD"]})
+check(resp.status_code == 200 and "差異預覽" in resp.text, "單部門預覽頁渲染成功", resp.text[:300])
+check("SALES" not in resp.text.split("<h2>")[1], "單部門預覽的差異裡沒有其他部門")
+check("access/dept/edit?dept_id=RD" in resp.text, "預覽頁的取消連結回到剛剛編輯的部門")
+check(not PUSHES, "預覽階段沒有 push")
+
+resp = client.post("/api/v1/admin/web/access/departments/apply",
+                   data={"grants": [f"RD{'|'}{NAME}"], "scope": ["RD"]})
+check(resp.status_code == 200 and "已生效" in resp.text, "單部門確認頁渲染成功", resp.text[:300])
+check(model_access_service.get_dept("RD")["allowed_models"] == [NAME], "RD 被取代成送出的清單")
+check(model_access_service.get_dept("SALES")["allowed_models"] == ["gemma-4-31B-it"],
+      "SALES 不在 scope 裡，一個字都沒被動到（這是逐部門編輯的重點）",
+      str(model_access_service.get_dept("SALES")["allowed_models"]))
+
+resp = client.get("/api/v1/admin/web/access/dept/edit?dept_id=NOPE")
+check(resp.status_code == 404, "編輯不存在的部門 → 404", str(resp.status_code))
+resp = client.post("/api/v1/admin/web/access/departments/apply",
+                   data={"grants": [f"NOPE{'|'}gemma-4-31B-it"], "scope": ["NOPE"]})
+check(resp.status_code == 422, "scope 帶不存在的部門 → 422", str(resp.status_code))
+
+# ＊（不限制）的部門：總覽只顯示不給編輯，直接開編輯頁也要擋下來——在畫面上按
+# 一次儲存就會把「不限制」換成凍結的逐筆清單，之後新上架的模型它就不會自動有了。
+with get_conn(DB_PATH) as conn:
+    conn.execute("UPDATE departments SET allowed_models=? WHERE dept_id='SALES'",
+                 (json.dumps(["*"]),))
+resp = client.get("/api/v1/admin/web/access")
+check("＊ 不限制" in resp.text, "總覽把 ＊ 部門標成「不限制」")
+check("access/dept/edit?dept_id=SALES" not in resp.text, "＊ 部門在總覽沒有編輯入口")
+resp = client.get("/api/v1/admin/web/access/dept/edit?dept_id=SALES")
+check(resp.status_code == 409, "直接開 ＊ 部門的編輯頁 → 409", str(resp.status_code))
+resp = client.post("/api/v1/admin/web/access/departments/apply",
+                   data={"grants": [f"SALES{'|'}gemma-4-31B-it"], "scope": ["SALES"]})
+check(resp.status_code == 422, "把 ＊ 部門塞進 scope → 422", str(resp.status_code))
+check(model_access_service.get_dept("SALES")["allowed_models"] == ["*"], "＊ 沒有被換掉")
+with get_conn(DB_PATH) as conn:
+    conn.execute("UPDATE departments SET allowed_models=? WHERE dept_id='SALES'",
+                 (json.dumps(["gemma-4-31B-it"]),))
+
+# 個人授權編輯頁沿用同一組差異提示
+resp = client.get("/api/v1/admin/web/access/users/edit?user_id=uid-rd-0")
+check('data-was=' in resp.text and "還原成原設定" in resp.text,
+      "個人授權編輯頁也有原設定與還原")
+
 
 # 生命週期的 POST 端點：model_name 走表單欄位（名稱含斜線，放不進路徑）
 resp = client.post("/api/v1/admin/web/models/test", data={"model_name": NAME}, follow_redirects=False)

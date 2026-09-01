@@ -1,4 +1,7 @@
-"""模型授權（WP4）：部門×模型矩陣與個人授權，存檔即生效。
+"""模型授權（WP4）：部門與個人授權，存檔即生效。
+
+畫面分成「唯讀總覽」與「一次一個部門的編輯」兩層——原本是一頁大矩陣，改的理由
+寫在 dept_edit_form 的 docstring 裡。
 
 這是 docs/admin-web-plan.md 決策 D「模型授權一律唯讀」的翻轉（該文件稱為第二期）。
 當初唯讀的理由是「權威來源是 OpenWebUI，寫 DB 會在 2 分鐘內被 pull 覆寫」；這裡
@@ -44,6 +47,119 @@ def _model_header(model_id: str, metadata: dict[str, dict]) -> str:
     return f'<th style="white-space:nowrap"><code>{html.escape(model_id)}</code>{badge}</th>'
 
 
+# 上游代碼 → 給人看的分組標題。沒列到的代碼直接原樣顯示（新增上游時不會漏掉模型）。
+_UPSTREAM_LABELS = {
+    "vllm": "地端 vLLM（config/litellm_config.yaml 定義）",
+    "openrouter": "OpenRouter",
+    "openai": "OpenAI",
+    "anthropic": "Anthropic",
+    "gemini": "Google Gemini",
+    "ollama": "Ollama",
+    "marker": "文件轉檔（Marker）",
+}
+
+
+def _group_key(model_id: str, meta: dict | None) -> str:
+    """模型 id → 分組代碼。
+
+    以 model_name 的第一段為準（`openrouter/anthropic/claude-sonnet-4-5` → openrouter），
+    因為那是使用者在畫面上看到的名字；沒有斜線的就是地端 YAML 模型，退回 metadata
+    的 upstream，再退回 vllm。刻意不優先用 metadata：地端模型多半根本沒有紀錄。
+    """
+    if "/" in model_id:
+        return model_id.split("/", 1)[0]
+    return (meta or {}).get("upstream") or "vllm"
+
+
+def _grouped_models(
+    model_ids: list[str], metadata: dict[str, dict]
+) -> list[tuple[str, str, list[str]]]:
+    """[(分組代碼, 標題, 模型清單)]，地端排最前面，其餘按標題排序。"""
+    groups: dict[str, list[str]] = {}
+    for m in model_ids:
+        groups.setdefault(_group_key(m, metadata.get(m)), []).append(m)
+    return sorted(
+        ((k, _UPSTREAM_LABELS.get(k, k), sorted(v)) for k, v in groups.items()),
+        key=lambda g: (g[0] != "vllm", g[1]),
+    )
+
+
+def _matrix_rows(depts: list[dict], model_ids: list[str]) -> str:
+    """總覽頁那份唯讀矩陣。＊ 的部門用一格橫跨帶過，不假裝它是「每個都勾了」——
+    語意是「不限制」，之後新上架的模型它也會自動有，逐格打勾看起來會像凍結的快照。
+    """
+    rows = []
+    for d in depts:
+        allowed = set(d["allowed_models"])
+        head = (
+            f'<td style="white-space:nowrap"><b>{html.escape(d["dept_id"])}</b>'
+            f'<br><span class="hint">{html.escape(d["dept_name"])}／{d["headcount"]} 人</span></td>'
+        )
+        if "*" in allowed:
+            cells = f'<td colspan="{max(len(model_ids), 1)}"><b>＊ 不限制</b>（所有模型，含之後新上架的）</td>'
+        else:
+            cells = "".join(
+                f'<td class="on">✓</td>' if m in allowed else '<td></td>' for m in model_ids
+            )
+        rows.append(f"<tr>{head}{cells}</tr>")
+    return "".join(rows) or f'<tr><td colspan="{len(model_ids) + 1}">目前沒有任何部門。</td></tr>'
+
+
+# 兩個編輯頁（部門、個人）共用的即時差異。純前端，只讀 data-was（伺服器渲染時
+# 就寫死的原設定），
+# 所以怎麼亂點都回得去，而且 JS 掛掉也只是少了顏色提示，表單本身照常能送。
+# 刻意寫成普通字串而不是 f-string：JS 的大括號在 f-string 裡要全部雙寫，
+# 那是 118e8e2 修過的那種語法陷阱。
+_DIFF_JS = """<script>
+(function () {
+  var form = document.getElementById('access-form');
+  if (!form) return;
+  var boxes = [].slice.call(form.querySelectorAll('input[type=checkbox]'));
+  var summary = document.getElementById('diff-summary');
+  var submit = document.getElementById('diff-submit');
+
+  function paint() {
+    var added = 0, removed = 0;
+    boxes.forEach(function (box) {
+      var was = box.dataset.was === '1';
+      var row = box.closest('tr');
+      var mark = row.querySelector('.mark');
+      row.classList.remove('row-add', 'row-del');
+      if (box.checked && !was) {
+        added++; row.classList.add('row-add'); mark.textContent = '＋ 這次新增';
+      } else if (!box.checked && was) {
+        removed++; row.classList.add('row-del'); mark.textContent = '－ 這次收回';
+      } else {
+        mark.textContent = '';
+      }
+    });
+    var total = added + removed;
+    summary.textContent = total
+      ? '這次變更：新增 ' + added + ' 個、收回 ' + removed + ' 個模型'
+      : '目前跟原設定一樣，沒有變更';
+    summary.className = total ? 'warn' : 'hint';
+    submit.disabled = !total;
+  }
+
+  form.addEventListener('change', paint);
+  form.addEventListener('click', function (e) {
+    var act = e.target.dataset && e.target.dataset.act;
+    if (!act) return;
+    var group = e.target.dataset.group;
+    boxes.forEach(function (box) {
+      if (group && box.dataset.group !== group) return;
+      if (act === 'all') box.checked = true;
+      else if (act === 'none') box.checked = false;
+      else if (act === 'reset') box.checked = box.dataset.was === '1';
+    });
+    paint();
+  });
+
+  paint();
+})();
+</script>"""
+
+
 def _parse_grants(grants: list[str], dept_ids: set[str]) -> dict[str, list[str]]:
     """勾選的 checkbox → dept_id → 模型清單。沒被勾的部門也要有一筆空清單，
     否則「把某部門的權限全部取消」會被當成「這個部門沒有出現在表單裡」而漏掉。
@@ -71,7 +187,10 @@ def _diff_rows(diffs: list[dict]) -> str:
     return "".join(rows)
 
 
-def _confirm_page(nav_key: str, title: str, diffs: list[dict], hidden_fields: str, apply_action: str) -> object:
+def _confirm_page(
+    nav_key: str, title: str, diffs: list[dict], hidden_fields: str, apply_action: str,
+    back: str = f"{PREFIX}/access",
+) -> object:
     total_people = sum(d["headcount"] for d in diffs)
     revoking = [d for d in diffs if d["removed"]]
     warning = (
@@ -93,7 +212,7 @@ def _confirm_page(nav_key: str, title: str, diffs: list[dict], hidden_fields: st
   {hidden_fields}
   <button type="submit">確認並立即生效</button>
 </form>
-<p><a href="{PREFIX}/access">« 取消，回授權頁</a></p>
+<p><a href="{back}">« 取消，回上一頁</a></p>
 """)
 
 
@@ -158,64 +277,62 @@ def _result_page(nav_key: str, summary: str, back: str):
 """)
 
 
-# ── 部門 × 模型矩陣 ───────────────────────────────────────────────────────────
+# ── 部門授權：總覽（唯讀）＋ 一次一個部門的編輯 ─────────────────────────────────
 
 @router.get("/access")
-async def access_matrix(admin: dict = Depends(require_admin)):
+async def access_overview(admin: dict = Depends(require_admin)):
+    """部門清單（現況一眼看完）＋ 可展開的唯讀矩陣。這一頁不能改任何東西。"""
     model_ids, metadata = await _known_models()
     depts = model_access_service.dept_models()
+    known = set(model_ids)
 
-    editable = [d for d in depts if "*" not in d["allowed_models"]]
-    wildcard = [d for d in depts if "*" in d["allowed_models"]]
-
-    header = "".join(_model_header(m, metadata) for m in model_ids)
     rows = []
-    for d in editable:
+    for d in depts:
         allowed = set(d["allowed_models"])
-        cells = "".join(
-            f'<td style="text-align:center"><input type="checkbox" name="grants" '
-            f'value="{html.escape(d["dept_id"] + _GRANT_SEP + m)}"'
-            f'{" checked" if m in allowed else ""}></td>'
-            for m in model_ids
-        )
-        stale = sorted(allowed - set(model_ids))
-        stale_note = (
-            f'<br><span class="err" title="這些名字在 LiteLLM 找不到，儲存時會被清掉">'
-            f'失效：{html.escape(", ".join(stale))}</span>' if stale else ""
-        )
+        if "*" in allowed:
+            # ＊ 是「不限制」的既有語意，跟逐筆清單完全不同（見下方說明），
+            # 所以連編輯入口都不給，避免有人按進去按了儲存就把語意換掉。
+            models_cell = '<b>＊ 不限制</b><br><span class="hint">所有模型都能用</span>'
+            action = '<span class="hint">唯讀</span>'
+        else:
+            chips = "".join(
+                f'<span class="chip">{html.escape(m)}</span>' for m in sorted(allowed & known)
+            ) + "".join(
+                f'<span class="chip chip-stale" title="這個名字在 LiteLLM 找不到，'
+                f'下次儲存時會被清掉">{html.escape(m)}</span>'
+                for m in sorted(allowed - known)
+            )
+            models_cell = chips or '<span class="hint">（無任何授權）</span>'
+            edit_url = f'{PREFIX}/access/dept/edit?dept_id={quote(d["dept_id"], safe="")}'
+            action = f'<a class="btn" href="{edit_url}">編輯</a>'
         rows.append(
             f'<tr><td style="white-space:nowrap"><b>{html.escape(d["dept_id"])}</b>'
-            f'<br><span class="hint">{html.escape(d["dept_name"])}／{d["headcount"]} 人</span>'
-            f'{stale_note}</td>{cells}</tr>'
+            f'<br><span class="hint">{html.escape(d["dept_name"])}</span></td>'
+            f'<td style="white-space:nowrap">{d["headcount"]} 人</td>'
+            f'<td>{models_cell}</td><td>{action}</td></tr>'
         )
-
-    wildcard_block = ""
-    if wildcard:
-        names = ", ".join(f'{d["dept_id"]}（{d["headcount"]} 人）' for d in wildcard)
-        wildcard_block = f"""
-<p class="warn"><b>以下部門的 allowed_models 是 <code>*</code>（不限制，所有模型都能用），
-不列在矩陣裡</b>：{html.escape(names)}。<br>
-在矩陣裡編輯它們會把 <code>*</code> 換成一份逐筆清單、語意完全不同，所以這裡刻意不提供——
-真的要改請走 <code>ADMIN_API_KEY</code> 的 curl 路徑。</p>"""
 
     return _page(f"""
 {_nav('access')}
 <h2>模型授權</h2>
-<p class="hint">勾選＝該部門可以使用該模型。按「預覽變更」會先算出差異給你看，
-確認之後才寫入，並立刻鏡像回 OpenWebUI（使用者端即時生效，不用等 2 分鐘的排程）。
-個人層級的額外授權請用下方的搜尋。</p>
-{wildcard_block}
-<form method="post" action="{PREFIX}/access/departments/preview">
-  <p>
-    <button type="button" onclick="document.querySelectorAll('input[name=grants]').forEach(c=>c.checked=true)">全選</button>
-    <button type="button" onclick="document.querySelectorAll('input[name=grants]').forEach(c=>c.checked=false)">全不選</button>
-  </p>
-  <div class="wide"><table>
-    <tr><th>部門</th>{header}</tr>
-    {''.join(rows) if rows else f'<tr><td colspan="{len(model_ids) + 1}">沒有可編輯的部門。</td></tr>'}
+<p class="hint">這一頁是<b>唯讀現況</b>。要改授權請按該部門的「編輯」，一次改一個部門——
+存檔前一定會先給你差異預覽，確認之後才寫入，並立刻鏡像回 OpenWebUI（使用者端即時生效，
+不用等 2 分鐘的排程）。個人層級的額外授權請用下方的搜尋。</p>
+<table>
+  <tr><th>部門</th><th>人數</th><th>已授權的模型</th><th></th></tr>
+  {''.join(rows) if rows else '<tr><td colspan="4">目前沒有任何部門。</td></tr>'}
+</table>
+<p class="hint"><code>＊ 不限制</code>的部門刻意不提供編輯：在矩陣或清單裡編輯它會把
+<code>＊</code> 換成一份逐筆清單、語意完全不同（之後新上架的模型它就不會自動有了）。
+真的要改請走 <code>ADMIN_API_KEY</code> 的 curl 路徑。</p>
+
+<details>
+  <summary>展開「部門 × 模型」總覽矩陣（唯讀，用來比對哪些部門有同一個模型）</summary>
+  <div class="wide"><table class="matrix">
+    <tr><th>部門</th>{''.join(_model_header(m, metadata) for m in model_ids)}</tr>
+    {_matrix_rows(depts, model_ids)}
   </table></div>
-  <button type="submit">預覽變更</button>
-</form>
+</details>
 
 <h3>個人授權</h3>
 <p class="hint">個人授權是<b>加在部門授權之上</b>的（兩者聯集），用來處理少數需要額外模型的人。
@@ -228,38 +345,153 @@ async def access_matrix(admin: dict = Depends(require_admin)):
 """)
 
 
-@router.post("/access/departments/preview")
-async def preview_departments(admin: dict = Depends(require_admin), grants: list[str] = Form(default=[])):
-    model_ids, _ = await _known_models()
-    depts = model_access_service.dept_models()
-    editable = {d["dept_id"] for d in depts if "*" not in d["allowed_models"]}
-    desired = _parse_grants(grants, editable)
+@router.get("/access/dept/edit")
+async def dept_edit_form(dept_id: str, admin: dict = Depends(require_admin)):
+    """單一部門的授權編輯：模型縱向排列、按上游分組，每一列都標「原本」是什麼。
 
+    這裡刻意不做「全部門一起編輯」的大矩陣（第二期原本的樣子）。理由有三個：
+    模型數量會隨自助上架一直往右長、部門只有個位數，矩陣因此又寬又稀疏；橫向捲動
+    之後表頭與部門名都不在視線內，是誤點的主因；而 push 是取代式的全平台鏡像，
+    一次只動一個部門能把寫壞的影響面積縮到最小。全局比對的需求由總覽頁那份唯讀
+    矩陣負責。
+    """
+    model_ids, metadata = await _known_models()
+    dept = model_access_service.get_dept(dept_id)
+    allowed = set(dept["allowed_models"])
+
+    if "*" in allowed:
+        raise HTTPException(
+            status_code=409,
+            detail=f"'{dept_id}' 的授權是 ＊（不限制），語意跟逐筆清單不同，"
+            "這個畫面不提供編輯——要改請走 ADMIN_API_KEY 的 curl 路徑。",
+        )
+
+    blocks = []
+    for group_key, label, members in _grouped_models(model_ids, metadata):
+        rows = "".join(
+            f'<tr><td><input type="checkbox" name="grants" '
+            f'value="{html.escape(dept_id + _GRANT_SEP + m)}" '
+            f'data-was="{"1" if m in allowed else "0"}" '
+            f'data-group="{html.escape(group_key)}"'
+            f'{" checked" if m in allowed else ""}></td>'
+            f'<td><code>{html.escape(m)}</code> '
+            f'{status_badge(metadata[m]) if m in metadata and metadata[m].get("status") != "published" else ""}</td>'
+            f'<td class="hint" style="white-space:nowrap">'
+            f'{"原本：已授權" if m in allowed else "原本：未授權"}</td>'
+            f'<td class="mark"></td></tr>'
+            for m in members
+        )
+        blocks.append(f"""
+<fieldset>
+  <legend>{html.escape(label)}（{len(members)} 個模型）</legend>
+  <p>
+    <button type="button" data-act="all" data-group="{html.escape(group_key)}">本組全選</button>
+    <button type="button" data-act="none" data-group="{html.escape(group_key)}">本組全不選</button>
+  </p>
+  <table>
+    <tr><th></th><th>模型</th><th>原本</th><th>這次的變更</th></tr>
+    {rows}
+  </table>
+</fieldset>""")
+
+    stale = sorted(allowed - set(model_ids))
+    stale_note = (
+        f'<p class="err">這些授權在 LiteLLM 找不到（已停用、已刪除或名稱拼錯），'
+        f'儲存時會被一併清掉：{html.escape(", ".join(stale))}</p>' if stale else ""
+    )
+
+    return _page(f"""
+{_nav('access')}
+<h2>部門授權：{html.escape(dept_id)}</h2>
+<table>
+  <tr><td>部門名稱</td><td>{html.escape(dept["dept_name"])}</td></tr>
+  <tr><td>影響人數</td><td>{dept["headcount"]} 人</td></tr>
+</table>
+<p class="hint">勾選＝這個部門可以使用該模型。每一列都標了「原本」是什麼，所以按了全選之後
+也還看得到原設定；真的按錯就按「還原成原設定」。按「預覽變更」會先算出差異給你看，
+確認之後才寫入。</p>
+{stale_note}
+<form method="post" action="{PREFIX}/access/departments/preview" id="access-form">
+  <input type="hidden" name="scope" value="{html.escape(dept_id)}">
+  {''.join(blocks) if blocks else '<p>LiteLLM 目前沒有任何可授權的模型。</p>'}
+  <div class="sticky-bar">
+    <p id="diff-summary" class="hint">目前跟原設定一樣，沒有變更</p>
+    <button type="submit" id="diff-submit">預覽變更</button>
+    <button type="button" data-act="reset">還原成原設定</button>
+    <a class="btn" href="{PREFIX}/access" style="margin-left:1rem">« 取消，回授權頁</a>
+  </div>
+</form>
+{_DIFF_JS}
+""")
+
+
+def _dept_back(scope_ids: list[str]) -> str:
+    """差異預覽／結果頁的「回上一頁」要回到剛剛編輯的那個部門，而不是總覽。
+
+    只動一個部門時才回編輯頁；curl 一次帶多個部門的情況沒有單一來源頁，回總覽。
+    """
+    if len(scope_ids) == 1:
+        return f'{PREFIX}/access/dept/edit?dept_id={quote(scope_ids[0], safe="")}'
+    return f"{PREFIX}/access"
+
+
+def _resolve_scope(scope: list[str], depts: list[dict]) -> list[str]:
+    """這次寫入的「取代範圍」：範圍內沒被勾的模型就是要收回。
+
+    沒帶 scope 的呼叫（既有的 curl 路徑）維持原語意＝所有可編輯的部門；帶了就
+    只動那幾個，逐部門編輯頁靠這個才不會把別的部門一起清空。＊ 的部門一律排除。
+    """
+    editable = [d["dept_id"] for d in depts if "*" not in d["allowed_models"]]
+    if not scope:
+        return editable
+    unknown = sorted(set(scope) - set(editable))
+    if unknown:
+        raise HTTPException(
+            status_code=422,
+            detail=f"這些部門不存在或授權是 ＊（不限制），不能用這個畫面編輯：{', '.join(unknown)}",
+        )
+    return sorted(set(scope))
+
+
+def _dept_diffs(desired: dict[str, list[str]], known: set[str]) -> list[dict]:
     # 刻意不先用「& 已知模型」把未知名稱濾掉——那會讓 validate_models 的 422 變成
-    # 永遠觸發不到的死碼，未知的授權就被靜默吞掉了。矩陣只為已知模型渲染 checkbox，
-    # 所以正常操作不會踩到這裡；會踩到就代表表單被改過，或這個模型在頁面開著的
-    # 期間被刪掉了，兩種都該在預覽階段就講清楚，而不是讓人按下確認才發現。
-    known = set(model_ids)
+    # 永遠觸發不到的死碼，未知的授權就被靜默吞掉了。編輯頁只為 known 的模型渲染
+    # checkbox，所以正常操作不會踩到這裡；會踩到就代表表單被改過，或這個模型在
+    # 頁面開著的期間被刪掉了，兩種都該在預覽階段就講清楚。
     for models in desired.values():
         model_access_service.validate_models(models, known)
-
-    diffs = [
+    return [
         diff for dept_id, models in sorted(desired.items())
         if (diff := model_access_service.preview_dept(dept_id, sorted(set(models))))["changed"]
     ]
+
+
+@router.post("/access/departments/preview")
+async def preview_departments(
+    admin: dict = Depends(require_admin),
+    grants: list[str] = Form(default=[]),
+    scope: list[str] = Form(default=[]),
+):
+    model_ids, _ = await _known_models()
+    scope_ids = _resolve_scope(scope, model_access_service.dept_models())
+    back = _dept_back(scope_ids)
+    desired = _parse_grants(grants, set(scope_ids))
+    diffs = _dept_diffs(desired, set(model_ids))
     if not diffs:
-        return _no_change_page("access", f"{PREFIX}/access")
+        return _no_change_page("access", back)
 
     hidden = "".join(
         f'<input type="hidden" name="grants" value="{html.escape(dept_id + _GRANT_SEP + m)}">'
-        for dept_id, models in sorted(desired.items()) for m in sorted(models)
+        for dept_id, models in sorted(desired.items()) for m in sorted(set(models))
     )
     # 全部取消勾選的部門在上面產不出任何 hidden 欄位，apply 時會分不出「這個部門
     # 沒送出」跟「這個部門要清空」——用一個明確的名單把範圍帶過去。
     hidden += "".join(
-        f'<input type="hidden" name="scope" value="{html.escape(d)}">' for d in sorted(editable)
+        f'<input type="hidden" name="scope" value="{html.escape(d)}">' for d in scope_ids
     )
-    return _confirm_page("access", "確認部門授權變更", diffs, hidden, f"{PREFIX}/access/departments/apply")
+    return _confirm_page(
+        "access", "確認部門授權變更", diffs, hidden, f"{PREFIX}/access/departments/apply", back,
+    )
 
 
 @router.post("/access/departments/apply")
@@ -270,23 +502,17 @@ async def apply_departments(
 ):
     model_ids, _ = await _known_models()
     known = set(model_ids)
-    desired = _parse_grants(grants, set(scope))
-
-    for models in desired.values():
-        model_access_service.validate_models(models, known)
-
-    diffs = [
-        diff for dept_id, models in sorted(desired.items())
-        if (diff := model_access_service.preview_dept(dept_id, sorted(set(models))))["changed"]
-    ]
+    scope_ids = _resolve_scope(scope, model_access_service.dept_models())
+    back = _dept_back(scope_ids)
+    diffs = _dept_diffs(_parse_grants(grants, set(scope_ids)), known)
     if not diffs:
-        return _no_change_page("access", f"{PREFIX}/access")
+        return _no_change_page("access", back)
 
     summary = await _apply_and_push(
         admin, "set_dept_models", diffs,
         lambda d: model_access_service.apply_dept(d["id"], d["after"], known),
     )
-    return _result_page("access", summary, f"{PREFIX}/access")
+    return _result_page("access", summary, back)
 
 
 # ── 個人授權 ──────────────────────────────────────────────────────────────────
@@ -338,14 +564,35 @@ async def user_edit_form(user_id: str, admin: dict = Depends(require_admin)):
         "這個部門的授權是 <code>*</code>（不限制），下面所有模型他本來就能用，個人授權沒有實際差別。"
         if "*" in dept_allowed else ""
     )
-    rows = "".join(
-        f'<tr><td><input type="checkbox" name="models" value="{html.escape(m)}"'
-        f'{" checked" if m in personal else ""}></td>'
-        f'<td><code>{html.escape(m)}</code> '
-        f'{status_badge(metadata[m]) if m in metadata and metadata[m].get("status") != "published" else ""}</td>'
-        f'<td class="hint">{"部門已授權" if m in dept_allowed or "*" in dept_allowed else ""}</td></tr>'
-        for m in model_ids
-    )
+    # 跟部門編輯頁同一個形狀：按上游分組、每列標「原本」、動過的列上色。
+    blocks = []
+    for group_key, label, members in _grouped_models(model_ids, metadata):
+        rows = "".join(
+            f'<tr><td><input type="checkbox" name="models" value="{html.escape(m)}" '
+            f'data-was="{"1" if m in personal else "0"}" '
+            f'data-group="{html.escape(group_key)}"'
+            f'{" checked" if m in personal else ""}></td>'
+            f'<td><code>{html.escape(m)}</code> '
+            f'{status_badge(metadata[m]) if m in metadata and metadata[m].get("status") != "published" else ""}</td>'
+            f'<td class="hint" style="white-space:nowrap">'
+            f'{"原本：已授權" if m in personal else "原本：未授權"}</td>'
+            f'<td class="hint" style="white-space:nowrap">'
+            f'{"部門已授權" if m in dept_allowed or "*" in dept_allowed else ""}</td>'
+            f'<td class="mark"></td></tr>'
+            for m in members
+        )
+        blocks.append(f"""
+<fieldset>
+  <legend>{html.escape(label)}（{len(members)} 個模型）</legend>
+  <p>
+    <button type="button" data-act="all" data-group="{html.escape(group_key)}">本組全選</button>
+    <button type="button" data-act="none" data-group="{html.escape(group_key)}">本組全不選</button>
+  </p>
+  <table>
+    <tr><th></th><th>模型</th><th>原本</th><th>部門</th><th>這次的變更</th></tr>
+    {rows}
+  </table>
+</fieldset>""")
     stale = sorted(personal - set(model_ids))
     stale_note = (
         f'<p class="err">這些個人授權在 LiteLLM 找不到，儲存時會被清掉：{html.escape(", ".join(stale))}</p>'
@@ -362,12 +609,17 @@ async def user_edit_form(user_id: str, admin: dict = Depends(require_admin)):
 </table>
 <p class="hint">{dept_note or "個人授權跟部門授權是聯集：這裡勾的是「部門沒有、但這個人要額外拿到」的模型。取消勾選部門本來就有的模型不會讓他失去存取權。"}</p>
 {stale_note}
-<form method="post" action="{PREFIX}/access/users/preview">
+<form method="post" action="{PREFIX}/access/users/preview" id="access-form">
   <input type="hidden" name="user_id" value="{html.escape(user_id)}">
-  <table><tr><th></th><th>模型</th><th></th></tr>{rows}</table>
-  <button type="submit">預覽變更</button>
+  {''.join(blocks) if blocks else '<p>LiteLLM 目前沒有任何可授權的模型。</p>'}
+  <div class="sticky-bar">
+    <p id="diff-summary" class="hint">目前跟原設定一樣，沒有變更</p>
+    <button type="submit" id="diff-submit">預覽變更</button>
+    <button type="button" data-act="reset">還原成原設定</button>
+    <a class="btn" href="{PREFIX}/access" style="margin-left:1rem">« 取消，回授權頁</a>
+  </div>
 </form>
-<p><a href="{PREFIX}/access">« 回授權頁</a></p>
+{_DIFF_JS}
 """)
 
 
@@ -385,7 +637,9 @@ async def preview_user(
     hidden = f'<input type="hidden" name="user_id" value="{html.escape(user_id)}">' + "".join(
         f'<input type="hidden" name="models" value="{html.escape(m)}">' for m in desired
     )
-    return _confirm_page("access", "確認個人授權變更", [diff], hidden, f"{PREFIX}/access/users/apply")
+    return _confirm_page(
+        "access", "確認個人授權變更", [diff], hidden, f"{PREFIX}/access/users/apply", back,
+    )
 
 
 @router.post("/access/users/apply")

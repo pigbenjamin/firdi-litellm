@@ -124,6 +124,29 @@ def _page(body: str, status_code: int = 200) -> HTMLResponse:
   textarea {{ height: 4rem; }}
   .diff-add {{ color: #14622c; }}
   .diff-del {{ color: #b00020; }}
+  /* 授權編輯頁：動過的那一列立刻上色，讓「我改了什麼」不用靠記憶 */
+  tr.row-add > td {{ background: #eaf7ee; }}
+  tr.row-del > td {{ background: #fdecef; }}
+  .mark {{ font-size: 0.9em; white-space: nowrap; }}
+  tr.row-add .mark {{ color: #14622c; }}
+  tr.row-del .mark {{ color: #b00020; }}
+  /* 授權總覽的模型清單：一眼看出「這個部門現在有什麼」 */
+  .chip {{
+    display: inline-block; margin: 0 0.3em 0.3em 0; padding: 0.1em 0.6em;
+    border-radius: 0.8em; background: #eef1f6; font-size: 0.85em; white-space: nowrap;
+  }}
+  .chip-stale {{ background: #fdecef; color: #b00020; }}
+  /* 唯讀總覽矩陣：橫向捲到右邊時表頭與部門名要還在視線內 */
+  .matrix th {{ position: sticky; top: 0; background: #fff; z-index: 2; }}
+  .matrix td:first-child, .matrix th:first-child {{
+    position: sticky; left: 0; background: #fff; z-index: 3;
+  }}
+  .matrix .on {{ text-align: center; color: #14622c; font-weight: 700; }}
+  /* 編輯頁底部的變更摘要：捲到哪裡都看得到還沒送出的差異 */
+  .sticky-bar {{
+    position: sticky; bottom: 0; background: #fff; border-top: 1px solid #ddd;
+    padding: 0.7rem 0; margin-top: 1rem;
+  }}
   /* 稽核的變更內容：短的直接顯示，長的收進 details，完整內容一定打得開 */
   details.diff-add, details.diff-del, details.hint {{ margin: 0; }}
   details > summary {{ cursor: pointer; }}
