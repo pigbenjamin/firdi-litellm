@@ -23,7 +23,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException
 
 from admin_auth import require_admin
 from audit import write_audit
-from routers.admin_web import PREFIX, _nav, _page, status_badge
+from routers.admin_web import PREFIX, _nav, _page, access_model_url, status_badge
 from services import model_access_service, model_metadata_service, models_service
 
 router = APIRouter(prefix=PREFIX)
@@ -42,9 +42,15 @@ async def _known_models() -> tuple[list[str], dict[str, dict]]:
 
 
 def _model_header(model_id: str, metadata: dict[str, dict]) -> str:
+    """矩陣的欄位標題。點模型名稱＝「把這一個模型開給哪些部門」，因為在矩陣上看到
+    某個模型只有一個部門有、想補給別人時，那正是下一個動作。
+    """
     meta = metadata.get(model_id)
     badge = f" {status_badge(meta)}" if meta and meta.get("status") != "published" else ""
-    return f'<th style="white-space:nowrap"><code>{html.escape(model_id)}</code>{badge}</th>'
+    return (
+        f'<th style="white-space:nowrap"><a href="{access_model_url(model_id)}" '
+        f'title="編輯這個模型的部門授權"><code>{html.escape(model_id)}</code></a>{badge}</th>'
+    )
 
 
 # 上游代碼 → 給人看的分組標題。沒列到的代碼直接原樣顯示（新增上游時不會漏掉模型）。
@@ -117,25 +123,32 @@ _DIFF_JS = """<script>
   var boxes = [].slice.call(form.querySelectorAll('input[type=checkbox]'));
   var summary = document.getElementById('diff-summary');
   var submit = document.getElementById('diff-submit');
+  var unit = form.dataset.unit || '模型';
 
   function paint() {
-    var added = 0, removed = 0;
+    var added = 0, removed = 0, addedPeople = 0, removedPeople = 0;
     boxes.forEach(function (box) {
       var was = box.dataset.was === '1';
+      var people = parseInt(box.dataset.people || '0', 10);
       var row = box.closest('tr');
       var mark = row.querySelector('.mark');
       row.classList.remove('row-add', 'row-del');
       if (box.checked && !was) {
-        added++; row.classList.add('row-add'); mark.textContent = '＋ 這次新增';
+        added++; addedPeople += people;
+        row.classList.add('row-add'); mark.textContent = '＋ 這次新增';
       } else if (!box.checked && was) {
-        removed++; row.classList.add('row-del'); mark.textContent = '－ 這次收回';
+        removed++; removedPeople += people;
+        row.classList.add('row-del'); mark.textContent = '－ 這次收回';
       } else {
         mark.textContent = '';
       }
     });
     var total = added + removed;
+    // 影響人數是「一次開給多個部門」那一頁的重點，所以那一頁才帶 data-people
+    var people = form.dataset.people === '1'
+      ? '（新增涵蓋 ' + addedPeople + ' 人、收回影響 ' + removedPeople + ' 人）' : '';
     summary.textContent = total
-      ? '這次變更：新增 ' + added + ' 個、收回 ' + removed + ' 個模型'
+      ? '這次變更：新增 ' + added + ' 個、收回 ' + removed + ' 個' + unit + people
       : '目前跟原設定一樣，沒有變更';
     summary.className = total ? 'warn' : 'hint';
     submit.disabled = !total;
@@ -286,6 +299,10 @@ async def access_overview(admin: dict = Depends(require_admin)):
     depts = model_access_service.dept_models()
     known = set(model_ids)
 
+    model_options = "".join(
+        f'<option value="{html.escape(m)}">{html.escape(m)}</option>' for m in model_ids
+    ) or '<option value="">（LiteLLM 目前沒有任何模型）</option>'
+
     rows = []
     for d in depts:
         allowed = set(d["allowed_models"])
@@ -326,8 +343,19 @@ async def access_overview(admin: dict = Depends(require_admin)):
 <code>＊</code> 換成一份逐筆清單、語意完全不同（之後新上架的模型它就不會自動有了）。
 真的要改請走 <code>ADMIN_API_KEY</code> 的 curl 路徑。</p>
 
+<h3>按模型授權（一次開給多個部門）</h3>
+<p class="hint">剛上架一個模型、要一次開給好幾個部門時走這裡——勾部門而不是勾模型。
+逐部門改也做得到，但那樣要進出好幾次、每次都各自 push 一輪，而且看不到「這個模型
+總共影響幾個人」。模型清單與模型詳情頁也都有同一個入口。</p>
+<form method="get" action="{PREFIX}/access/model/edit">
+  <p><label>模型<br>
+     <select name="model_name">{model_options}</select></label></p>
+  <button type="submit">前往</button>
+</form>
+
 <details>
-  <summary>展開「部門 × 模型」總覽矩陣（唯讀，用來比對哪些部門有同一個模型）</summary>
+  <summary>展開「部門 × 模型」總覽矩陣（唯讀，用來比對哪些部門有同一個模型；
+  點欄位標題可以直接編輯該模型的部門授權）</summary>
   <div class="wide"><table class="matrix">
     <tr><th>部門</th>{''.join(_model_header(m, metadata) for m in model_ids)}</tr>
     {_matrix_rows(depts, model_ids)}
@@ -505,6 +533,177 @@ async def apply_departments(
     scope_ids = _resolve_scope(scope, model_access_service.dept_models())
     back = _dept_back(scope_ids)
     diffs = _dept_diffs(_parse_grants(grants, set(scope_ids)), known)
+    if not diffs:
+        return _no_change_page("access", back)
+
+    summary = await _apply_and_push(
+        admin, "set_dept_models", diffs,
+        lambda d: model_access_service.apply_dept(d["id"], d["after"], known),
+    )
+    return _result_page("access", summary, back)
+
+
+# ── 按模型授權：把一個模型一次開給多個部門 ─────────────────────────────────────
+
+def _model_scope(
+    model_name: str, checked: set[str], known: set[str]
+) -> tuple[list[str], dict[str, list[str]]]:
+    """(這次要寫入的部門, dept_id → 完整的期望清單)。
+
+    以模型為軸編輯時，每個部門的「其他模型」直接沿用**當下 DB** 的值。刻意不讓表單
+    把它們背在 hidden 欄位裡來回搬：那份是開頁那一刻的快照，你開著頁面的時候別人改
+    了同一批部門的別的模型，一送出就會被蓋掉。
+
+    寫入範圍只含「這個模型的授權狀態真的有變」的部門——沒有變的部門一個字都不會被
+    寫，連它裡面的失效授權都不動。取代式的 push 錯一次就是全公司少模型，寫入面積
+    能縮就縮。
+    """
+    depts = model_access_service.dept_models()
+    editable = [d for d in depts if "*" not in d["allowed_models"]]
+    unknown = sorted(checked - {d["dept_id"] for d in editable})
+    if unknown:
+        raise HTTPException(
+            status_code=422,
+            detail=f"這些部門不存在或授權是 ＊（不限制），不能用這個畫面編輯：{', '.join(unknown)}",
+        )
+
+    scope_ids: list[str] = []
+    desired: dict[str, list[str]] = {}
+    for d in editable:
+        want = d["dept_id"] in checked
+        if (model_name in d["allowed_models"]) == want:
+            continue
+        # 失效授權（LiteLLM 找不到的）在這裡濾掉，否則 validate_models 會把整次儲存
+        # 擋成 422。只影響本來就要重寫的那幾個部門，畫面上有提示。
+        rest = [m for m in d["allowed_models"] if m != model_name and m in known]
+        desired[d["dept_id"]] = rest + ([model_name] if want else [])
+        scope_ids.append(d["dept_id"])
+    return scope_ids, desired
+
+
+async def _require_known_model(model_name: str) -> tuple[set[str], dict[str, dict]]:
+    model_ids, metadata = await _known_models()
+    known = set(model_ids)
+    if model_name not in known:
+        raise HTTPException(
+            status_code=404,
+            detail=f"'{model_name}' 不在 LiteLLM 目前的模型清單裡，沒辦法授權"
+            "（停用中的模型在 LiteLLM 裡不存在，要先重新啟用）。",
+        )
+    return known, metadata
+
+
+@router.get("/access/model/edit")
+async def model_access_form(model_name: str, admin: dict = Depends(require_admin)):
+    """一個模型 × 所有部門。跟部門編輯頁是同一份資料的另一個軸。
+
+    新上架一個模型之後要開給好幾個部門，逐部門進去就是進出 N 次、push N 次、差異
+    預覽被切成 N 段（看不到「總共影響幾個人」）。這一頁把那件事收成一次。
+    """
+    known, metadata = await _require_known_model(model_name)
+    depts = model_access_service.dept_models()
+    meta = metadata.get(model_name)
+    badge = f" {status_badge(meta)}" if meta and meta.get("status") != "published" else ""
+
+    rows, stale_notes, editable_count = [], [], 0
+    for d in depts:
+        allowed = d["allowed_models"]
+        head = (
+            f'<td style="white-space:nowrap"><b>{html.escape(d["dept_id"])}</b>'
+            f'<br><span class="hint">{html.escape(d["dept_name"])}</span></td>'
+            f'<td style="white-space:nowrap">{d["headcount"]} 人</td>'
+        )
+        if "*" in allowed:
+            rows.append(
+                f'<tr><td></td>{head}<td class="hint">＊ 不限制，本來就能用</td>'
+                f'<td class="hint">唯讀</td></tr>'
+            )
+            continue
+
+        editable_count += 1
+        has = model_name in allowed
+        rows.append(
+            f'<tr><td><input type="checkbox" name="depts" value="{html.escape(d["dept_id"])}" '
+            f'data-was="{"1" if has else "0"}" data-people="{d["headcount"]}"'
+            f'{" checked" if has else ""}></td>{head}'
+            f'<td class="hint" style="white-space:nowrap">'
+            f'{"原本：已授權" if has else "原本：未授權"}</td>'
+            f'<td class="mark"></td></tr>'
+        )
+        stale = sorted(set(allowed) - known)
+        if stale:
+            stale_notes.append(f'{d["dept_id"]}（{", ".join(stale)}）')
+
+    stale_note = (
+        f'<p class="warn">以下部門有 LiteLLM 找不到的失效授權：{html.escape("、".join(stale_notes))}。'
+        "如果這次的變更剛好含這些部門，那幾筆會被順手清掉（差異預覽會列出來）；"
+        "沒被改到的部門不會被動。</p>" if stale_notes else ""
+    )
+
+    return _page(f"""
+{_nav('access')}
+<h2>按模型授權：<code>{html.escape(model_name)}</code>{badge}</h2>
+<p class="hint">勾選＝該部門可以使用<b>這一個</b>模型。這一頁只動這個模型，各部門的
+其他授權一個字都不會被碰到。按「預覽變更」會先算出差異給你看，確認之後才寫入，
+並立刻鏡像回 OpenWebUI。</p>
+{stale_note}
+<form method="post" action="{PREFIX}/access/model/preview" id="access-form"
+      data-unit="部門" data-people="1">
+  <input type="hidden" name="model_name" value="{html.escape(model_name)}">
+  <p>
+    <button type="button" data-act="all">全選</button>
+    <button type="button" data-act="none">全不選</button>
+  </p>
+  <table>
+    <tr><th></th><th>部門</th><th>人數</th><th>原本</th><th>這次的變更</th></tr>
+    {''.join(rows) if rows else '<tr><td colspan="5">目前沒有任何部門。</td></tr>'}
+  </table>
+  <div class="sticky-bar">
+    <p id="diff-summary" class="hint">目前跟原設定一樣，沒有變更</p>
+    <button type="submit" id="diff-submit">預覽變更</button>
+    <button type="button" data-act="reset">還原成原設定</button>
+    <a class="btn" href="{PREFIX}/access" style="margin-left:1rem">« 回授權總覽</a>
+  </div>
+</form>
+<p class="hint">{"＊（不限制）的部門不列入勾選——它們本來就能用所有模型。"
+                if editable_count < len(depts) else ""}
+個人層級的額外授權請到<a href="{PREFIX}/access">授權總覽</a>用搜尋。</p>
+{_DIFF_JS}
+""")
+
+
+@router.post("/access/model/preview")
+async def preview_model_access(
+    admin: dict = Depends(require_admin),
+    model_name: str = Form(...),
+    depts: list[str] = Form(default=[]),
+):
+    known, _ = await _require_known_model(model_name)
+    back = access_model_url(model_name)
+    _scope_ids, desired = _model_scope(model_name, set(depts), known)
+    diffs = _dept_diffs(desired, known)
+    if not diffs:
+        return _no_change_page("access", back)
+
+    hidden = f'<input type="hidden" name="model_name" value="{html.escape(model_name)}">' + "".join(
+        f'<input type="hidden" name="depts" value="{html.escape(d)}">' for d in sorted(set(depts))
+    )
+    return _confirm_page(
+        "access", f"確認「{model_name}」的部門授權變更", diffs, hidden,
+        f"{PREFIX}/access/model/apply", back,
+    )
+
+
+@router.post("/access/model/apply")
+async def apply_model_access(
+    admin: dict = Depends(require_admin),
+    model_name: str = Form(...),
+    depts: list[str] = Form(default=[]),
+):
+    known, _ = await _require_known_model(model_name)
+    back = access_model_url(model_name)
+    _scope_ids, desired = _model_scope(model_name, set(depts), known)
+    diffs = _dept_diffs(desired, known)
     if not diffs:
         return _no_change_page("access", back)
 

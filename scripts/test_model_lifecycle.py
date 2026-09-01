@@ -580,6 +580,8 @@ for p in ["/api/v1/admin/web/models/detail", "/api/v1/admin/web/models/test",
           "/api/v1/admin/web/models/enable", "/api/v1/admin/web/models/hard-delete",
           "/api/v1/admin/web/models/fields", "/api/v1/admin/web/models/edit",
           "/api/v1/admin/web/access", "/api/v1/admin/web/access/dept/edit",
+          "/api/v1/admin/web/access/model/edit", "/api/v1/admin/web/access/model/preview",
+          "/api/v1/admin/web/access/model/apply",
           "/api/v1/admin/web/access/departments/preview",
           "/api/v1/admin/web/access/departments/apply", "/api/v1/admin/web/access/users",
           "/api/v1/admin/web/access/users/edit", "/api/v1/admin/web/audit",
@@ -889,6 +891,107 @@ with get_conn(DB_PATH) as conn:
 resp = client.get("/api/v1/admin/web/access/users/edit?user_id=uid-rd-0")
 check('data-was=' in resp.text and "還原成原設定" in resp.text,
       "個人授權編輯頁也有原設定與還原")
+
+
+# ── 按模型授權：一個模型一次開給多個部門 ─────────────────────────────────────
+#
+# 逐部門改也做得到同一件事，但要進出 N 次、push N 輪，而且差異預覽被切成 N 段
+# （看不到「這個模型總共影響幾個人」）。這一段守的是反向頁的三個承諾：一次寫完、
+# 只動這一個模型、沒被改到的部門一個字都不寫。
+section("M 按模型授權（反向頁）")
+
+model_access_service.apply_dept("RD", ["gemma-4-31B-it"], known)
+model_access_service.apply_dept("SALES", ["gemma-4-31B-it"], known)
+
+resp = client.get(f"/api/v1/admin/web/access/model/edit?model_name={enc_name}")
+check(resp.status_code == 200, "按模型授權頁渲染成功", f"HTTP {resp.status_code}: {resp.text[:300]}")
+check(resp.text.count('name="depts"') == 2, "兩個可編輯部門各一個 checkbox",
+      str(resp.text.count('name="depts"')))
+check('data-people="3"' in resp.text and 'data-people="1"' in resp.text,
+      "checkbox 帶各部門人數（畫面上即時算影響人數）")
+check(resp.text.count("原本：未授權") == 2, "兩個部門都還沒有這個模型")
+check('data-unit="部門"' in resp.text, "差異摘要的單位是部門而不是模型")
+
+resp = client.get("/api/v1/admin/web/access/model/edit?model_name=does-not-exist")
+check(resp.status_code == 404, "授權一個 LiteLLM 沒有的模型 → 404", str(resp.status_code))
+
+# 一次勾兩個部門：預覽要含兩個部門與總人數，且只 push 一次
+PUSHES.clear()
+resp = client.post("/api/v1/admin/web/access/model/preview",
+                   data={"model_name": NAME, "depts": ["RD", "SALES"]})
+check(resp.status_code == 200 and "差異預覽" in resp.text, "反向頁預覽渲染成功", resp.text[:300])
+check("RD" in resp.text and "SALES" in resp.text, "預覽一次列出兩個部門")
+check("涵蓋 4 人" in resp.text, "預覽算得出跨部門的總影響人數", resp.text[:400])
+check(not PUSHES, "預覽階段沒有 push")
+
+resp = client.post("/api/v1/admin/web/access/model/apply",
+                   data={"model_name": NAME, "depts": ["RD", "SALES"]})
+check(resp.status_code == 200 and "已生效" in resp.text, "反向頁確認渲染成功", resp.text[:300])
+check(len(PUSHES) == 1, "兩個部門一起寫完只 push 一次（逐部門改會 push 兩次）", str(len(PUSHES)))
+check(model_access_service.get_dept("RD")["allowed_models"] == sorted(["gemma-4-31B-it", NAME]),
+      "RD 拿到新模型，原有的模型還在", str(model_access_service.get_dept("RD")["allowed_models"]))
+check(model_access_service.get_dept("SALES")["allowed_models"] == sorted(["gemma-4-31B-it", NAME]),
+      "SALES 也拿到了，原有的模型也還在")
+
+resp = client.post("/api/v1/admin/web/access/model/preview",
+                   data={"model_name": NAME, "depts": ["RD", "SALES"]})
+check("沒有任何變化" in resp.text, "送出跟現況一樣時明講「沒有變化」")
+
+# 取消勾選＝只收回這一個模型，其他模型不能被牽連
+resp = client.post("/api/v1/admin/web/access/model/apply",
+                   data={"model_name": NAME, "depts": ["RD"]})
+check(resp.status_code == 200 and "已生效" in resp.text, "取消勾選也走得完", resp.text[:300])
+check(model_access_service.get_dept("SALES")["allowed_models"] == ["gemma-4-31B-it"],
+      "SALES 只失去這一個模型，gemma 沒被牽連",
+      str(model_access_service.get_dept("SALES")["allowed_models"]))
+check(model_access_service.get_dept("RD")["allowed_models"] == sorted(["gemma-4-31B-it", NAME]),
+      "RD 維持勾選，完全沒變")
+
+# 最小寫入面積：這個模型的狀態沒變的部門，一個字都不該被寫——連它裡面的失效授權
+# 都不能被順手清掉。表單若改成「把各部門的其他模型全塞 hidden 送回來」就守不住
+# 這一條（那份是開頁時的快照，會蓋掉別人同時的改動）。
+with get_conn(DB_PATH) as conn:
+    conn.execute("UPDATE departments SET allowed_models=? WHERE dept_id='RD'",
+                 (json.dumps(["gemma-4-31B-it", "zombie-model", NAME]),))
+resp = client.post("/api/v1/admin/web/access/model/apply",
+                   data={"model_name": NAME, "depts": ["RD", "SALES"]})
+check(resp.status_code == 200 and "已生效" in resp.text, "只有 SALES 有變的情況寫得進去")
+check("zombie-model" in model_access_service.get_dept("RD")["allowed_models"],
+      "RD 這次沒有變動，它的失效授權沒有被順手清掉（最小寫入面積）",
+      str(model_access_service.get_dept("RD")["allowed_models"]))
+
+# 反面：RD 這次真的有變動時，失效授權就會被清掉（取代式寫入的必然結果，頁面有明講）
+resp = client.get(f"/api/v1/admin/web/access/model/edit?model_name={enc_name}")
+check("失效授權" in resp.text and "zombie-model" in resp.text,
+      "編輯頁事先講明哪些部門有失效授權、以及什麼時候會被清掉", resp.text[:300])
+resp = client.post("/api/v1/admin/web/access/model/apply",
+                   data={"model_name": NAME, "depts": ["SALES"]})
+check("zombie-model" not in model_access_service.get_dept("RD")["allowed_models"],
+      "RD 這次有變動 → 失效授權一併清掉")
+
+# ＊（不限制）的部門：不列入勾選，硬塞進表單也要被擋
+with get_conn(DB_PATH) as conn:
+    conn.execute("UPDATE departments SET allowed_models=? WHERE dept_id='RD'",
+                 (json.dumps(["*"]),))
+resp = client.get(f"/api/v1/admin/web/access/model/edit?model_name={enc_name}")
+check(resp.text.count('name="depts"') == 1, "＊ 部門不給 checkbox",
+      str(resp.text.count('name="depts"')))
+check("本來就能用" in resp.text, "＊ 部門顯示成「本來就能用」而不是沒授權")
+resp = client.post("/api/v1/admin/web/access/model/apply",
+                   data={"model_name": NAME, "depts": ["RD"]})
+check(resp.status_code == 422, "把 ＊ 部門塞進表單 → 422", str(resp.status_code))
+check(model_access_service.get_dept("RD")["allowed_models"] == ["*"], "＊ 沒有被換掉")
+with get_conn(DB_PATH) as conn:
+    conn.execute("UPDATE departments SET allowed_models=? WHERE dept_id='RD'",
+                 (json.dumps(["gemma-4-31B-it"]),))
+
+# 入口：三個地方都要進得去，不然這一頁等於不存在
+resp = client.get("/api/v1/admin/web/access")
+check("access/model/edit" in resp.text, "授權總覽有按模型授權的入口")
+resp = client.get("/api/v1/admin/web/models")
+check("改授權" in resp.text and "access/model/edit" in resp.text, "模型清單每一列有改授權入口")
+resp = client.get(f"/api/v1/admin/web/models/detail?model_name={enc_name}")
+check("編輯這個模型的部門授權" in resp.text, "模型詳情頁有編輯部門授權的按鈕")
 
 
 # 生命週期的 POST 端點：model_name 走表單欄位（名稱含斜線，放不進路徑）

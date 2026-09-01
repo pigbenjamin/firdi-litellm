@@ -364,6 +364,13 @@ def detail_url(model_name: str) -> str:
     return f"{PREFIX}/models/detail?model_name={quote(model_name, safe='')}"
 
 
+def access_model_url(model_name: str) -> str:
+    """「把這一個模型一次開給多個部門」那一頁。定義在這裡而不是 admin_web_access，
+    是因為模型清單與詳情頁都要用它，而 admin_web_access 反過來 import 這個模組。
+    """
+    return f"{PREFIX}/access/model/edit?model_name={quote(model_name, safe='')}"
+
+
 def key_source_display(policy: str) -> str:
     """model_key_policies 的政策字串翻成人話（決策 E 落地後 openrouter/ 前綴只是命名慣例）。"""
     if policy.startswith("dept:"):
@@ -413,7 +420,8 @@ async def model_list(admin: dict = Depends(require_admin)):
             f"<td>{html.escape(key_source_display(m['key_policy']))}</td>"
             f"<td>{budget_cell(meta, m['spend'])}</td>"
             f"<td>{test_cell(meta)}</td>"
-            f"<td>{html.escape(', '.join(authorized) if authorized else '（尚無部門授權）')}</td></tr>"
+            f'<td>{html.escape(", ".join(authorized)) if authorized else "（尚無部門授權）"}'
+            f'<br><a href="{access_model_url(name)}">改授權 »</a></td></tr>'
         )
 
     draft_count = sum(1 for m in external["models"] if m["meta"].get("status") == "draft")
@@ -426,7 +434,8 @@ async def model_list(admin: dict = Depends(require_admin)):
 {_nav('models')}
 <h2>模型清單</h2>
 <p class="hint">點模型名稱進去可以測試呼叫、發布、停用、修改欄位與刪除。
-「已授權部門」是唯讀摘要，要改授權請到 <a href="{PREFIX}/access">模型授權</a>。
+「已授權部門」那一欄的<b>改授權</b>可以把該模型一次開給多個部門；
+以部門為主的檢視在 <a href="{PREFIX}/access">模型授權</a>。
 標<span class="badge badge-legacy">既有</span>的是 YAML <code>model_list</code> 定義的地端模型，
 上游設定在 <code>config/litellm_config.yaml</code>、改了要重啟 litellm pod，所以這裡不提供
 停用／刪除／編輯上游，但顯示名稱、類型、成本歸屬、備註仍可設定。
@@ -627,6 +636,8 @@ async def model_detail(
   <tr><td>個別授權的使用者</td><td>{len(impact['users'])} 人</td></tr>
   <tr><td>總影響人數</td><td><b>{impact['total_headcount']}</b> 人</td></tr>
 </table>
+<p><a class="btn" href="{access_model_url(model_name)}">編輯這個模型的部門授權 »</a>
+<span class="hint">（一次勾多個部門，存檔前會先給差異預覽）</span></p>
 {yaml_delete_note}
 {delete_form}
 </fieldset>
