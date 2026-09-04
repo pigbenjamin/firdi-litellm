@@ -161,6 +161,8 @@ K8S_IMAGE_PULL_SECRET=ghcr-pull-secret   # 叢集端 pull 用的 k8s secret 名�
 
 若不想處理認證，也可以把 GHCR package 設成 public，這樣三個變數都不用填，`REGISTRY` 照樣能 push/pull，只是叢集內任何人都能 pull 到這個 image。
 
+**同時備份推送到第二個 registry**（例如叢集實際部署用內部 Harbor，但也想留一份到 `ghcr.io` 對外發佈/存檔）：設定 `REGISTRY_MIRROR`（+ 需要登入時的 `REGISTRY_MIRROR_USERNAME`/`REGISTRY_MIRROR_PASSWORD`）。`build_and_publish_image()` 會在完成主要 `REGISTRY` 的 build+push 之後，額外多 tag+push 一份到這裡；這條路徑純粹是備份，**失敗只會印警告、不會中止部署**——叢集實際 pull image 的來源一律是 `REGISTRY`，跟 `REGISTRY_MIRROR` 是否成功無關。
+
 **建立 GitHub PAT**：github.com → Settings → Developer settings → Personal access tokens，建 classic token，勾 `write:packages`（push 用）+ `read:packages`（叢集端 pull 用）。建議設過期日、範圍只給 packages，`.env` 裡是明碼存放（`.gitignore` 已排除 `.env` 不會進 git，但外洩風險還是自己留意）。
 
 > ⚠️ **`deploy.sh` 沒有「只 push 不部署」的模式**：`./scripts/deploy.sh admin-api` / `light-models` 會在 build + push 之後，緊接著對**目前 kubectl context 指向的叢集**做 `kubectl apply` / `patch` / `rollout restart`。所以：

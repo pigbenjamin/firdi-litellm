@@ -222,6 +222,23 @@ build_and_publish_image() {
         IMAGE_REF="$local_tag"
         IMAGE_PULL_POLICY="IfNotPresent"
     fi
+
+    # 額外備份推送到第二個 registry（例如 ghcr.io），純粹留一份記錄／對外發佈用，
+    # 不影響上面已經決定好的 IMAGE_REF——實際部署 pull 一律只認 REGISTRY 那份，
+    # 這裡失敗只警告不中止，避免備份路徑的問題擋到正式部署。
+    if [[ -n "${REGISTRY_MIRROR:-}" ]]; then
+        if [[ -n "${REGISTRY_MIRROR_USERNAME:-}" && -n "${REGISTRY_MIRROR_PASSWORD:-}" ]]; then
+            echo "$REGISTRY_MIRROR_PASSWORD" | docker login "${REGISTRY_MIRROR%%/*}" -u "$REGISTRY_MIRROR_USERNAME" --password-stdin
+        fi
+        local mirror_ref="${REGISTRY_MIRROR}/${local_tag}"
+        info "備份推送 image 到 $mirror_ref ..."
+        docker tag "$local_tag" "$mirror_ref"
+        if docker push "$mirror_ref"; then
+            ok "備份推送完成: $mirror_ref"
+        else
+            warn "備份推送到 $mirror_ref 失敗，不影響本次部署（部署仍使用 ${IMAGE_REF}）"
+        fi
+    fi
 }
 
 # ── Storage（PVC）─────────────────────────────────────────────────────────────
