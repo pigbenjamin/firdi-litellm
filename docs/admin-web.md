@@ -44,14 +44,14 @@ Keycloak 那一關，根本進不到白名單檢查）。
 | 頁面 | 路徑 | 用途 |
 |---|---|---|
 | 總覽 | `GET /api/v1/admin/web` | 身分、可管理部門總覽、各部門 OpenRouter key 是否已設定、待處理提示 |
-| 模型清單 | `GET /api/v1/admin/web/models` | 名稱／狀態／類型／上游／key 來源／本期用量與額度／測試結果／已授權部門。**含 YAML 定義的地端模型**（標「既有」） |
+| 模型清單 | `GET /api/v1/admin/web/models` | 名稱／狀態／類型／上游／key 來源／本期用量與額度／點數費率／測試結果／已授權部門。**含 YAML 定義的地端模型**（標「既有」） |
 | 模型詳情 | `GET /api/v1/admin/web/models/detail?model_name=…` | 單一模型的全部欄位，以及測試呼叫／發布／停用／重新啟用／永久刪除 |
-| 上架模型 | `GET/POST /api/v1/admin/web/models/new` | 選上游 → 選 key 來源 → 填欄位；可套用或存成「常用範本」。上架後是**草稿**（一般使用者一律 403） |
+| 上架模型 | `GET/POST /api/v1/admin/web/models/new` | 選上游 → 填欄位（兩步）；可套用或存成「常用範本」。上架後是**草稿**（一般使用者一律 403） |
 | 編輯草稿 | `GET/POST /api/v1/admin/web/models/edit?model_name=…` | 只有草稿能改上游設定（實作是刪除重建） |
 | 模型授權 | `GET /api/v1/admin/web/access` | 部門清單（唯讀現況）＋ 可展開的唯讀矩陣 ＋ 個人授權搜尋 |
 | 部門授權編輯 | `GET /api/v1/admin/web/access/dept/edit?dept_id=…` | 一次改一個部門；模型按上游分組，每列標「原本」。存檔即生效 |
 | 按模型授權 | `GET /api/v1/admin/web/access/model/edit?model_name=…` | 反向：一個模型一次開給多個部門。存檔即生效 |
-| Provider Key | `GET/POST /api/v1/admin/web/keys` | 依 provider 分列，可勾選多個部門一次套用同一把 key；key 一律遮罩，**不提供清除功能** |
+| Provider Key | `GET/POST /api/v1/admin/web/keys` | **舊制維護**（只服務既有的 `dept:<provider>` 模型）：依 provider 分列，可勾選多個部門一次套用同一把 key；key 一律遮罩，**不提供清除功能** |
 | 同步與診斷 | `GET/POST /api/v1/admin/web/sync` | GET 顯示 dry-run 預覽（不寫入）；POST 觸發 pull（OpenWebUI → DB），30 秒節流 |
 | 稽核紀錄 | `GET /api/v1/admin/web/audit` | 依時間／操作者／動作／目標查詢，可匯出 CSV |
 | 登出 | `GET /api/v1/admin/web/logout` | 同時結束 Keycloak SSO session |
@@ -132,6 +132,24 @@ Keycloak 那一關，根本進不到白名單檢查）。
 - **額度是整個模型的總量，不是每個部門各自的。** `cost_center`（成本歸屬部門）只是
   標記，不切分額度。
 
+## 點數費率：只存不算
+
+每個模型可以填兩個費率：**每 1K 輸入 token 幾點**、**每 1K 輸出 token 幾點**（可填
+小數）。上架表單、編輯草稿、詳情頁的「可修改的欄位」三處都有這兩格，已發布的模型
+也能改——費率不影響請求打到哪裡去。
+
+**這兩個欄位純粹是記錄。** 這個平台不累計點數、不檢查點數上限、也不會因為點數用完
+而擋下任何呼叫——`config/custom_auth.py` 與 `config/custom_logger.py` 完全不看它們。
+扣點與部門／人員的總點數上限由**外部系統**處理，它需要的兩份資料都已經齊備：
+
+- **費率**：`GET /api/v1/models/external` 回應裡每個模型的 `meta.points_per_1k_prompt`
+  / `meta.points_per_1k_completion`。
+- **token 數**：`usage.jsonl` 每筆 `llm_call` 的 `billing_model`、`prompt_tokens`、
+  `completion_tokens`，附帶 `user_id` 與 `dept_id`。
+
+**留空是「還沒填」，不是 0。** 存進 DB 是 `NULL`，畫面顯示「未設定」。填 0 的意思是
+「每 1K token 零點」，在外部系統眼裡等於這個模型免費，兩者差很多。
+
 ## 模型授權：存檔即生效
 
 `GET /api/v1/admin/web/access`。**這是 [admin-web-plan.md](admin-web-plan.md) 決策 D
@@ -202,25 +220,34 @@ admin-web-plan.md 就列為已知風險）。所以這裡強制兩段式，沒�
 
 ## 上架模型：怎麼選
 
-表單問「上游是誰」「key 從哪來」兩個問題，其餘路由欄位（`litellm_params.model`、
-`api_base`、建議的 `model_name`）都是後端推導，不需要知道任何前綴慣例；另外再填
-一組管理面欄位（顯示名稱、模型類型、成本歸屬部門、額度上限、備註）。填過一次的
-組合可以存成**常用範本**下次直接套用——範本刻意**不含 key**，它會被列出來、會被
-別人套用，不該夾帶祕密。
+表單只問一個問題：**上游是誰**。其餘路由欄位（`litellm_params.model`、`api_base`、
+建議的 `model_name`）都是後端推導，不需要知道任何前綴慣例；另外再填一組管理面欄位
+（顯示名稱、模型類型、成本歸屬部門、額度上限、點數費率、備註）。填過一次的組合可以
+存成**常用範本**下次直接套用——範本刻意**不含 key**，它會被列出來、會被別人套用，
+不該夾帶祕密。
 
-| 上游 | key 來源可選 | api_base |
+| 上游 | key | api_base |
 |---|---|---|
-| OpenRouter | 各部門自己 ／ 共用一把 | 系統帶入 `https://openrouter.ai/api/v1` |
-| OpenAI／Anthropic／Gemini 官方 | 各部門自己 ／ 共用一把 | 留空，LiteLLM 內建端點 |
-| 地端 vLLM | 固定共用（`EMPTY`） | 必填，Service DNS + `/v1` |
-| 地端 Ollama | 固定共用（`EMPTY`） | 必填，預設 `http://ollama-service:11434`（不帶 `/v1`） |
-| 其他 OpenAI 相容 | 各部門自己 ／ 共用一把 | 必填 |
+| OpenRouter | 必填 | 系統帶入 `https://openrouter.ai/api/v1` |
+| OpenAI／Anthropic／Gemini 官方 | 必填 | 留空，LiteLLM 內建端點 |
+| 地端 vLLM | 固定 `EMPTY`，不用填 | 必填，Service DNS + `/v1` |
+| 地端 Ollama | 固定 `EMPTY`，不用填 | 必填，預設 `http://ollama-service:11434`（不帶 `/v1`） |
+| 其他 OpenAI 相容 | 必填 | 必填 |
 
-「各部門自己」對應決策 E 的 `key_policy = dept:<provider>`：執行期由
-`config/custom_auth.py` 依呼叫者的部門，從 `departments.provider_keys` 挑對應
-provider 的 key 注入；沒設定或值是 `sk-or-CHANGE` 開頭的未換 placeholder 一律
-視為未設定，該部門呼叫這個模型會 401（跟「有沒有 `allowed_models` 授權」是分開
-判斷的兩件事，兩個都要對才能真的打通）。
+### 要給某個部門專屬的 key 怎麼做
+
+**再上架一個模型。** 同一個上游、同一個 slug，`model_name` 加後綴（例如
+`gpt-4o-deptA`），key 填那個部門的。它就是一個普通模型，走同一條草稿 → 測試 →
+發布的路；**要開給哪些部門仍然在[模型授權](#模型授權存檔即生效)決定**——名稱裡的
+`deptA` 只是給人看的命名慣例，不會綁定授權範圍，管理者要開給兩個部門也可以。
+
+原本表單上的「第二步：key 從哪來？」已經拿掉，新模型一律是「模型自帶 key」
+（`key_policy = model`）。決策 E 時期建立的 `dept:<provider>` 模型不受影響，繼續由
+`config/custom_auth.py` 依呼叫者的部門從 `departments.provider_keys` 注入 key，
+維護入口仍是 [Provider Key](#provider-key一次套用給多個部門) 那一頁（該頁現在只
+服務這些既有模型）。這條舊路的失敗模式要記得：沒設定、或值是 `sk-or-CHANGE` 開頭的
+未換 placeholder 一律視為未設定，該部門呼叫那個模型會 401（跟「有沒有
+`allowed_models` 授權」是分開判斷的兩件事，兩個都要對才能真的打通）。
 
 上架完成後這個模型是**草稿**，還沒有任何人能用。完整的後半段是：
 
@@ -233,7 +260,11 @@ provider 的 key 注入；沒設定或值是 `sk-or-CHANGE` 開頭的未換 plac
 
 成功頁會給可直接複製的 `model_name` 跟這四步的導引連結。
 
-## Provider Key：一次套用給多個部門
+## Provider Key：一次套用給多個部門（舊制維護）
+
+**這一頁只服務決策 E 時期建立的 `dept:<provider>` 模型。** 上架動線已不再產生這種
+模型（見[上架模型](#上架模型怎麼選)），新模型一律自帶 key；但既有的還在跑，換 key
+時仍然要來這裡。
 
 決策 E 把部門的 provider key 從單一 `openrouter_api_key` 欄位升級成
 `provider_keys`（JSON，key 為 provider 名稱，如 `{"openrouter": "...", "openai":
@@ -308,6 +339,8 @@ tail -f /app/logs/admin-web-audit.jsonl   # 在 admin-api pod 內
 - **地端模型的額度形同虛設**：LiteLLM 算不出它們的成本，`response_cost` 是 `null`，
   用量累計不到。
 - **額度是模型層級的總量**，不能依部門切分。
+- **點數費率只是記錄**：這個平台不扣點、不檢查點數上限、也不會因為點數用完而擋下
+  呼叫。扣點與部門／人員的總點數上限由外部系統處理（見上方「點數費率：只存不算」）。
 - **地端模型與舊版 curl 上架的模型不受狀態機管理**（清單上標「既有」），不能停用、
   刪除或編輯上游；地端模型要下架得改 `config/litellm_config.yaml` 並重啟 litellm pod。
 - **GCP Vertex AI / AWS Bedrock 還不是可選上游**——它們的認證形狀（service account

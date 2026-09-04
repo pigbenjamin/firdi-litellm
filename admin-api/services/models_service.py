@@ -292,6 +292,7 @@ async def create_external_model(body: ExternalModelIn) -> dict:
     _validate_key_policy(key_policy)
     model_metadata_service.validate_model_type(body.model_type)
     model_metadata_service.validate_budget(body.budget_limit_usd, body.budget_period, body.budget_enforce)
+    model_metadata_service.validate_points(body.points_per_1k_prompt, body.points_per_1k_completion)
 
     async with _litellm_client() as client:
         await _assert_name_available(client, body.model_name)
@@ -310,6 +311,8 @@ async def create_external_model(body: ExternalModelIn) -> dict:
         budget_limit_usd=body.budget_limit_usd,
         budget_enforce=int(body.budget_enforce),
         budget_period=body.budget_period,
+        points_per_1k_prompt=body.points_per_1k_prompt,
+        points_per_1k_completion=body.points_per_1k_completion,
         notes=body.notes,
         status=body.status,
         upstream=body.upstream,
@@ -369,6 +372,20 @@ async def _delete_by_name(client: httpx.AsyncClient, model_name: str) -> None:
             raise HTTPException(status_code=502, detail=f"LiteLLM /model/delete failed: {resp.text}")
 
 
+def get_key_policy(model_name: str) -> str:
+    """這個模型目前的 key 來源政策。沒有紀錄時退回推導的預設值。
+
+    有這支是為了讓呼叫端（例如編輯草稿）能「沿用原本的政策」而不是重新猜一次。
+    上架動線已經一律建立 key_policy='model' 的模型（見 routers/admin_web_write.py），
+    但決策 E 時期建的 dept:<provider> 模型還在，重新推導會把它們改壞。
+    """
+    with get_conn(DB_PATH) as conn:
+        row = conn.execute(
+            "SELECT key_policy FROM model_key_policies WHERE model_name=?", (model_name,)
+        ).fetchone()
+    return row["key_policy"] if row else _infer_default_key_policy(model_name)
+
+
 def _require_meta(model_name: str) -> dict:
     meta = model_metadata_service.get_metadata(model_name)
     if not meta["has_record"]:
@@ -384,6 +401,7 @@ async def update_draft_model(
     model_name: str, *, model: str, api_base: str | None, api_key: str | None,
     key_policy: str, display_name: str, model_type: str, cost_center: str,
     budget_limit_usd: float | None, budget_enforce: bool, budget_period: str,
+    points_per_1k_prompt: float | None, points_per_1k_completion: float | None,
     notes: str, upstream: str,
 ) -> dict:
     """改草稿模型的完整設定。LiteLLM 沒有 update，實作是刪掉再用新值建一次。
@@ -401,6 +419,7 @@ async def update_draft_model(
     _validate_key_policy(key_policy)
     model_metadata_service.validate_model_type(model_type)
     model_metadata_service.validate_budget(budget_limit_usd, budget_period, budget_enforce)
+    model_metadata_service.validate_points(points_per_1k_prompt, points_per_1k_completion)
     if not model.strip():
         raise HTTPException(status_code=422, detail="model 不可為空白字串")
 
@@ -414,7 +433,8 @@ async def update_draft_model(
         model_name,
         display_name=display_name, model_type=model_type, cost_center=cost_center,
         budget_limit_usd=budget_limit_usd, budget_enforce=int(budget_enforce),
-        budget_period=budget_period, notes=notes, upstream=upstream,
+        budget_period=budget_period, points_per_1k_prompt=points_per_1k_prompt,
+        points_per_1k_completion=points_per_1k_completion, notes=notes, upstream=upstream,
         litellm_model=model, api_base=api_base, api_key=api_key or "",
         last_test_ok=None, last_test_at=None, last_test_result="",
     )
@@ -422,9 +442,10 @@ async def update_draft_model(
 
 async def update_descriptive_fields(
     model_name: str, *, display_name: str, cost_center: str, budget_limit_usd: float | None,
-    budget_enforce: bool, budget_period: str, notes: str, model_type: str | None = None,
+    budget_enforce: bool, budget_period: str, points_per_1k_prompt: float | None,
+    points_per_1k_completion: float | None, notes: str, model_type: str | None = None,
 ) -> dict:
-    """已發布的模型仍可改的欄位：顯示名稱、成本歸屬、額度、備註。
+    """已發布的模型仍可改的欄位：顯示名稱、成本歸屬、額度、點數費率、備註。
 
     刻意不含 upstream/litellm_model/api_base/api_key/model_type——那些一改，
     使用者當下打到的就是另一個東西了（見 model_metadata_service.ROUTING_FIELDS）。
@@ -443,6 +464,7 @@ async def update_descriptive_fields(
                 detail=f"LiteLLM 裡找不到模型 '{model_name}'，無法建立管理紀錄（請檢查名稱是否正確）",
             )
     model_metadata_service.validate_budget(budget_limit_usd, budget_period, budget_enforce)
+    model_metadata_service.validate_points(points_per_1k_prompt, points_per_1k_completion)
     extra = {}
     if model_type is not None:
         # 只有 YAML 定義的模型會走這條路：它們沒有「草稿」狀態可以編輯上游設定，
@@ -453,7 +475,9 @@ async def update_descriptive_fields(
     return model_metadata_service.upsert_metadata(
         model_name,
         display_name=display_name, cost_center=cost_center, budget_limit_usd=budget_limit_usd,
-        budget_enforce=int(budget_enforce), budget_period=budget_period, notes=notes, **extra,
+        budget_enforce=int(budget_enforce), budget_period=budget_period,
+        points_per_1k_prompt=points_per_1k_prompt,
+        points_per_1k_completion=points_per_1k_completion, notes=notes, **extra,
     )
 
 
@@ -518,11 +542,7 @@ async def enable_model(model_name: str) -> dict:
             detail=f"'{model_name}' 沒有保留上游設定（litellm_model 是空的），無法自動重建，請重新上架",
         )
 
-    with get_conn(DB_PATH) as conn:
-        row = conn.execute(
-            "SELECT key_policy FROM model_key_policies WHERE model_name=?", (model_name,)
-        ).fetchone()
-    key_policy = row["key_policy"] if row else _infer_default_key_policy(model_name)
+    key_policy = get_key_policy(model_name)
 
     litellm_params = _build_litellm_params(
         meta["litellm_model"], meta["api_key"] or None, meta["api_base"], key_policy, model_name

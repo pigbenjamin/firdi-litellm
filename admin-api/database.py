@@ -64,6 +64,14 @@ CREATE TABLE IF NOT EXISTS model_metadata (
     budget_limit_usd REAL,                              -- NULL = 沒設額度
     budget_enforce   INTEGER NOT NULL DEFAULT 0,        -- 0=只記錄不擋 1=超額真的擋下來
     budget_period    TEXT NOT NULL DEFAULT 'monthly',   -- monthly | total
+    -- 點數費率（每 1K token 幾點，可填小數）。這裡**只存不算**：扣點與部門／人員
+    -- 的點數上限一律由外部系統處理，本平台不累計、不檢查、不擋（config/custom_auth.py
+    -- 與 config/custom_logger.py 完全不看這兩個欄位）。外部系統要算點數的話，費率從
+    -- GET /api/v1/models/external 的 meta 讀，token 數從 usage.jsonl 的 prompt_tokens /
+    -- completion_tokens 讀。
+    -- NULL 而不是 0 表示「還沒填」——0 在外部系統眼裡是「這個模型免費」，差很多。
+    points_per_1k_prompt     REAL,
+    points_per_1k_completion REAL,
     notes            TEXT NOT NULL DEFAULT '',
     status           TEXT NOT NULL DEFAULT 'draft',
     upstream         TEXT NOT NULL DEFAULT '',          -- model_upstreams.UPSTREAMS 的 key
@@ -140,6 +148,15 @@ def init_db(db_path: str = DB_PATH) -> None:
         conn.commit()
     except sqlite3.OperationalError:
         pass  # 欄位已存在，略過
+
+    # 點數費率欄位（只存不算，見 CREATE TABLE 的說明）。純新增、零回填——既有模型
+    # 兩個欄位都是 NULL，代表「還沒填費率」。
+    for col in ("points_per_1k_prompt", "points_per_1k_completion"):
+        try:
+            conn.execute(f"ALTER TABLE model_metadata ADD COLUMN {col} REAL")
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass  # 欄位已存在，略過
 
     # 決策 E：departments.openrouter_api_key 升級成 provider_keys（JSON，key 為
     # provider 名稱）。純超集、零遷移——舊欄位不動、不刪，新欄位補上後從舊欄位

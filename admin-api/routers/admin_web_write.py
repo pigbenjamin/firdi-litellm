@@ -25,6 +25,7 @@ from routers.admin_web import (
     _mask_key,
     _nav,
     _page,
+    points_fields,
     record_sync,
     render_sync_result,
     sync_throttle_remaining,
@@ -38,8 +39,10 @@ from services import (
 
 router = APIRouter(prefix=PREFIX)
 
-# provider_keys 的 5 個可設定部門 key 的 provider（vLLM/Ollama 固定共用 EMPTY，不在此列）
-_DEPT_KEY_PROVIDERS = [(k, u.label) for k, u in UPSTREAMS.items() if u.key_mode == "choice"]
+# 「Provider Key」頁面（舊制維護）可設定部門 key 的 provider。vLLM/Ollama 固定共用
+# EMPTY，沒有部門 key 概念，所以不在此列。上架動線已不再產生 dept:<provider> 模型，
+# 這一頁只服務決策 E 時期建立、還在跑的那些模型。
+_DEPT_KEY_PROVIDERS = [(k, u.label) for k, u in UPSTREAMS.items() if u.provider]
 
 
 def _looks_like_placeholder_key(key: str) -> bool:
@@ -100,30 +103,40 @@ def _metadata_fields(depts: list[dict], meta: dict | None = None) -> str:
      <br><small class="hint">不勾＝只累計用量、不影響呼叫，適合先觀察一個月再決定。
      用量是 LiteLLM 算得出成本的呼叫才會累計；地端模型沒有定價，成本一律是 0。
      額度用完後最多 30 秒才會開始擋（認證端的設定快取 TTL）。</small></p>
+{points_fields(meta)}
   <p><label>備註<br><textarea name="notes">{html.escape(meta.get('notes') or '')}</textarea></label></p>
 </fieldset>"""
+
+
+def _parse_number(raw: str, label: str) -> float | None:
+    """空字串 → None（未設定），否則轉 float。
+
+    這些欄位一律用 str 接而不是 float：留空的 number 欄位送過來是空字串，用 float
+    型別宣告會被 FastAPI 擋成 422「value is not a valid float」，使用者只會看到一句
+    看不懂的錯誤——這正是客戶抱怨的無回饋失敗。
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        raise HTTPException(status_code=422, detail=f"{label}要是數字，收到的是 '{raw}'")
 
 
 def _parse_metadata_form(
     display_name: str, model_type: str, cost_center: str, budget_limit_usd: str,
     budget_period: str, budget_enforce: str, notes: str,
+    points_per_1k_prompt: str = "", points_per_1k_completion: str = "",
 ) -> dict:
-    """把表單字串轉成 service 層要的型別，順便做驗證。
-
-    額度用 str 接而不是 float：留空的 number 欄位送過來是空字串，用 float 型別
-    宣告會被 FastAPI 擋成 422「value is not a valid float」，使用者只會看到一句
-    看不懂的錯誤——這正是客戶抱怨的無回饋失敗。
-    """
-    raw = (budget_limit_usd or "").strip()
-    limit = None
-    if raw:
-        try:
-            limit = float(raw)
-        except ValueError:
-            raise HTTPException(status_code=422, detail=f"額度上限要是數字，收到的是 '{raw}'")
+    """把表單字串轉成 service 層要的型別，順便做驗證。"""
+    limit = _parse_number(budget_limit_usd, "額度上限")
+    points_prompt = _parse_number(points_per_1k_prompt, "輸入點數費率")
+    points_completion = _parse_number(points_per_1k_completion, "輸出點數費率")
     enforce = bool(budget_enforce)
     model_metadata_service.validate_model_type(model_type)
     model_metadata_service.validate_budget(limit, budget_period, enforce)
+    model_metadata_service.validate_points(points_prompt, points_completion)
     return {
         "display_name": display_name.strip(),
         "model_type": model_type,
@@ -131,6 +144,8 @@ def _parse_metadata_form(
         "budget_limit_usd": limit,
         "budget_period": budget_period,
         "budget_enforce": enforce,
+        "points_per_1k_prompt": points_prompt,
+        "points_per_1k_completion": points_completion,
         "notes": notes.strip(),
     }
 
@@ -183,8 +198,16 @@ async def _sync_listing(model_name: str, present: bool) -> list[dict]:
 
 @router.get("/models/new")
 async def new_model_form(
-    admin: dict = Depends(require_admin), upstream: str = "", key_source: str = "", preset: str = "",
+    admin: dict = Depends(require_admin), upstream: str = "", preset: str = "",
 ):
+    """上架表單。**只有兩步**：選上游 → 填欄位。
+
+    第三期拿掉了原本的「第二步：key 從哪來？」——新模型一律是「模型自帶 key」
+    （key_policy='model'）。要給特定部門專屬 key 的做法變成「同一個上游再上架一個
+    模型」：名稱加後綴（例如 gpt-4o-deptA）、填該部門的 key；至於開給誰，仍然在
+    模型授權頁決定，可以只給一個部門，也可以給多個——那是管理者的選擇，不是這個
+    命名慣例綁定的。
+    """
     presets = model_metadata_service.list_presets()
 
     if not upstream:
@@ -194,7 +217,6 @@ async def new_model_form(
         )
         preset_rows = "".join(
             f'<tr><td><a href="{PREFIX}/models/new?upstream={html.escape(p["payload"].get("upstream", ""))}'
-            f'&key_source={html.escape(p["payload"].get("key_source", ""))}'
             f'&preset={quote(p["preset_name"], safe="")}">{html.escape(p["preset_name"])}</a></td>'
             f'<td class="hint">{html.escape(p["payload"].get("upstream", ""))}'
             f'｜{html.escape(p["payload"].get("model_type", "chat"))}</td>'
@@ -225,21 +247,6 @@ async def new_model_form(
     if up is None:
         raise HTTPException(status_code=422, detail=f"不認得的上游 '{upstream}'")
 
-    if up.key_mode == "choice" and key_source not in ("dept", "shared"):
-        return _page(f"""
-{_nav('models_new')}
-<h2>上架新模型：{html.escape(up.label)}</h2>
-<h3>第二步：key 從哪來？</h3>
-<ul>
-  <li><a href="{PREFIX}/models/new?upstream={upstream}&key_source=dept">各部門自己的 key</a>
-      —— 之後到「Provider Key」頁面幫要用這個模型的部門逐一設定</li>
-  <li><a href="{PREFIX}/models/new?upstream={upstream}&key_source=shared">共用一把 key</a>
-      —— 現在直接輸入一把 key，全部部門共用</li>
-</ul>
-<p><a href="{PREFIX}/models/new">« 換一個上游</a></p>
-""")
-
-    resolved_key_source = "shared" if up.key_mode == "fixed_shared" else key_source
     depts = departments_service.list_departments()
 
     # 範本只帶「填過就不用再填一次」的欄位，key 一律不進範本（見 save_preset）
@@ -257,25 +264,11 @@ async def new_model_form(
         api_base_field = f"""<p><label>api_base（必填）<br>
   <input type="text" name="api_base" value="{html.escape(default)}" required>{hint}</label></p>"""
 
-    key_field = ""
-    dept_checklist = ""
-    if up.key_mode == "fixed_shared":
-        key_field = f'<p class="hint">key：固定共用 <code>{FIXED_SHARED_KEY}</code>，不需要填。</p>'
-    elif resolved_key_source == "shared":
-        key_field = """<p><label>共用的 API key（必填）<br>
+    if up.key_required:
+        key_field = """<p><label>API key（必填）<br>
   <input type="password" name="api_key" required autocomplete="off"></label></p>"""
-    else:  # dept
-        rows = "".join(
-            f"<tr><td>{html.escape(d['dept_id'])}</td>"
-            f"<td>{'已設定' if (d['provider_keys'] or {}).get(up.provider) else '尚未設定'}</td></tr>"
-            for d in depts
-        )
-        dept_checklist = f"""
-<p class="hint">key 來源是「各部門自己」——這個模型上架後每個部門要各自到
-<a href="{PREFIX}/keys?provider={up.provider}">Provider Key</a> 頁面設定 {html.escape(up.label)} 的 key，
-沒設定的部門會在呼叫時打不通。目前狀態：</p>
-<table><tr><th>部門</th><th>{html.escape(up.label)} key</th></tr>{rows}</table>
-"""
+    else:
+        key_field = f'<p class="hint">key：固定共用 <code>{FIXED_SHARED_KEY}</code>，不需要填。</p>'
 
     slug_hint = {
         "openrouter": "OpenRouter 的 model slug，例如 anthropic/claude-sonnet-4-5",
@@ -293,16 +286,18 @@ async def new_model_form(
 <p class="hint">上架後是<b>草稿</b>：一般使用者一律打不通，要先通過測試呼叫才能發布。</p>
 <form method="post" action="{PREFIX}/models">
   <input type="hidden" name="upstream" value="{upstream}">
-  <input type="hidden" name="key_source" value="{resolved_key_source}">
   <p><label>模型 slug<br>
   <input type="text" name="slug" required value="{html.escape(preset_payload.get('slug', ''))}">
   <br><small class="hint">{html.escape(slug_hint)}</small></label></p>
   <p><label>model_name（呼叫者要打的名字；留空則自動帶入建議值）<br>
-  <input type="text" name="model_name" placeholder="留空 = 自動建議"></label></p>
+  <input type="text" name="model_name" placeholder="留空 = 自動建議">
+  <br><small class="hint">要讓某個部門用自己的 key，就用同一個上游再上架一個模型、
+  名稱加後綴（例如 <code>gpt-4o-deptA</code>）並在上面填那個部門的 key。
+  <b>它就是一個普通模型</b>——要開給哪些部門仍然在
+  <a href="{PREFIX}/access">模型授權</a>決定，不限一個部門。</small></label></p>
   {api_base_field}
   {key_field}
   {_metadata_fields(depts, preset_payload)}
-  {dept_checklist}
   <fieldset><legend>存成常用範本（選填）</legend>
     <p><label>範本名稱<br><input type="text" name="preset_name"
        placeholder="留空＝不存範本"></label>
@@ -318,7 +313,6 @@ async def new_model_form(
 async def create_model(
     admin: dict = Depends(require_admin),
     upstream: str = Form(...),
-    key_source: str = Form(...),
     slug: str = Form(...),
     model_name: str = Form(""),
     api_base: str = Form(""),
@@ -329,43 +323,44 @@ async def create_model(
     budget_limit_usd: str = Form(""),
     budget_period: str = Form("monthly"),
     budget_enforce: str = Form(""),
+    points_per_1k_prompt: str = Form(""),
+    points_per_1k_completion: str = Form(""),
     notes: str = Form(""),
     preset_name: str = Form(""),
 ):
+    """新模型一律 key_policy='model'（模型自帶 key）。
+
+    第三期後表單不再問「key 從哪來」，所以這裡也沒有 dept:<provider> 那條分支。
+    既有的 dept:* 模型不受影響（見 config/custom_auth.py 的 _resolve_injected_key
+    與「Provider Key」頁面），只是不會再產生新的。
+    """
     up = UPSTREAMS.get(upstream)
     if up is None:
         raise HTTPException(status_code=422, detail=f"不認得的上游 '{upstream}'")
     if not slug.strip():
         raise HTTPException(status_code=422, detail="模型 slug 不可留空")
 
-    resolved_key_source = "shared" if up.key_mode == "fixed_shared" else key_source
-    if resolved_key_source not in ("dept", "shared"):
-        raise HTTPException(status_code=422, detail=f"不認得的 key_source '{key_source}'")
-
     fields = _parse_metadata_form(
-        display_name, model_type, cost_center, budget_limit_usd, budget_period, budget_enforce, notes
+        display_name, model_type, cost_center, budget_limit_usd, budget_period, budget_enforce,
+        notes, points_per_1k_prompt, points_per_1k_completion,
     )
 
     model = derive_model(up, slug.strip())
-    name = model_name.strip() or suggest_model_name(up, slug.strip(), resolved_key_source)
+    name = model_name.strip() or suggest_model_name(up, slug.strip())
 
-    if up.key_mode == "fixed_shared":
-        key_policy = "model"
+    key_policy = "model"
+    if not up.key_required:
         final_api_key = FIXED_SHARED_KEY
-    elif resolved_key_source == "shared":
+    else:
         if not api_key.strip():
-            raise HTTPException(status_code=422, detail="key 來源是「共用一把」時，key 必填")
+            raise HTTPException(status_code=422, detail=f"{up.label} 的模型一定要填 API key")
         if _looks_like_placeholder_key(api_key.strip()):
             raise HTTPException(
                 status_code=422,
                 detail="這把 key 看起來還是沒換過的共用 placeholder（sk-or-CHANGE 開頭），"
                 "請填入真正的 key",
             )
-        key_policy = "model"
         final_api_key = api_key.strip()
-    else:  # dept
-        key_policy = f"dept:{up.provider}"
-        final_api_key = None
 
     resolved_api_base = derive_api_base(up, api_base)
 
@@ -391,8 +386,8 @@ async def create_model(
     write_audit(admin, "create_external_model", name, "success", audit_detail)
 
     if preset_name.strip():
-        payload = {"upstream": upstream, "key_source": resolved_key_source,
-                   "slug": slug.strip(), "api_base": api_base.strip(), **fields}
+        payload = {"upstream": upstream, "slug": slug.strip(),
+                   "api_base": api_base.strip(), **fields}
         model_metadata_service.save_preset(preset_name, payload)
         write_audit(admin, "save_model_preset", preset_name.strip(), "success",
                     {"before": None, "after": payload})
@@ -542,10 +537,12 @@ async def update_model_fields(
     budget_limit_usd: str = Form(""),
     budget_period: str = Form("monthly"),
     budget_enforce: str = Form(""),
+    points_per_1k_prompt: str = Form(""),
+    points_per_1k_completion: str = Form(""),
     notes: str = Form(""),
     model_type: str = Form(""),
 ):
-    """描述性欄位（顯示名稱／成本歸屬／額度／備註），任何狀態都能改。
+    """描述性欄位（顯示名稱／成本歸屬／額度／點數費率／備註），任何狀態都能改。
 
     model_type 不在這裡——它決定測試呼叫的形狀，改了之前那次測試就不算數了，
     所以歸在「上游設定」那組、只有草稿能改。
@@ -555,14 +552,15 @@ async def update_model_fields(
     before = model_metadata_service.get_metadata(model_name)
     fields = _parse_metadata_form(
         display_name, model_type or "chat", cost_center, budget_limit_usd,
-        budget_period, budget_enforce, notes,
+        budget_period, budget_enforce, notes, points_per_1k_prompt, points_per_1k_completion,
     )
     # 表單有送 model_type 才傳下去（只有地端模型的表單會有這一格，見詳情頁）；
     # DB-managed 模型的類型仍然只有草稿狀態能改。
     fields["model_type"] = model_type or None
     after = await models_service.update_descriptive_fields(model_name, **fields)
     tracked = ["display_name", "cost_center", "budget_limit_usd", "budget_enforce",
-               "budget_period", "notes", "model_type"]
+               "budget_period", "points_per_1k_prompt", "points_per_1k_completion",
+               "notes", "model_type"]
     write_audit(admin, "update_model_fields", model_name, "success", {
         "before": {k: before.get(k) for k in tracked},
         "after": {k: after.get(k) for k in tracked},
@@ -589,9 +587,12 @@ async def edit_draft_form(model_name: str, admin: dict = Depends(require_admin))
     depts = departments_service.list_departments()
     up = UPSTREAMS.get(meta["upstream"])
     upstream_label = up.label if up else (meta["upstream"] or "（未記錄）")
+    key_policy = models_service.get_key_policy(model_name)
     key_hint = (
-        f'目前的共用 key：{html.escape(_mask_key(meta["api_key"]))}；留空＝沿用不變'
-        if meta["api_key"] else "這個模型用的是部門 provider key，這裡不需要填"
+        f'目前的 key：{html.escape(_mask_key(meta["api_key"]))}；留空＝沿用不變'
+        if meta["api_key"] else
+        f"這是舊制模型，用的是部門 provider key（{html.escape(key_policy)}），這裡留空即可；"
+        "填了 key 就會改成模型自帶 key"
     )
 
     return _page(f"""
@@ -607,7 +608,7 @@ async def edit_draft_form(model_name: str, admin: dict = Depends(require_admin))
      <input type="text" name="model" required value="{html.escape(meta['litellm_model'])}"></label></p>
   <p><label>api_base（留空＝用上游預設端點）<br>
      <input type="text" name="api_base" value="{html.escape(meta['api_base'] or '')}"></label></p>
-  <p><label>共用 API key<br><input type="password" name="api_key" autocomplete="off">
+  <p><label>API key<br><input type="password" name="api_key" autocomplete="off">
      <br><small class="hint">{key_hint}</small></label></p>
   {_metadata_fields(depts, meta)}
   <button type="submit">儲存（會刪除重建）</button>
@@ -629,11 +630,14 @@ async def edit_draft(
     budget_limit_usd: str = Form(""),
     budget_period: str = Form("monthly"),
     budget_enforce: str = Form(""),
+    points_per_1k_prompt: str = Form(""),
+    points_per_1k_completion: str = Form(""),
     notes: str = Form(""),
 ):
     before = model_metadata_service.get_metadata(model_name)
     fields = _parse_metadata_form(
-        display_name, model_type, cost_center, budget_limit_usd, budget_period, budget_enforce, notes
+        display_name, model_type, cost_center, budget_limit_usd, budget_period, budget_enforce,
+        notes, points_per_1k_prompt, points_per_1k_completion,
     )
 
     # 空的 key 欄位＝沿用原值，不是清除——跟 Provider Key 頁面同一個慣例
@@ -645,9 +649,14 @@ async def edit_draft(
             detail="這把 key 看起來還是沒換過的共用 placeholder（sk-or-CHANGE 開頭），請填入真正的 key",
         )
 
-    # key 留空且上游支援部門 key → 回到 dept:<provider> 政策；否則沿用模型自帶的 key
-    up = UPSTREAMS.get(before["upstream"])
-    key_policy = f"dept:{up.provider}" if (up and up.key_mode == "choice" and not final_key) else "model"
+    # 政策沿用這個模型原本的，不重新推導：填了 key 就是「模型自帶 key」，key 留空
+    # 且原本就是舊制的 dept:<provider> 才維持舊制。
+    #
+    # 這裡刻意用「讀出原本的政策」而不是「依上游重新判斷」——上架動線已不再產生
+    # dept:* 模型（第三期），但決策 E 時期建的還在跑，重新判斷會把一個明明自帶 key
+    # 的模型改回部門 key，使用者當下就打不通了。
+    stored_policy = models_service.get_key_policy(model_name)
+    key_policy = "model" if final_key else stored_policy
 
     try:
         after = await models_service.update_draft_model(

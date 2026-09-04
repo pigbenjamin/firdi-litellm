@@ -402,7 +402,8 @@ try:
     run(models_service.update_draft_model(
         NAME, model="openai/other", api_base=None, api_key=None, key_policy="model",
         display_name="x", model_type="chat", cost_center="", budget_limit_usd=None,
-        budget_enforce=False, budget_period="monthly", notes="", upstream="openrouter",
+        budget_enforce=False, budget_period="monthly", points_per_1k_prompt=None,
+        points_per_1k_completion=None, notes="", upstream="openrouter",
     ))
     check(False, "已發布的模型改上游應該被擋")
 except Exception as exc:
@@ -410,11 +411,14 @@ except Exception as exc:
 
 run(models_service.update_descriptive_fields(
     NAME, display_name="Claude 4.5", cost_center="SALES", budget_limit_usd=1.0,
-    budget_enforce=False, budget_period="monthly", notes="改過了",
+    budget_enforce=False, budget_period="monthly", points_per_1k_prompt=1.5,
+    points_per_1k_completion=6.0, notes="改過了",
 ))
 meta = model_metadata_service.get_metadata(NAME)
 check(meta["display_name"] == "Claude 4.5" and meta["cost_center"] == "SALES",
       "已發布的模型仍可改顯示名稱／成本歸屬")
+check(meta["points_per_1k_prompt"] == 1.5 and meta["points_per_1k_completion"] == 6.0,
+      "已發布的模型仍可改點數費率（費率不影響請求打到哪，歸在描述性欄位）", str(meta))
 check(meta["status"] == "published", "改描述性欄位不會動到狀態")
 
 # ══ L6：停用與重新啟用 ════════════════════════════════════════════════════════
@@ -521,7 +525,8 @@ check(abs(spend["total"] - 1.1) < 1e-9, "累計欄位也同步累加")
 # 額度 1.0、只記錄 → 不擋
 run(models_service.update_descriptive_fields(
     NAME, display_name="Claude 4.5", cost_center="SALES", budget_limit_usd=1.0,
-    budget_enforce=False, budget_period="monthly", notes="",
+    budget_enforce=False, budget_period="monthly", points_per_1k_prompt=None,
+    points_per_1k_completion=None, notes="",
 ))
 ok, exc = run(_auth_model("sk-rd-0", NAME))
 check(ok, "超額但 budget_enforce=0 → 放行（只記錄）", str(exc))
@@ -531,7 +536,8 @@ check(state["exceeded"] and not state["enforced"], "畫面上仍看得出已經�
 # 改成強制 → 擋
 run(models_service.update_descriptive_fields(
     NAME, display_name="Claude 4.5", cost_center="SALES", budget_limit_usd=1.0,
-    budget_enforce=True, budget_period="monthly", notes="",
+    budget_enforce=True, budget_period="monthly", points_per_1k_prompt=None,
+    points_per_1k_completion=None, notes="",
 ))
 ok, exc = run(_auth_model("sk-rd-0", NAME))
 check(not ok, "超額且 budget_enforce=1 → 擋下來")
@@ -540,7 +546,8 @@ check(exc is not None and getattr(exc, "code", None) in (429, "429"), "擋下來
 # 還沒超額的模型不受影響
 run(models_service.update_descriptive_fields(
     NAME, display_name="Claude 4.5", cost_center="SALES", budget_limit_usd=100.0,
-    budget_enforce=True, budget_period="monthly", notes="",
+    budget_enforce=True, budget_period="monthly", points_per_1k_prompt=None,
+    points_per_1k_completion=None, notes="",
 ))
 ok, exc = run(_auth_model("sk-rd-0", NAME))
 check(ok, "額度還沒用完 → 正常放行", str(exc))
@@ -607,9 +614,8 @@ for label, url in [
     ("總覽", "/api/v1/admin/web"),
     ("模型清單", "/api/v1/admin/web/models"),
     ("模型詳情（已發布）", f"/api/v1/admin/web/models/detail?model_name={enc_name}"),
-    ("上架第一步", "/api/v1/admin/web/models/new"),
-    ("上架第二步", "/api/v1/admin/web/models/new?upstream=openrouter"),
-    ("上架表單", "/api/v1/admin/web/models/new?upstream=openrouter&key_source=dept"),
+    ("上架第一步（選上游）", "/api/v1/admin/web/models/new"),
+    ("上架第二步（填欄位）", "/api/v1/admin/web/models/new?upstream=openrouter"),
     ("上架表單（地端 vLLM）", "/api/v1/admin/web/models/new?upstream=vllm"),
     ("授權總覽", "/api/v1/admin/web/access"),
     ("部門授權編輯", "/api/v1/admin/web/access/dept/edit?dept_id=RD"),
@@ -1022,26 +1028,73 @@ check(resp.status_code == 422 and "額度上限" in resp.text,
       "勾了「超額擋下來」卻沒填額度 → 看得懂的 422", resp.text[:200])
 
 # 上架表單的完整往返（客戶回饋的第一個痛點就是這條流程）
+#
+# 第三期起表單只有兩步：選上游 → 填欄位。原本的「第二步：key 從哪來？」拿掉了，
+# 新模型一律是模型自帶 key（key_policy='model'）。
+resp = client.get("/api/v1/admin/web/models/new?upstream=openrouter")
+check("key 從哪來" not in resp.text, "選完上游直接進填寫頁，不再問「key 從哪來」")
+check('name="api_key"' in resp.text and 'name="slug"' in resp.text,
+      "填寫頁就有 key 與 slug 欄位（少一步）")
+check('name="points_per_1k_prompt"' in resp.text and 'name="points_per_1k_completion"' in resp.text,
+      "上架表單有兩格點數費率")
+check("gpt-4o-deptA" in resp.text,
+      "model_name 的說明有講「要給部門專屬 key 就再上架一個加後綴的模型」")
+
 resp = client.post("/api/v1/admin/web/models", data={
-    "upstream": "openrouter", "key_source": "dept", "slug": "meta/llama-4",
+    "upstream": "openrouter", "slug": "meta/llama-4",
     "model_name": "", "display_name": "Llama 4", "model_type": "chat",
+    "api_key": "sk-or-v1-formkey1234",
     "cost_center": "RD", "budget_limit_usd": "50", "budget_period": "monthly",
+    "points_per_1k_prompt": "0.5", "points_per_1k_completion": "2",
     "notes": "表單上架", "preset_name": "OpenRouter 標準",
 })
 check(resp.status_code == 200 and "已建立草稿" in resp.text, "表單上架成功", resp.text[:400])
-formed = model_metadata_service.get_metadata("openrouter/meta/llama-4")
+FORMED = "meta/llama-4"   # 建議名稱不再帶 openrouter/ 前綴（不再有部門 key 的語意）
+formed = model_metadata_service.get_metadata(FORMED)
 check(formed["status"] == "draft", "表單上架的模型是草稿", formed["status"])
 check(formed["display_name"] == "Llama 4" and formed["budget_limit_usd"] == 50.0,
       "表單填的管理面欄位都存進去了", str(formed))
 check(formed["budget_enforce"] == 0, "沒勾「超額擋下來」＝只記錄")
+check(formed["points_per_1k_prompt"] == 0.5 and formed["points_per_1k_completion"] == 2.0,
+      "點數費率存進去了（含小數）", str(formed["points_per_1k_prompt"]))
+check(models_service.get_key_policy(FORMED) == "model",
+      "表單上架的模型一律是模型自帶 key", models_service.get_key_policy(FORMED))
+
+# 費率是純記錄：填了不該影響認證（不累計、不擋）
+ok, exc = run(_auth_model("sk-rd-0", "gemma-4-31B-it"))
+check(ok, "設了點數費率不影響任何呼叫（本平台不扣點）", str(exc))
+
 presets = model_metadata_service.list_presets()
 check(any(p["preset_name"] == "OpenRouter 標準" for p in presets), "常用範本存下來了")
 check(all("api_key" not in p["payload"] for p in presets), "範本不含 key")
+check(all("key_source" not in p["payload"] for p in presets), "範本不再存 key_source")
 
 resp = client.get("/api/v1/admin/web/models/new")
 check("OpenRouter 標準" in resp.text, "上架第一步列得出常用範本")
-resp = client.get("/api/v1/admin/web/models/new?upstream=openrouter&key_source=dept&preset=OpenRouter+%E6%A8%99%E6%BA%96")
+resp = client.get("/api/v1/admin/web/models/new?upstream=openrouter&preset=OpenRouter+%E6%A8%99%E6%BA%96")
 check(resp.status_code == 200 and 'value="meta/llama-4"' in resp.text, "套用範本會帶入上次填的 slug", resp.text[:300])
+check('value="0.5"' in resp.text and 'value="2"' in resp.text, "套用範本也會帶入點數費率", resp.text[:300])
+
+# 費率的錯誤回饋要看得懂，而且負數要擋
+resp = client.post("/api/v1/admin/web/models/fields",
+                   data={"model_name": NAME, "display_name": "x", "cost_center": "",
+                         "budget_limit_usd": "", "budget_period": "monthly",
+                         "points_per_1k_prompt": "abc", "notes": ""})
+check(resp.status_code == 422 and "要是數字" in resp.text, "費率填非數字 → 看得懂的 422", resp.text[:200])
+resp = client.post("/api/v1/admin/web/models/fields",
+                   data={"model_name": NAME, "display_name": "x", "cost_center": "",
+                         "budget_limit_usd": "", "budget_period": "monthly",
+                         "points_per_1k_prompt": "-1", "notes": ""})
+check(resp.status_code == 422 and "負數" in resp.text, "費率填負數 → 422", resp.text[:200])
+resp = client.post("/api/v1/admin/web/models/fields",
+                   data={"model_name": NAME, "display_name": "x", "cost_center": "",
+                         "budget_limit_usd": "", "budget_period": "monthly",
+                         "points_per_1k_prompt": "", "points_per_1k_completion": "",
+                         "notes": ""}, follow_redirects=False)
+check(resp.status_code == 303, "費率留空＝取消設定，不是 422", str(resp.status_code))
+cleared = model_metadata_service.get_metadata(NAME)
+check(cleared["points_per_1k_prompt"] is None,
+      "留空存成 None（未設定）而不是 0（免費）", str(cleared["points_per_1k_prompt"]))
 
 # curl 路徑的回溯相容：不帶 status 的舊呼叫仍然直接可用（published）
 run(models_service.create_external_model(ExternalModelIn(
@@ -1061,10 +1114,10 @@ check(ok, "沒有管理紀錄的既有模型不受狀態閘門影響（零資料
 # 稽核裡的 key 欄位要能分辨「這個模型不帶 key」跟「key 被清空了」——記成空字串
 # 兩者長得一模一樣，看的人分不出來。
 resp = client.post("/api/v1/admin/web/models", data={
-    "upstream": "openrouter", "key_source": "shared", "slug": "audit/sharedkey",
+    "upstream": "openrouter", "slug": "audit/sharedkey",
     "api_key": "sk-or-v1-secret4321", "model_type": "chat", "budget_period": "monthly",
 })
-check(resp.status_code == 200, "共用 key 上架成功", resp.text[:200])
+check(resp.status_code == 200, "帶 key 上架成功", resp.text[:200])
 
 by_target = {}
 for line in open(os.environ["ADMIN_AUDIT_LOG_PATH"], encoding="utf-8"):
@@ -1073,13 +1126,34 @@ for line in open(os.environ["ADMIN_AUDIT_LOG_PATH"], encoding="utf-8"):
         by_target[rec["target"]] = rec["detail"]["after"]
 
 shared = by_target.get("audit/sharedkey", {})
-check(shared.get("api_key") == "...4321", "共用 key 的稽核只留末四碼", str(shared.get("api_key")))
+check(shared.get("api_key") == "...4321", "上架帶的 key 稽核只留末四碼", str(shared.get("api_key")))
 check("secret4321" not in json.dumps(shared, ensure_ascii=False), "完整的 key 沒有進稽核紀錄")
 
-dept = by_target.get("openrouter/meta/llama-4", {})
-check(dept.get("api_key") == "（無）", "不帶 key 的模型記「（無）」而不是空字串", str(dept.get("api_key")))
-check(dept.get("key_policy", "").startswith("dept:"),
-      "同一筆紀錄有 key_policy，看得出為什麼是「（無）」", str(dept.get("key_policy")))
+# 舊制（決策 E 時期）的 dept:<provider> 模型：上架動線已不再產生，但既有的還在跑，
+# 用表單編輯草稿時政策必須沿用、不能被重新推導成模型自帶 key——不然那個模型當下
+# 就會拿一把不存在的 key 去打上游。
+run(models_service.create_external_model(ExternalModelIn(
+    model_name="openrouter/legacy-dept", model="openai/legacy-dept",
+    key_policy="dept:openrouter", upstream="openrouter", status="draft",
+)))
+resp = client.post("/api/v1/admin/web/models/edit", data={
+    "model_name": "openrouter/legacy-dept", "model": "openai/legacy-dept-v2",
+    "api_key": "", "model_type": "chat", "budget_period": "monthly",
+}, follow_redirects=False)
+check(resp.status_code == 303, "舊制草稿編輯成功", str(resp.status_code))
+check(models_service.get_key_policy("openrouter/legacy-dept") == "dept:openrouter",
+      "key 留空時沿用舊制的部門 key 政策，不會被改成模型自帶 key",
+      models_service.get_key_policy("openrouter/legacy-dept"))
+
+legacy_audit = {}
+for line in open(os.environ["ADMIN_AUDIT_LOG_PATH"], encoding="utf-8"):
+    rec = json.loads(line)
+    if rec["action"] == "update_draft_model" and rec["target"] == "openrouter/legacy-dept":
+        legacy_audit = rec["detail"]
+check(legacy_audit.get("after", {}).get("api_key") == "（無）",
+      "不帶 key 的模型記「（無）」而不是空字串", str(legacy_audit.get("after", {}).get("api_key")))
+check(legacy_audit.get("key_policy", "").startswith("dept:"),
+      "同一筆紀錄有 key_policy，看得出為什麼是「（無）」", str(legacy_audit.get("key_policy")))
 
 # 既有模型（沒有管理紀錄）存一次描述性欄位＝納管；打錯名字要擋下來
 resp = client.post("/api/v1/admin/web/models/fields",

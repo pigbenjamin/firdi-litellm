@@ -3,8 +3,8 @@
 把現在只能用 curl 做的平台管理動作（上架外部模型、設定部門 provider key、觸發權限同步），
 變成中央管理帳號在網頁上就能完成的流程。掛在 admin-api 的 `/api/v1/admin/web`。
 
-**狀態：第一期（階段 01～06）與第二期（WP1～WP5，見下方「第二期」）程式碼與文件
-皆已完成。** 使用說明、畫面、
+**狀態：第一期（階段 01～06）、第二期（WP1～WP5）與第三期（點數費率欄位 + 上架
+動線簡化，見下方各節）程式碼與文件皆已完成。** 使用說明、畫面、
 環境變數見 [admin-web.md](admin-web.md)；本文件保留架構決策的脈絡與「為什麼這樣
 做」，供之後改動時參考。唯一還沒做的是**三個環境各自的 Keycloak redirect URI
 註冊**（見下方「開工前的手動設定」）與實際部署——這兩步驟需要 Keycloak 管理
@@ -246,6 +246,66 @@ FastAPI app，LiteLLM 用 `httpx.MockTransport` 假造，DB 用暫存檔，**不
 ```bash
 python3 scripts/test_model_lifecycle.py
 ```
+
+## 第三期：點數費率欄位 + 上架動線簡化（已完成）
+
+部署前的兩項客戶要求。範圍刻意很窄，兩件都不動熱路徑（`config/` 底下那兩個檔案
+**零改動**），所以不影響認證與呼叫行為。
+
+### 點數費率：只存不算
+
+模型多兩個欄位：每 1K 輸入 token 點數、每 1K 輸出 token 點數（`model_metadata` 的
+`points_per_1k_prompt` / `points_per_1k_completion`，REAL、可 NULL）。
+
+**這裡刻意不做累計、不做扣點、不做上限檢查。** 客戶明確說明扣點與部門／人員的總
+點數上限會實作在另一套系統上，這邊只要提供填寫欄位。所以：
+
+- `config/custom_auth.py` 與 `config/custom_logger.py` 完全沒改——沒有 `points_spend`
+  表、沒有部門／人員點數上限欄位、沒有新的 429 分支。
+- 外部系統要算點數的兩份資料都已經齊備：費率從 `GET /api/v1/models/external` 的
+  `meta` 讀，token 數從 `usage.jsonl` 每筆 `llm_call` 的 `prompt_tokens` /
+  `completion_tokens`（附 `billing_model`／`user_id`／`dept_id`）讀。
+- **留空存 `NULL` 而不是 `0`**：0 在外部系統眼裡是「這個模型免費」，跟「還沒填」
+  差很多。UI 顯示「未設定」。
+- 費率歸在**描述性欄位**（不是 `ROUTING_FIELDS`）：它不影響請求打到哪裡去，改費率
+  不該需要先把模型停用。所以 published 狀態也改得動。
+
+介面上這兩格出現在三個地方（共用 `routers/admin_web.py` 的 `points_fields()`）：
+上架表單、編輯草稿、詳情頁的「可修改的欄位」。說明文字一定要寫明「本平台不扣點」
+——不然管理者會以為填了就有護欄，那是最糟的誤會：以為有，其實沒有。
+
+### 上架動線：拿掉「key 從哪來？」
+
+原本的第二步（各部門自己的 key ／ 共用一把）整段移除，新模型一律
+`key_policy = "model"`（模型自帶 key）。要給某個部門專屬 key 的做法變成**再上架一個
+模型**：同一個上游、`model_name` 加後綴（例如 `gpt-4o-deptA`）、填那個部門的 key。
+
+關鍵是**這不是新機制**：那就是一個普通模型，走同一條草稿 → 測試 → 發布的路，
+**開給誰仍然在模型授權頁決定**，可以只給一個部門也可以給多個——名稱裡的 `deptA`
+只是命名慣例，不綁定授權範圍。所以刻意**不做**「複製為部門專屬模型」按鈕之類的
+專屬機制，那會讓一個命名慣例看起來像一個新概念。
+
+`model_upstreams.py` 的 `key_mode`（`choice`/`fixed_shared`）收斂成 `key_required`
+布林，`name_prefix_dept`/`name_prefix_shared` 併成一個 `name_prefix`，
+`suggest_model_name()` 不再吃 `key_source`。建議名稱也不再帶 `openrouter/` 前綴
+——上架一定會寫一筆明確的 `key_policy`，推導不會生效，但名稱本身會讓人誤會。
+
+**舊制完整保留、只從上架動線移除**（決策 E 的 `dept:<provider>` 模型還在跑）：
+
+- `custom_auth._resolve_injected_key()`、`models_service` 的 `dept:*` 驗證、
+  `departments.provider_keys` 一律不動；`POST /api/v1/models/external` 仍接受
+  `dept:<provider>`。
+- 「Provider Key」頁面留著、標成「舊制維護」——既有模型換 key 還是要它。
+- **編輯草稿時政策改成「沿用原本的」而不是「依上游重新判斷」**（新增
+  `models_service.get_key_policy()`）。原本的邏輯是「key 欄位留空且上游支援部門 key
+  → dept:<provider>」，在新動線下會把一個明明自帶 key 的草稿改回部門 key，那個模型
+  當下就會拿一把不存在的 key 去打上游。離線測試有一條專門守這件事。
+
+### 驗證
+
+`scripts/test_model_lifecycle.py` 加了費率往返（含小數、留空存 NULL、負數 422、
+非數字的看得懂 422、範本帶入）、上架只剩兩步、表單上架的模型一律 `key_policy=model`、
+以及上面那條舊制政策沿用的迴歸測試。250 項全過。
 
 ## 第二期原始評估（保留脈絡）
 

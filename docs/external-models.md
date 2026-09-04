@@ -67,6 +67,12 @@ curl -X PATCH "http://<node-ip>:30408/api/v1/departments/<你的部門代碼>" \
 
 原生 Provider API 路線不需要這一步。
 
+> **這一步是這條 curl 路徑專屬的。** 網頁介面的上架動線已經不用部門 key 了：新模型
+> 一律自帶 key，要讓某個部門用自己的 key 就再上架一個名稱加後綴的模型（例如
+> `gpt-4o-deptA`）並填該部門的 key，開給誰仍然在模型授權頁決定。見
+> [admin-web.md](admin-web.md)。這條 curl 路徑與既有的 `dept:<provider>` 模型
+> 行為完全不變。
+
 ## 步驟 3：開放使用權限
 
 模型接進系統後，預設沒有任何人能用（等同上架但沒開賣），一定要手動開通：

@@ -105,6 +105,11 @@ class ExternalModelIn(BaseModel):
     budget_limit_usd: float | None = None   # 額度上限；None = 不設額度
     budget_enforce: bool = False    # True＝超額真的擋下來；False＝只記錄
     budget_period: Literal["monthly", "total"] = "monthly"
+    # 點數費率（每 1K token 幾點，可填小數）。**只存不算**：扣點與部門／人員的
+    # 點數上限由外部系統處理，本平台不累計、不檢查、不擋。留空是 None（還沒填），
+    # 不是 0（免費）。
+    points_per_1k_prompt: float | None = None
+    points_per_1k_completion: float | None = None
     notes: str = ""
     upstream: str = ""              # model_upstreams.UPSTREAMS 的 key，供停用後重建時還原表單
     # WP2 的生命週期狀態。預設 published 是為了讓既有的 curl 上架流程行為完全不變

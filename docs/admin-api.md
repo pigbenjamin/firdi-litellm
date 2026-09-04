@@ -574,6 +574,8 @@ C」](external-models-ops.md)）的模型，不含 `litellm_config.yaml` `model_
         "budget_limit_usd": 200.0,
         "budget_enforce": 1,
         "budget_period": "monthly",
+        "points_per_1k_prompt": 3.0,
+        "points_per_1k_completion": 15.0,
         "notes": "",
         "last_test_ok": 1,
         "last_test_at": "2026-08-27T02:11:00+00:00",
@@ -598,6 +600,12 @@ C」](external-models-ops.md)）的模型，不含 `litellm_config.yaml` `model_
 - `spend` 是本專案自己累計的用量（`model_spend` 表，由 `config/custom_logger.py`
   寫入）。LiteLLM 內建的 spend tracking 在本專案是關掉的，見
   `config/litellm_config.yaml` 的 `disable_spend_logs`。
+- `meta.points_per_1k_prompt` / `meta.points_per_1k_completion` 是**只存不算**的
+  點數費率（每 1K token 幾點，可填小數，`null` = 還沒填）。這個平台不累計點數、
+  不檢查點數上限、也不會因為點數用完而擋下呼叫——扣點與部門／人員的總點數上限
+  由外部系統處理，**這個端點就是那套系統讀費率的地方**；token 數從 `usage.jsonl`
+  每筆 `llm_call` 的 `prompt_tokens` / `completion_tokens`（附 `billing_model`、
+  `user_id`、`dept_id`）讀。
 
 ### `POST /api/v1/models/external`
 
@@ -627,6 +635,10 @@ C」](external-models-ops.md)）的模型，不含 `litellm_config.yaml` `model_
   `"model"`（維持決策 E 之前的唯一行為，既有呼叫者不受影響）。
 - `api_key`：`key_policy` 解析為 `"model"` 時必填（直接存進 Postgres，LiteLLM
   會加密儲存）；`"dept:<provider>"` 時可留空，會自動帶入共用 placeholder。
+- **`dept:<provider>` 是舊制**：admin-web 的上架表單已不再產生這種模型（新模型一律
+  `"model"`，見 [admin-web.md](admin-web.md)），要給某個部門專屬 key 的做法改成
+  「同一個上游再上架一個加後綴的模型」。這個端點仍然接受 `dept:<provider>`，既有
+  模型與腳本行為完全不變。
 
 **管理面欄位（全部選填，存進 admin-api 的 `model_metadata` 表，不進 LiteLLM）**
 
@@ -638,6 +650,8 @@ C」](external-models-ops.md)）的模型，不含 `litellm_config.yaml` `model_
 | `budget_limit_usd` | `null` | 額度上限（USD）；`null` = 不設額度 |
 | `budget_enforce` | `false` | `true` = 超額時 `config/custom_auth.py` 直接回 429；`false` = 只累計 |
 | `budget_period` | `"monthly"` | `monthly`（每月 UTC 歸零）或 `total`（累計不歸零） |
+| `points_per_1k_prompt` | `null` | 每 1K 輸入 token 的點數（可填小數）。**只存不算**，見上方說明；`null` = 還沒填，跟 `0`（免費）不同 |
+| `points_per_1k_completion` | `null` | 每 1K 輸出 token 的點數，同上 |
 | `notes` | `""` | 備註 |
 | `upstream` | `""` | `admin-api/model_upstreams.py` 的 key，供停用後重建時還原表單 |
 | `status` | `"published"` | `draft` 或 `published`。**預設 published 是為了讓既有的 curl 流程行為完全不變**；網頁表單會明確帶 `draft`，走「草稿 →（測試通過）→ 發布」那條路 |

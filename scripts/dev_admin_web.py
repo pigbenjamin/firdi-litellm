@@ -374,7 +374,7 @@ if __name__ == "__main__":
   打開 →  http://{_URL_HOST}:{args.port}/api/v1/admin/web
 
   建議的點法：
-    1. 上架模型 → OpenRouter → 各部門自己的 key → slug 填 anthropic/claude-sonnet-4-5
+    1. 上架模型 → OpenRouter → slug 填 anthropic/claude-sonnet-4-5、key 隨便填一個
     2. 成功頁點進詳情 → 按「測試呼叫」→ 再按「發布」
        想看失敗訊息長怎樣，不用重開服務，換一行指令就好：
          curl -s "http://127.0.0.1:{args.mock_port}/control/fail?code=401"   # 或 429 / 404

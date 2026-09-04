@@ -45,6 +45,8 @@ DEFAULTS = {
     "budget_limit_usd": None,
     "budget_enforce": 0,
     "budget_period": "monthly",
+    "points_per_1k_prompt": None,
+    "points_per_1k_completion": None,
     "notes": "",
     "status": "published",
     "upstream": "",
@@ -60,12 +62,15 @@ DEFAULTS = {
 
 _WRITABLE = [
     "display_name", "model_type", "cost_center", "budget_limit_usd", "budget_enforce",
-    "budget_period", "notes", "status", "upstream", "litellm_model", "api_base",
+    "budget_period", "points_per_1k_prompt", "points_per_1k_completion", "notes",
+    "status", "upstream", "litellm_model", "api_base",
     "api_key", "last_test_ok", "last_test_at", "last_test_result",
 ]
 
 # 發布之後鎖定的「路由」欄位：這些一改，使用者當下打的就是另一個上游了。
-# 描述性欄位（顯示名稱／備註／成本歸屬／額度）在 published 狀態仍可改。
+# 描述性欄位（顯示名稱／備註／成本歸屬／額度／點數費率）在 published 狀態仍可改
+# ——點數費率歸在描述性那一組是刻意的：它不影響請求打到哪裡去，而且改費率不該
+# 需要先把模型停用。
 ROUTING_FIELDS = ["upstream", "litellm_model", "api_base", "api_key"]
 
 
@@ -91,6 +96,23 @@ def validate_budget(limit: float | None, period: str, enforce: bool) -> None:
         )
     if enforce and limit is None:
         raise HTTPException(status_code=422, detail="要「超額擋下來」就必須填額度上限")
+
+
+def validate_points(prompt_rate: float | None, completion_rate: float | None) -> None:
+    """點數費率只驗證「不是負數」。
+
+    這兩個欄位是**純記錄**：扣點與部門／人員的點數上限由外部系統處理，本平台不
+    累計、不檢查、不擋（config/custom_auth.py 與 config/custom_logger.py 完全不看
+    它們）。所以這裡刻意不強制必填、也不設上限——費率規則是外部系統的事，這邊
+    多加規則只會擋住還沒定案的填法。
+
+    留空是 None 而不是 0：0 在外部系統眼裡是「這個模型免費」，跟「還沒填」差很多。
+    """
+    for label, value in (("輸入", prompt_rate), ("輸出", completion_rate)):
+        if value is not None and value < 0:
+            raise HTTPException(
+                status_code=422, detail=f"{label}點數費率不可為負數；不計點請留空"
+            )
 
 
 # ── model_metadata ────────────────────────────────────────────────────────────

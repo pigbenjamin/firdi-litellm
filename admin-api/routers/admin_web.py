@@ -350,6 +350,46 @@ def budget_cell(meta: dict, spend: dict) -> str:
     )
 
 
+def points_value(value) -> str:
+    """點數費率的輸入框值：None → 空字串（未設定）；有值用 %g（1 而不是 1.0）。"""
+    return "" if value is None else f"{value:g}"
+
+
+def points_cell(meta: dict) -> str:
+    """清單／詳情頁顯示的費率。兩格都沒填就直說「未設定」，不要顯示成 0——
+    0 的意思是「每 1K token 零點」，跟「還沒填」差很多。
+    """
+    prompt, completion = meta.get("points_per_1k_prompt"), meta.get("points_per_1k_completion")
+    if prompt is None and completion is None:
+        return '<span class="hint">未設定</span>'
+    def one(v):
+        return '<span class="hint">未設定</span>' if v is None else f"{v:g}"
+    return f'入 {one(prompt)} ／ 出 {one(completion)} <span class="hint">點/1K token</span>'
+
+
+def points_fields(meta: dict | None = None) -> str:
+    """點數費率的兩格輸入。上架、編輯草稿、詳情頁的描述性表單三處共用
+    （定義在這裡是因為 routers/admin_web_write.py 反過來 import 這個模組）。
+
+    這兩個欄位是**純記錄**：本平台不累計點數、不檢查上限、不擋——扣點與部門／
+    人員的點數上限一律由外部系統處理（config/custom_auth.py 與
+    config/custom_logger.py 完全不看它們）。說明文字一定要講清楚這件事，否則
+    管理者會以為填了就會生效，那是最糟的誤會：以為有護欄，其實沒有。
+    """
+    meta = meta or {}
+    return f"""
+  <p><label>點數費率：每 1K 輸入 token<br>
+     <input type="number" name="points_per_1k_prompt" step="any" min="0"
+        value="{points_value(meta.get('points_per_1k_prompt'))}" placeholder="留空＝未設定"></label></p>
+  <p><label>點數費率：每 1K 輸出 token<br>
+     <input type="number" name="points_per_1k_completion" step="any" min="0"
+        value="{points_value(meta.get('points_per_1k_completion'))}" placeholder="留空＝未設定"></label>
+     <br><small class="hint">可填小數。這兩格<b>只是記錄</b>：本平台不扣點、不檢查點數上限、
+     也不會因為點數用完而擋下呼叫——扣點與部門／人員的總點數上限由外部系統處理，
+     它從管理 API 讀這裡填的費率、從用量記錄讀 token 數。留空代表「還沒填」，
+     跟填 0（每 1K token 零點，等於免費）不一樣。</small></p>"""
+
+
 def test_cell(meta: dict) -> str:
     if not meta.get("has_record"):
         return "—"
@@ -419,6 +459,7 @@ async def model_list(admin: dict = Depends(require_admin)):
             f"<td><code>{html.escape(m['model'] or '')}</code></td>"
             f"<td>{html.escape(key_source_display(m['key_policy']))}</td>"
             f"<td>{budget_cell(meta, m['spend'])}</td>"
+            f"<td>{points_cell(meta)}</td>"
             f"<td>{test_cell(meta)}</td>"
             f'<td>{html.escape(", ".join(authorized)) if authorized else "（尚無部門授權）"}'
             f'<br><a href="{access_model_url(name)}">改授權 »</a></td></tr>'
@@ -443,8 +484,8 @@ async def model_list(admin: dict = Depends(require_admin)):
 {draft_hint}
 <div class="wide"><table>
   <tr><th>名稱</th><th>狀態</th><th>類型</th><th>上游</th><th>Key 來源</th>
-      <th>本期用量／額度</th><th>測試</th><th>已授權部門</th></tr>
-  {''.join(rows) if rows else '<tr><td colspan="8">目前沒有 DB-managed 模型。</td></tr>'}
+      <th>本期用量／額度</th><th>點數費率</th><th>測試</th><th>已授權部門</th></tr>
+  {''.join(rows) if rows else '<tr><td colspan="9">目前沒有 DB-managed 模型。</td></tr>'}
 </table></div>
 """)
 
@@ -569,6 +610,7 @@ async def model_detail(
   <p><label><input type="checkbox" name="budget_enforce" value="1"
      {"checked" if meta.get("budget_enforce") else ""}>
      超過額度就擋下來（不勾＝只累計用量、不影響呼叫）</label></p>
+  {points_fields(meta)}
   <p><label>備註<br><textarea name="notes">{html.escape(meta.get('notes') or '')}</textarea></label></p>
   <button type="submit">儲存</button>
 </form>"""
@@ -613,6 +655,8 @@ async def model_detail(
   <tr><td>在 LiteLLM 註冊</td><td>{'是' if entry['registered'] else '否（停用中）'}</td></tr>
   <tr><td>本期用量／額度</td><td>{html.escape(budget_line)}</td></tr>
   <tr><td>累計用量</td><td>{money(spend['total'])}｜本月 {spend['calls']} 次呼叫</td></tr>
+  <tr><td>點數費率</td><td>{points_cell(meta)}
+      <br><span class="hint">只是記錄，本平台不扣點也不擋；扣點與點數上限由外部系統處理</span></td></tr>
   <tr><td>備註</td><td>{html.escape(meta.get('notes') or '')}</td></tr>
 </table>
 <p>{actions_html}</p>
