@@ -19,7 +19,7 @@ import json
 
 from fastapi import HTTPException
 
-from database import DB_PATH, bump_version, get_conn
+from database import DATABASE_URL, bump_version, get_conn
 from services import openwebui_sync_service
 
 
@@ -34,7 +34,7 @@ def _loads(raw) -> list[str]:
 # ── 讀取現況 ──────────────────────────────────────────────────────────────────
 
 def dept_models() -> list[dict]:
-    with get_conn(DB_PATH) as conn:
+    with get_conn(DATABASE_URL) as conn:
         rows = conn.execute(
             "SELECT dept_id, dept_name, allowed_models FROM departments ORDER BY dept_id"
         ).fetchall()
@@ -70,11 +70,11 @@ def search_users(query: str, limit: int = 50) -> list[dict]:
     if not q:
         return []
     like = f"%{q}%"
-    with get_conn(DB_PATH) as conn:
+    with get_conn(DATABASE_URL) as conn:
         rows = conn.execute(
             "SELECT user_id, user_email, key_name, dept_id, models, blocked, account_type "
-            "FROM users WHERE user_id LIKE ? OR user_email LIKE ? OR key_name LIKE ? "
-            "ORDER BY user_email, user_id LIMIT ?",
+            "FROM users WHERE user_id LIKE %s OR user_email LIKE %s OR key_name LIKE %s "
+            "ORDER BY user_email, user_id LIMIT %s",
             (like, like, like, limit),
         ).fetchall()
     return [
@@ -92,10 +92,10 @@ def search_users(query: str, limit: int = 50) -> list[dict]:
 
 
 def get_user(user_id: str) -> dict:
-    with get_conn(DB_PATH) as conn:
+    with get_conn(DATABASE_URL) as conn:
         r = conn.execute(
             "SELECT user_id, user_email, key_name, dept_id, models, blocked, account_type "
-            "FROM users WHERE user_id = ?",
+            "FROM users WHERE user_id = %s",
             (user_id,),
         ).fetchone()
     if r is None:
@@ -165,9 +165,9 @@ def validate_models(models: list[str], known: set[str]) -> list[str]:
 
 def apply_dept(dept_id: str, models: list[str], known: set[str]) -> dict:
     diff = preview_dept(dept_id, validate_models(models, known))
-    with get_conn(DB_PATH) as conn:
+    with get_conn(DATABASE_URL) as conn:
         conn.execute(
-            "UPDATE departments SET allowed_models=?, updated_at=datetime('now') WHERE dept_id=?",
+            "UPDATE departments SET allowed_models=%s, updated_at=now()::text WHERE dept_id=%s",
             (json.dumps(diff["after"], ensure_ascii=False), dept_id),
         )
         bump_version(conn)
@@ -176,9 +176,9 @@ def apply_dept(dept_id: str, models: list[str], known: set[str]) -> dict:
 
 def apply_user(user_id: str, models: list[str], known: set[str]) -> dict:
     diff = preview_user(user_id, validate_models(models, known))
-    with get_conn(DB_PATH) as conn:
+    with get_conn(DATABASE_URL) as conn:
         conn.execute(
-            "UPDATE users SET models=?, updated_at=datetime('now') WHERE user_id=?",
+            "UPDATE users SET models=%s, updated_at=now()::text WHERE user_id=%s",
             (json.dumps(diff["after"], ensure_ascii=False), user_id),
         )
         bump_version(conn)

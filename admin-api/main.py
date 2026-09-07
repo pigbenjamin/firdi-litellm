@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.exception_handlers import http_exception_handler
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from database import DB_PATH, init_db
+from database import DATABASE_URL, init_db
 from routers import (
     admin_web,
     admin_web_access,
@@ -21,7 +21,7 @@ from routers import (
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    init_db(DB_PATH)
+    init_db(DATABASE_URL)
     yield
 
 

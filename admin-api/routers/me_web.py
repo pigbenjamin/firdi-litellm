@@ -14,7 +14,7 @@ import secrets
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from database import DB_PATH, get_conn
+from database import DATABASE_URL, get_conn
 from keycloak import (
     build_authorize_url,
     build_logout_url,
@@ -130,7 +130,7 @@ async def callback(request: Request, code: str = "", state: str = "", error: str
         body.delete_cookie(_STATE_COOKIE)
         return body
 
-    with get_conn(DB_PATH) as conn:
+    with get_conn(DATABASE_URL) as conn:
         me = to_me_out(conn, record)
 
     resp = _page(_key_page_body(me))
@@ -163,7 +163,7 @@ async def regenerate(request: Request):
     if record is None or record["blocked"]:
         return RedirectResponse("/api/v1/me/web/login", status_code=302)
 
-    with get_conn(DB_PATH) as conn:
+    with get_conn(DATABASE_URL) as conn:
         me = regenerate_key_for(conn, record["user_id"])
 
     return _page(_key_page_body(me, just_regenerated=True))

@@ -9,9 +9,9 @@
   │
   ▼
 LiteLLM Proxy (K8s, :30400)
-  ├─ custom_auth.py  — 使用者驗證 → 部門權限 → 模型 allowlist → dept rate limit
+  ├─ custom_auth.py  — 使用者驗證 → 部門權限 → 模型 allowlist
   ├─ custom_logger.py — 呼叫 log + OpenRouter API key 動態注入
-  │    └─ SQLite (PVC: users-db-pvc) ◄── Admin API (K8s, :30408)
+  │    └─ Postgres (firdi_users database) ◄── Admin API (K8s, :30408)
   │
   ├─► gemma-4-31b-vllm-service (GPU 0+1, TP=2) — google/gemma-4-31B-it（思考型）
   ├─► gemma-4-26b-vllm-service (GPU 2,    TP=1) — google/gemma-4-26B-A4B-it（快捷型）
@@ -22,7 +22,7 @@ LiteLLM Proxy (K8s, :30400)
   └─► OpenRouter API          (雲端，各部門各自的 API key)
 ```
 
-使用者與部門的**模型權限**儲存在 SQLite（`users.db`），由 Admin API 管理；Keycloak 負責身份認證，兩者職責分離。
+使用者與部門的**模型權限**儲存在 Postgres（`firdi_users` database，沿用 `firdi-postgres`，見 `k8s/postgres/`），由 Admin API 管理；Keycloak 負責身份認證，兩者職責分離。
 
 ## 目錄結構
 
@@ -30,7 +30,7 @@ LiteLLM Proxy (K8s, :30400)
 ├── k8s/                         ← K8s manifests（新架構主目錄）
 │   ├── namespace.yaml
 │   ├── shared-storage/
-│   │   └── pvc.yaml             — PVC: users-db-pvc（SQLite）、litellm-logs-pvc（動態佈建，storageClassName 見 .env）
+│   │   └── pvc.yaml             — PVC: litellm-logs-pvc（動態佈建，storageClassName 見 .env）；users-db-pvc 待正式環境資料搬完後移除，見檔案內註解
 │   ├── vllm/
 │   │   ├── gemma-4-31b/         — deployment.yaml, service.yaml（GPU 0+1, TP=2）
 │   │   ├── gemma-4-26b/         — deployment.yaml, service.yaml（GPU 2, TP=1）
@@ -83,14 +83,14 @@ LiteLLM Proxy (K8s, :30400)
 │   └── external-models-ops.md   — 給平台管理員：新增外部模型（OpenRouter／原生 Provider API）完整技術步驟
 ├── config/                      ← LiteLLM + auth 設定（K8s 版）
 │   ├── litellm_config.yaml
-│   ├── custom_auth.py           — 從 SQLite 讀取使用者/部門設定
+│   ├── custom_auth.py           — 從 Postgres（firdi_users database）讀取使用者/部門設定
 │   ├── custom_logger.py
-│   └── users.json               — 舊格式保留，供 migrate 腳本使用
+│   └── users.json               — 舊格式保留，供既有測試腳本參考範例資料
 ├── scripts/
 │   ├── deploy.sh                — 一鍵部署（all / 單一元件，見檔頭用法）
-│   ├── migrate_users_json.py    — 一次性將 users.json 匯入 SQLite
+│   ├── migrate_users_db_to_postgres.py — 一次性將 users-db-pvc(SQLite) 資料搬進 firdi_users(Postgres)
 │   ├── migrate_model_names.sh   — 換模型時遷移 DB 權限中的模型名稱（自動備份 + bump db_version）
-│   ├── show_db.sh               — 快速檢視 users.db 內容
+│   ├── show_db.sh               — 快速檢視 firdi_users（Postgres）內容
 │   └── test*.sh / test_sync.py  — auth / admin-api / 同步 測試腳本
 └── docker-compose/              ← 舊架構保留（參考用）
 ```
@@ -185,9 +185,9 @@ kubectl create configmap litellm-custom-logger \
   -n ai-platform
 ```
 
-### 4. 建立 PVC 並匯入初始資料
+### 4. 建立 PVC
 
-`users-db-pvc`（SQLite）與 `litellm-logs-pvc` 都是 `storageClassName` 動態佈建，`.env` 的 `K8S_PVC_STORAGE_CLASS` 決定用哪個 storage class（單節點 k3s 用內建的 `local-path`；公司叢集看 `kubectl get storageclass` 選一個支援 `ReadWriteOnce` 的，例如 `rook-ceph-block`）。它們是 RWO，admin-api 用 `podAffinity` 釘住 litellm 所在節點，兩者才能同時掛上 `users-db-pvc`（見 `k8s/admin-api/deployment.yaml`），不需要手動排程處理。
+`litellm-logs-pvc` 是 `storageClassName` 動態佈建，`.env` 的 `K8S_PVC_STORAGE_CLASS` 決定用哪個 storage class（單節點 k3s 用內建的 `local-path`；公司叢集看 `kubectl get storageclass` 選一個支援 `ReadWriteOnce` 的，例如 `rook-ceph-block`）。它是 RWO，admin-api 用 `podAffinity` 釘住 litellm 所在節點，兩者才能同時掛上（見 `k8s/admin-api/deployment.yaml`），不需要手動排程處理。
 
 ```bash
 kubectl get storageclass   # 確認叢集支援的 storage class 名稱
@@ -196,24 +196,17 @@ kubectl get storageclass   # 確認叢集支援的 storage class 名稱
 source .env && envsubst < k8s/shared-storage/pvc.yaml | kubectl apply -f -
 ```
 
-PVC 是動態佈建的，本機沒有檔案能直接對應到裡面的內容，`users.db` 要用 `kubectl cp` 灌進已經掛載 `users-db-pvc` 的 litellm Pod（`./scripts/deploy.sh users-db` 會自動做這件事，邏輯見 `docs/deploy.md` 第 3 節；下面是手動版本）：
+> `k8s/shared-storage/pvc.yaml` 目前還留著 `users-db-pvc` 的定義（2026-09 遷移到
+> Postgres 後 litellm/admin-api 都已經不再掛它），保留到正式環境確認資料搬移完成
+> 才會拿掉，見檔案內註解。
 
-```bash
-# 先確保 litellm 已部署且 Pod Ready（見第 7 節），才有 Pod 可以 kubectl cp 進去
-POD=$(kubectl get pod -n ai-platform -l app=litellm -o jsonpath='{.items[0].metadata.name}')
+### 4b. 部署 Postgres（firdi-postgres：store_model_in_db + 部門/使用者權限）
 
-# 產生 SQLite DB（從現有 users.json 匯入）
-python3 scripts/migrate_users_json.py \
-  --json config/users.json \
-  --db /tmp/users.db
-
-# 直接複製進 litellm Pod 掛載的 users-db-pvc
-kubectl cp /tmp/users.db "ai-platform/$POD:/app/data/users.db"
-```
-
-### 4b. 部署 Postgres（LiteLLM store_model_in_db 專用）
-
-給外部模型自助上架用（見 [docs/external-models-ops.md「路線 C」](docs/external-models-ops.md)），跟 `users-db-pvc` 那顆 SQLite 是不同的資料庫、互不相關。單副本，自己一顆獨立 PVC（同樣走 `K8S_PVC_STORAGE_CLASS` 動態佈建）：
+同一顆 Postgres instance，掛兩個各自獨立的 database：`litellm`（LiteLLM
+store_model_in_db 用，見 [docs/external-models-ops.md「路線 C」](docs/external-models-ops.md)）與
+`firdi_users`（2026-09 從 `users-db-pvc`(SQLite) 遷移過來的部門/使用者權限資料，
+見 `admin-api/database.py`）。單副本，自己一顆獨立 PVC（同樣走
+`K8S_PVC_STORAGE_CLASS` 動態佈建）：
 
 ```bash
 kubectl create secret generic postgres-secrets \
@@ -224,9 +217,33 @@ source .env && envsubst < k8s/postgres/pvc.yaml | kubectl apply -f -
 kubectl apply -f k8s/postgres/deployment.yaml
 kubectl apply -f k8s/postgres/service.yaml
 kubectl rollout status deployment/postgres -n ai-platform
+
+# firdi_users 不會靠 POSTGRES_DB 環境變數自動建（這顆 Postgres 已經有 litellm
+# database 的既有資料），第一次部署要手動建一次：
+kubectl exec -n ai-platform deploy/postgres -- psql -U litellm -d litellm \
+  -c "CREATE DATABASE firdi_users OWNER litellm;"
 ```
 
 > 密碼只在 PVC 第一次 initdb 時生效，事後單改 Secret 不會反向更新 Postgres 裡實際的密碼，細節見 `scripts/deploy.sh` 的 `deploy_secrets()` 註解。
+
+`firdi_users` 的六張表（`departments`/`users`/`model_key_policies`/
+`model_metadata`/`model_spend`/`model_presets`）由 admin-api 啟動時自動建立
+（`admin-api/database.py` 的 `init_db()`，見 `admin-api/main.py` 的 `lifespan`），
+不需要另外手動建表。既有環境要把 `users-db-pvc` 裡的正式資料搬過來，才需要跑
+一次性遷移腳本：
+
+```bash
+# 1. 先把正式環境的 users.db 從 litellm Pod 複製出來
+POD=$(kubectl get pod -n ai-platform -l app=litellm -o jsonpath='{.items[0].metadata.name}')
+kubectl cp "ai-platform/$POD:/app/data/users.db" /tmp/users.db
+
+# 2. 跑遷移（核對六張表的 row count，對不上會印出來並以非零狀態結束）
+USER_AUTH_DATABASE_URL=postgresql://litellm:<密碼>@postgres-service.ai-platform.svc.cluster.local:5432/firdi_users \
+  python3 scripts/migrate_users_db_to_postgres.py --sqlite /tmp/users.db
+```
+
+腳本用主鍵 UPSERT，可重複執行；不會搬 `dept_rpm_limit`/`dept_tpm_limit`（部門層
+RPM/TPM 限流已於 2026-09 整個移除，目標 schema 沒有這兩個欄位）。
 
 ### 5. 部署 Admin API
 
@@ -386,8 +403,6 @@ curl http://<node-ip>:30400/v1/chat/completions \
 部門 (Department)
   ├─ openrouter_api_key     ← 雲端模型共用金鑰（各部門獨立）
   ├─ allowed_models[]       ← 部門可用模型（來自 OpenWebUI group 授權）
-  ├─ dept_rpm_limit         ← 部門每分鐘請求數上限
-  ├─ dept_tpm_limit         ← 部門每分鐘 token 數上限
   └─ users[]
        ├─ api_key           ← 個人 Bearer token
        ├─ models[]          ← 個別授權給此人的「額外」模型（來自 OpenWebUI user 授權）
@@ -419,9 +434,7 @@ curl -X POST http://<node-ip>:30408/api/v1/departments \
     "dept_id": "data-science",
     "dept_name": "資料科學部",
     "openrouter_api_key": "sk-or-...",
-    "allowed_models": ["gemma-4-31B-it", "gemma-4-26B-A4B-it", "openrouter/anthropic/claude-sonnet-4-5"],
-    "dept_rpm_limit": 300,
-    "dept_tpm_limit": 1000000
+    "allowed_models": ["gemma-4-31B-it", "gemma-4-26B-A4B-it", "openrouter/anthropic/claude-sonnet-4-5"]
   }'
 ```
 

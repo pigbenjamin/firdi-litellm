@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 import httpx
 from fastapi import HTTPException
 
-from database import DB_PATH, get_conn
+from database import DATABASE_URL, get_conn
 from models import ExternalModelIn
 from services import model_metadata_service
 
@@ -64,9 +64,9 @@ def _validate_key_policy(policy: str) -> None:
 
 
 def _set_key_policy(model_name: str, policy: str) -> None:
-    with get_conn(DB_PATH) as conn:
+    with get_conn(DATABASE_URL) as conn:
         conn.execute(
-            "INSERT INTO model_key_policies (model_name, key_policy) VALUES (?, ?) "
+            "INSERT INTO model_key_policies (model_name, key_policy) VALUES (%s, %s) "
             "ON CONFLICT(model_name) DO UPDATE SET key_policy=excluded.key_policy",
             (model_name, policy),
         )
@@ -85,8 +85,8 @@ async def _cleanup_orphaned_key_policy(model_name: str) -> None:
     if resp.status_code == 200:
         if any(item.get("model_name") == model_name for item in resp.json().get("data", [])):
             return  # 還有其他 deployment 用同一個 model_name，政策仍在使用中
-    with get_conn(DB_PATH) as conn:
-        conn.execute("DELETE FROM model_key_policies WHERE model_name=?", (model_name,))
+    with get_conn(DATABASE_URL) as conn:
+        conn.execute("DELETE FROM model_key_policies WHERE model_name=%s", (model_name,))
 
 
 async def list_models() -> dict:
@@ -156,7 +156,7 @@ async def list_external_models(include_yaml: bool = False) -> dict:
     # 一個被納管過的 YAML 模型會在 curl 端點被誤判成「停用中」。
     in_litellm = {item.get("model_name") for item in info}
 
-    with get_conn(DB_PATH) as conn:
+    with get_conn(DATABASE_URL) as conn:
         stored_policies = {
             row["model_name"]: row["key_policy"]
             for row in conn.execute("SELECT model_name, key_policy FROM model_key_policies").fetchall()
@@ -379,9 +379,9 @@ def get_key_policy(model_name: str) -> str:
     上架動線已經一律建立 key_policy='model' 的模型（見 routers/admin_web_write.py），
     但決策 E 時期建的 dept:<provider> 模型還在，重新推導會把它們改壞。
     """
-    with get_conn(DB_PATH) as conn:
+    with get_conn(DATABASE_URL) as conn:
         row = conn.execute(
-            "SELECT key_policy FROM model_key_policies WHERE model_name=?", (model_name,)
+            "SELECT key_policy FROM model_key_policies WHERE model_name=%s", (model_name,)
         ).fetchone()
     return row["key_policy"] if row else _infer_default_key_policy(model_name)
 
@@ -564,8 +564,8 @@ async def hard_delete_model(model_name: str) -> None:
     """
     async with _litellm_client() as client:
         await _delete_by_name(client, model_name)
-    with get_conn(DB_PATH) as conn:
-        conn.execute("DELETE FROM model_key_policies WHERE model_name=?", (model_name,))
+    with get_conn(DATABASE_URL) as conn:
+        conn.execute("DELETE FROM model_key_policies WHERE model_name=%s", (model_name,))
     model_metadata_service.delete_metadata(model_name)
 
 
@@ -575,7 +575,7 @@ def model_impact(model_name: str) -> dict:
     含 "*"（不限制）的部門會被單獨列出來——它們沒有逐一列出 model_name，但一樣
     打得到這個模型，刪掉一樣有感。
     """
-    with get_conn(DB_PATH) as conn:
+    with get_conn(DATABASE_URL) as conn:
         dept_rows = conn.execute("SELECT dept_id, dept_name, allowed_models FROM departments").fetchall()
         user_rows = conn.execute(
             "SELECT user_id, user_email, dept_id, models FROM users WHERE blocked=0"

@@ -1,12 +1,14 @@
 import asyncio
 import json
 import os
-import sqlite3
 import time
 from datetime import datetime, timezone
 from threading import Lock
 
 import httpx
+import psycopg2
+import psycopg2.extras
+import psycopg2.pool
 from fastapi import Request
 from litellm.proxy._types import LitellmUserRoles, ProxyException, UserAPIKeyAuth
 
@@ -118,107 +120,113 @@ async def _resolve_keycloak_sub(openwebui_id: str, url: str, admin_key: str) -> 
     return keycloak_sub
 
 
-# ── SQLite 設定載入（db_version 版本戳記 + TTL 雙重快取）────────────────────────
+# ── Postgres 設定載入（db_version 版本戳記 + TTL 雙重快取）───────────────────────
+# 2026-09 從 users-db-pvc(SQLite) 遷移過來。這是每一次 LLM API 呼叫都會走的認證
+# 熱路徑，用連線池而不是每次 psycopg2.connect()：Postgres 在網路另一端，每次
+# 現連現斷的 TCP+auth handshake 成本遠高於原本 SQLite 開本機檔案。
 
-DEFAULT_DB_PATH = "/app/data/users.db"
+DEFAULT_DATABASE_URL = "postgresql://litellm:litellm@localhost:5432/firdi_users"
 _DB_LOCK = Lock()
 _CACHE_DATA: dict | None = None       # {"departments": [...], "users": [...]}
 _CACHE_VERSION: int = -1
 _CACHE_LOADED_AT: float = 0.0
 _CACHE_TTL: float = 30.0
 
+_pool: psycopg2.pool.ThreadedConnectionPool | None = None
 
-def _get_conn(db_path: str) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path, timeout=10, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=NORMAL")
-    return conn
+
+def _get_pool() -> psycopg2.pool.ThreadedConnectionPool:
+    global _pool
+    if _pool is None:
+        dsn = os.getenv("USER_AUTH_DATABASE_URL", DEFAULT_DATABASE_URL)
+        _pool = psycopg2.pool.ThreadedConnectionPool(1, 10, dsn=dsn)
+    return _pool
 
 
 def _load_config() -> dict:
     global _CACHE_DATA, _CACHE_VERSION, _CACHE_LOADED_AT
 
-    db_path = os.getenv("USER_AUTH_DB_PATH", DEFAULT_DB_PATH)
     now = time.monotonic()
+    pool = _get_pool()
 
     with _DB_LOCK:
+        conn = pool.getconn()
+        conn.autocommit = True  # 這裡全是唯讀查詢，autocommit 省掉每次借用連線都要commit/rollback收尾的麻煩
+        broken = False  # 借來的連線若中途出錯就直接關掉，不要把可能壞掉的連線還回池子裡
         try:
-            conn = _get_conn(db_path)
-            row = conn.execute("SELECT version FROM db_version WHERE id=1").fetchone()
-            current_version = row["version"] if row else -1
-            conn.close()
-        except Exception:
-            if _CACHE_DATA is not None:
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            try:
+                cur.execute("SELECT version FROM db_version WHERE id=1")
+                row = cur.fetchone()
+                current_version = row["version"] if row else -1
+            except Exception:
+                broken = True
+                if _CACHE_DATA is not None:
+                    return _CACHE_DATA
+                raise
+
+            ttl_expired = (now - _CACHE_LOADED_AT) > _CACHE_TTL
+            if _CACHE_DATA is not None and current_version == _CACHE_VERSION and not ttl_expired:
                 return _CACHE_DATA
-            raise
 
-        ttl_expired = (now - _CACHE_LOADED_AT) > _CACHE_TTL
-        if _CACHE_DATA is not None and current_version == _CACHE_VERSION and not ttl_expired:
-            return _CACHE_DATA
-
-        conn = _get_conn(db_path)
-        try:
-            depts = []
-            for r in conn.execute("SELECT * FROM departments").fetchall():
-                d = dict(r)
-                d["allowed_models"] = json.loads(d.get("allowed_models") or "[]")
-                # 決策 E：provider → key 的 dict（見 docs/admin-web-plan.md）。舊 DB
-                # 可能還沒有這個欄位（尚未跑過 admin-api 的 ALTER TABLE），.get 讓它
-                # 安全退化成空 dict，而不是讓整個熱路徑的設定載入失敗。
-                d["provider_keys"] = json.loads(d.get("provider_keys") or "{}")
-                depts.append(d)
-
-            users = []
-            for r in conn.execute("SELECT * FROM users WHERE blocked=0").fetchall():
-                u = dict(r)
-                u["models"] = json.loads(u.get("models") or "[]")
-                u["aliases"] = json.loads(u.get("aliases") or "{}")
-                u["metadata"] = json.loads(u.get("metadata") or "{}")
-                u["blocked"] = bool(u.get("blocked", 0))
-                users.append(u)
-
-            # 決策 E：model_name → key_policy。表可能還不存在（admin-api 尚未跑過
-            # 建表的 ALTER），比照上面同樣退化成空 dict，不讓認證整個掛掉。
+            # 下面整段失敗（例如 Postgres 網路瞬斷）一律退化成沿用上一份快取，
+            # 而不是讓認證整個掛掉——這是 Postgres 版比 SQLite 版新增的容錯：SQLite
+            # 是本機檔案，原本只有「表還沒建」這種情況會 fail-open，現在换成走網路，
+            # 連線中斷是真實會發生的情況，同樣不該變成「全平台打不通」。
             try:
-                model_key_policies = {
-                    row["model_name"]: row["key_policy"]
-                    for row in conn.execute("SELECT model_name, key_policy FROM model_key_policies").fetchall()
-                }
-            except sqlite3.OperationalError:
-                model_key_policies = {}
+                depts = []
+                cur.execute("SELECT * FROM departments")
+                for r in cur.fetchall():
+                    d = dict(r)
+                    d["allowed_models"] = json.loads(d.get("allowed_models") or "[]")
+                    d["provider_keys"] = json.loads(d.get("provider_keys") or "{}")
+                    depts.append(d)
 
-            # WP1/WP2：模型的狀態閘門與額度上限。表可能還不存在（admin-api 尚未
-            # 建表）→ 空 dict → 所有模型一律放行，跟這個功能上線前的行為完全一樣。
-            # 這裡刻意 fail-open：DB 讀不到不該變成「全平台打不通」。
-            try:
+                users = []
+                cur.execute("SELECT * FROM users WHERE blocked=0")
+                for r in cur.fetchall():
+                    u = dict(r)
+                    u["models"] = json.loads(u.get("models") or "[]")
+                    u["aliases"] = json.loads(u.get("aliases") or "{}")
+                    u["metadata"] = json.loads(u.get("metadata") or "{}")
+                    u["blocked"] = bool(u.get("blocked", 0))
+                    users.append(u)
+
+                # 決策 E：model_name → key_policy。
+                cur.execute("SELECT model_name, key_policy FROM model_key_policies")
+                model_key_policies = {r["model_name"]: r["key_policy"] for r in cur.fetchall()}
+
+                # WP1/WP2：模型的狀態閘門與額度上限。沒有紀錄的 model_name 一律放行
+                # （視為 published），跟這個功能上線前的行為完全一樣。
+                cur.execute(
+                    "SELECT model_name, status, budget_limit_usd, budget_enforce, budget_period "
+                    "FROM model_metadata"
+                )
                 model_meta = {
-                    row["model_name"]: {
-                        "status": row["status"],
-                        "budget_limit_usd": row["budget_limit_usd"],
-                        "budget_enforce": int(row["budget_enforce"] or 0),
-                        "budget_period": row["budget_period"] or "monthly",
+                    r["model_name"]: {
+                        "status": r["status"],
+                        "budget_limit_usd": r["budget_limit_usd"],
+                        "budget_enforce": int(r["budget_enforce"] or 0),
+                        "budget_period": r["budget_period"] or "monthly",
                     }
-                    for row in conn.execute(
-                        "SELECT model_name, status, budget_limit_usd, budget_enforce, budget_period "
-                        "FROM model_metadata"
-                    ).fetchall()
+                    for r in cur.fetchall()
                 }
-            except sqlite3.OperationalError:
-                model_meta = {}
 
-            # (model_name, period) → 已花費。period 是 'YYYY-MM' 或 'total'。
-            # 這份資料由 config/custom_logger.py 每次成功呼叫累加，它不會 bump
-            # db_version（每筆請求都 bump 會讓所有 replica 的快取一直失效），所以
-            # 額度用完之後最多要等 _CACHE_TTL（30 秒）才會開始擋。這是刻意的取捨：
-            # 額度上限是成本護欄不是硬性配額，換 30 秒的誤差省掉熱路徑上的 DB 查詢。
-            try:
+                # (model_name, period) → 已花費。period 是 'YYYY-MM' 或 'total'。
+                # 這份資料由 config/custom_logger.py 每次成功呼叫累加，它不會 bump
+                # db_version（每筆請求都 bump 會讓所有 replica 的快取一直失效），所以
+                # 額度用完之後最多要等 _CACHE_TTL（30 秒）才會開始擋。這是刻意的取捨：
+                # 額度上限是成本護欄不是硬性配額，換 30 秒的誤差省掉熱路徑上的 DB 查詢。
+                cur.execute("SELECT model_name, period, spend_usd FROM model_spend")
                 model_spend = {
-                    (row["model_name"], row["period"]): float(row["spend_usd"] or 0)
-                    for row in conn.execute("SELECT model_name, period, spend_usd FROM model_spend").fetchall()
+                    (r["model_name"], r["period"]): float(r["spend_usd"] or 0)
+                    for r in cur.fetchall()
                 }
-            except sqlite3.OperationalError:
-                model_spend = {}
+            except Exception:
+                broken = True
+                if _CACHE_DATA is not None:
+                    return _CACHE_DATA
+                raise
 
             _CACHE_DATA = {
                 "departments": depts,
@@ -231,7 +239,7 @@ def _load_config() -> dict:
             _CACHE_LOADED_AT = now
             return _CACHE_DATA
         finally:
-            conn.close()
+            pool.putconn(conn, close=broken)
 
 
 def _normalize_api_key(api_key: str) -> str:
@@ -304,53 +312,6 @@ def _resolve_injected_key(model_name: str, dept: dict) -> str:
     if key.startswith("sk-or-CHANGE"):
         return ""  # 未換過的 placeholder，視同未設定，不注入（見「容易做錯的五件事」#5）
     return key
-
-
-# ── 部門層 Rate Limit（in-memory，單 replica 適用）────────────────────────────
-
-_DEPT_COUNTERS: dict[str, dict] = {}
-_DEPT_LOCK = Lock()
-
-
-def _check_dept_rate_limit(dept: dict, token_estimate: int = 0) -> None:
-    dept_id = dept["dept_id"]
-    now = time.monotonic()
-    window = 60.0
-
-    with _DEPT_LOCK:
-        if dept_id not in _DEPT_COUNTERS:
-            _DEPT_COUNTERS[dept_id] = {
-                "rpm": {"count": 0, "window_start": now},
-                "tpm": {"count": 0, "window_start": now},
-            }
-
-        c = _DEPT_COUNTERS[dept_id]
-
-        if now - c["rpm"]["window_start"] >= window:
-            c["rpm"] = {"count": 0, "window_start": now}
-        if now - c["tpm"]["window_start"] >= window:
-            c["tpm"] = {"count": 0, "window_start": now}
-
-        rpm_limit = dept.get("dept_rpm_limit")
-        tpm_limit = dept.get("dept_tpm_limit")
-
-        if rpm_limit and c["rpm"]["count"] >= rpm_limit:
-            raise ProxyException(
-                message=f"Department '{dept_id}' has exceeded RPM limit ({rpm_limit})",
-                type="rate_limit_error",
-                param="rpm",
-                code=429,
-            )
-        if tpm_limit and token_estimate and c["tpm"]["count"] >= tpm_limit:
-            raise ProxyException(
-                message=f"Department '{dept_id}' has exceeded TPM limit ({tpm_limit})",
-                type="rate_limit_error",
-                param="tpm",
-                code=429,
-            )
-
-        c["rpm"]["count"] += 1
-        c["tpm"]["count"] += token_estimate
 
 
 # ── Model 權限檢查 ────────────────────────────────────────────────────────────
@@ -682,7 +643,6 @@ async def user_api_key_auth(request: Request, api_key: str) -> UserAPIKeyAuth:
     _check_model_allowed(user, dept, requested_model)
     _check_model_status(user, requested_model)
     _check_model_budget(user, requested_model)
-    _check_dept_rate_limit(dept)
 
     return _build_auth_response(user, dept, _normalize_api_key(api_key), source, requested_model)
 

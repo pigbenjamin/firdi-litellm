@@ -6,7 +6,7 @@ import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 
 from auth import verify_admin_key
-from database import DB_PATH, bump_version, get_conn
+from database import DATABASE_URL, bump_version, get_conn
 from keycloak import (
     KEYCLOAK_CLIENT_ID,
     KEYCLOAK_CLIENT_SECRET,
@@ -139,30 +139,30 @@ async def keycloak_bulk_sync(
 
             blocked = int(not kc_user.get("enabled", True))
 
-            with get_conn(DB_PATH) as conn:
+            with get_conn(DATABASE_URL) as conn:
                 if dept_id:
                     dept_exists = conn.execute(
-                        "SELECT 1 FROM departments WHERE dept_id = ?", (dept_id,)
+                        "SELECT 1 FROM departments WHERE dept_id = %s", (dept_id,)
                     ).fetchone()
                     if not dept_exists:
                         conn.execute(
                             """INSERT INTO departments
-                               (dept_id, dept_name, allowed_models, dept_rpm_limit, dept_tpm_limit)
-                               VALUES (?, ?, '[]', NULL, NULL)""",
+                               (dept_id, dept_name, allowed_models)
+                               VALUES (%s, %s, '[]')""",
                             (dept_id, dept_id),
                         )
                         bump_version(conn)
 
                 existing = conn.execute(
-                    "SELECT 1 FROM users WHERE user_id = ?", (user_id,)
+                    "SELECT 1 FROM users WHERE user_id = %s", (user_id,)
                 ).fetchone()
 
                 if existing:
                     conn.execute(
                         """UPDATE users SET
-                           key_name=?, user_email=?, dept_id=?, blocked=?,
-                           updated_at=datetime('now')
-                           WHERE user_id=?""",
+                           key_name=%s, user_email=%s, dept_id=%s, blocked=%s,
+                           updated_at=now()::text
+                           WHERE user_id=%s""",
                         (
                             kc_user.get("username", ""),
                             kc_user.get("email", ""),
@@ -180,7 +180,7 @@ async def keycloak_bulk_sync(
                         """INSERT INTO users
                            (api_key, key_name, user_id, user_email, dept_id,
                             models, rpm_limit, tpm_limit, aliases, metadata, blocked)
-                           VALUES (?, ?, ?, ?, ?, '[]', NULL, NULL, '{}', '{}', ?)""",
+                           VALUES (%s, %s, %s, %s, %s, '[]', NULL, NULL, '{}', '{}', %s)""",
                         (
                             api_key,
                             kc_user.get("username", ""),
@@ -221,13 +221,13 @@ async def keycloak_sync(
 
     # Keycloak DELETE 事件 → 封鎖使用者
     if event_type == "DELETE":
-        with get_conn(DB_PATH) as conn:
+        with get_conn(DATABASE_URL) as conn:
             exists = conn.execute(
-                "SELECT 1 FROM users WHERE user_id = ?", (user_id,)
+                "SELECT 1 FROM users WHERE user_id = %s", (user_id,)
             ).fetchone()
             if exists:
                 conn.execute(
-                    "UPDATE users SET blocked=1, updated_at=datetime('now') WHERE user_id=?",
+                    "UPDATE users SET blocked=1, updated_at=now()::text WHERE user_id=%s",
                     (user_id,),
                 )
                 bump_version(conn)
@@ -245,29 +245,29 @@ async def keycloak_sync(
     if not dept_id:
         return {"status": "skipped", "user_id": user_id, "reason": "user has no group in Keycloak"}
 
-    with get_conn(DB_PATH) as conn:
+    with get_conn(DATABASE_URL) as conn:
         dept_exists = conn.execute(
-            "SELECT 1 FROM departments WHERE dept_id = ?", (dept_id,)
+            "SELECT 1 FROM departments WHERE dept_id = %s", (dept_id,)
         ).fetchone()
         if not dept_exists:
             conn.execute(
                 """INSERT INTO departments
-                   (dept_id, dept_name, allowed_models, dept_rpm_limit, dept_tpm_limit)
-                   VALUES (?, ?, '[]', NULL, NULL)""",
+                   (dept_id, dept_name, allowed_models)
+                   VALUES (%s, %s, '[]')""",
                 (dept_id, dept_id),
             )
             bump_version(conn)
 
         existing = conn.execute(
-            "SELECT * FROM users WHERE user_id = ?", (user_id,)
+            "SELECT * FROM users WHERE user_id = %s", (user_id,)
         ).fetchone()
 
         if existing:
             conn.execute(
                 """UPDATE users SET
-                   key_name=?, user_email=?, dept_id=?, blocked=?,
-                   updated_at=datetime('now')
-                   WHERE user_id=?""",
+                   key_name=%s, user_email=%s, dept_id=%s, blocked=%s,
+                   updated_at=now()::text
+                   WHERE user_id=%s""",
                 (
                     kc_user["key_name"],
                     kc_user["user_email"],
@@ -285,7 +285,7 @@ async def keycloak_sync(
                 """INSERT INTO users
                    (api_key, key_name, user_id, user_email, dept_id,
                     models, rpm_limit, tpm_limit, aliases, metadata, blocked)
-                   VALUES (?, ?, ?, ?, ?, '[]', NULL, NULL, '{}', '{}', ?)""",
+                   VALUES (%s, %s, %s, %s, %s, '[]', NULL, NULL, '{}', '{}', %s)""",
                 (
                     api_key,
                     kc_user["key_name"],

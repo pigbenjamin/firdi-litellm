@@ -7,8 +7,10 @@ metadata:
     app: litellm
 spec:
   replicas: 1
-  # users-db-pvc 是 ReadWriteOnce、跟 admin-api 共用（見 k8s/admin-api/deployment.yaml
+  # litellm-logs-pvc 是 ReadWriteOnce、跟 admin-api 共用（見 k8s/admin-api/deployment.yaml
   # 同樣的註解）——預設 RollingUpdate 會死鎖，改用 Recreate 先砍舊 pod 釋放 volume。
+  # （2026-09 users-db-pvc 遷到 Postgres 後不再是這裡的理由，但 litellm-logs-pvc
+  # 還在共用，這條 Recreate 不能拿掉。）
   strategy:
     type: Recreate
   selector:
@@ -21,8 +23,8 @@ spec:
     spec:
       containers:
         - name: litellm
-          image: ghcr.io/berriai/litellm:main-latest
-          imagePullPolicy: IfNotPresent
+          image: ${LITELLM_IMAGE}
+          imagePullPolicy: ${LITELLM_IMAGE_PULL_POLICY}
           args:
             - "--config=/app/config/litellm_config.yaml"
             - "--detailed_debug"
@@ -35,12 +37,19 @@ spec:
                 secretKeyRef:
                   name: litellm-secrets
                   key: master-key
-            - name: USER_AUTH_DB_PATH
-              value: /app/data/users.db
+            # 2026-09 從 users-db-pvc(SQLite) 遷到 Postgres（見 k8s/postgres/、
+            # config/custom_auth.py、config/custom_logger.py）。跟下面的
+            # DATABASE_URL 不是同一顆 database，不要混淆。
+            - name: USER_AUTH_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: litellm-secrets
+                  key: user-auth-database-url
             - name: LOG_PATH
               value: /app/logs/usage.jsonl
             # store_model_in_db 用（見 config/litellm_config.yaml general_settings
-            # 與 docs/external-models-ops.md「路線 C」），不是 users.db 那顆 SQLite。
+            # 與 docs/external-models-ops.md「路線 C」），不是 USER_AUTH_DATABASE_URL
+            # 那顆 Postgres database。
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
@@ -110,8 +119,6 @@ spec:
             - name: litellm-config
               mountPath: /app/config/litellm_config.yaml
               subPath: litellm_config.yaml
-            - name: users-db
-              mountPath: /app/data
             - name: custom-auth
               mountPath: /app/config/custom_auth.py
               subPath: custom_auth.py
@@ -140,9 +147,6 @@ spec:
         - name: litellm-config
           configMap:
             name: litellm-config
-        - name: users-db
-          persistentVolumeClaim:
-            claimName: users-db-pvc
         - name: custom-auth
           configMap:
             name: litellm-custom-auth

@@ -408,6 +408,7 @@ curl http://<平台位址>/v1/chat/completions \
 ## 收尾建議
 
 - 更新 [api-access.md](api-access.md)「可用模型」表格，讓直接用 API 的使用者知道多了什麼可以打。
-- 外部 API 是真的要花錢的，平台目前**幾乎沒設速率限制**（見 api-access.md 已知限制）。
-  建議順手幫用得到的部門設 `dept_rpm_limit` / `dept_tpm_limit`（同一個
-  `PATCH /api/v1/departments/{dept_id}`），避免失控的 agent 迴圈把費用打爆。
+- 外部 API 是真的要花錢的，平台目前**幾乎沒設速率限制**（見 api-access.md 已知限制；
+  部門層 RPM/TPM 限流已於 2026-09 移除，真正的限流不在這裡做）。建議順手幫這個
+  模型設 `model_metadata` 的 `budget_limit_usd` / `budget_enforce`（admin-web 的
+  模型頁可以設），避免失控的 agent 迴圈把費用打爆。

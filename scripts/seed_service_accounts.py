@@ -3,8 +3,8 @@
 seed_service_accounts.py — 收斂 config/service_accounts.json 定義的固定服務帳號
 
 服務帳號（account_type=service）不像人類帳號有 Keycloak webhook 自動同步，之前都是
-「當下手動對某台叢集的 admin-api 打 curl」建立，只活在那台機器的 SQLite 裡，git 完全
-沒有紀錄——換一台新機器或重灌 users-db-pvc，這些帳號會全部消失且無感。這支腳本把「這個
+「當下手動對某台叢集的 admin-api 打 curl」建立，只活在 firdi_users（Postgres）裡，git
+完全沒有紀錄——換一台新機器或重建 database，這些帳號會全部消失且無感。這支腳本把「這個
 平台必須有哪些服務帳號、各自能用哪些模型/多少額度」變成 git 追蹤的宣告式清單，新機器/
 既有機器都跑同一支就能收斂到一致狀態。
 

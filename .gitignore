@@ -1,5 +1,7 @@
 # 環境變數（含 API key、master key 等機敏資訊）
 .env
+.env.*
+!.env.example
 
 # 使用記錄（保留目錄結構但不追蹤內容，包含 docker-compose/logs 等巢狀目錄）
 **/logs/*

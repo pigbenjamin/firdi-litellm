@@ -1,9 +1,14 @@
-# 專給 LiteLLM store_model_in_db 用的 Postgres（見 docs/external-models-ops.md
+# 原本專給 LiteLLM store_model_in_db 用的 Postgres（見 docs/external-models-ops.md
 # 「路線 C：自助上架」）。單副本、只存「模型定義」（LiteLLM 啟動時會自己跑
 # Prisma migration 建表，不需要我們手動初始化 schema）；spend log/更新已在
 # config/litellm_config.yaml 用 disable_spend_logs/disable_spend_updates 關掉
 # （本專案的用量記錄走 config/custom_logger.py 寫 jsonl + Langfuse，不需要在這裡
 # 重複一份），所以這顆 DB 的資料量預期很小。
+#
+# 2026-09-07 起同一顆 Postgres 也另外掛了一個 `firdi_users` database（手動
+# CREATE DATABASE，同一個 litellm 使用者），是 users-db-pvc(SQLite) 遷移過來的
+# 部門/使用者資料，跟這顆的 store_model_in_db 用途無關、schema 也完全獨立，
+# 只是共用同一顆 Postgres instance 省資源。
 #
 # 沒有做高可用（單副本 + 單顆 RWO PVC）：跟 users-db-pvc 的取捨一致——這是內部
 # 管理用途（新增/查詢模型定義），不是每個請求都會打的關鍵路徑；litellm pod 本身

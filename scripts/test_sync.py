@@ -362,8 +362,6 @@ def run_tests(
             "dept_id": test_dept_id,
             "dept_name": f"Sync Test ({test_dept_id})",
             "allowed_models": ["gemma-4-26B-A4B-it"],
-            "dept_rpm_limit": 60,
-            "dept_tpm_limit": 100000,
         })
         if r.status == 201:
             dept_created = True

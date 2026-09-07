@@ -5,16 +5,16 @@
 admin-web 的模型頁（Keycloak session）各自認證後呼叫同一組函式（決策 C）。
 
 為什麼這些欄位存這裡而不是 LiteLLM 的 model_info：跟決策 E 的 model_key_policies
-同一個理由——`config/custom_auth.py` 在每個請求的熱路徑上讀的就是這顆 SQLite，
+同一個理由——`config/custom_auth.py` 在每個請求的熱路徑上讀的就是這顆 DB，
 狀態閘門（draft/disabled 不放行）與額度上限都要在那裡判斷，塞進 LiteLLM 的
-model_info 等於在熱路徑多一個 Postgres 相依。
+model_info 等於在熱路徑多一個依賴。
 """
 import json
 from datetime import datetime, timezone
 
 from fastapi import HTTPException
 
-from database import DB_PATH, bump_version, get_conn, row_to_dict
+from database import DATABASE_URL, bump_version, get_conn, row_to_dict
 
 MODEL_TYPES = {
     "chat": "對話（chat/completions）",
@@ -136,15 +136,15 @@ def synthesized(model_name: str) -> dict:
 
 
 def get_metadata(model_name: str) -> dict:
-    with get_conn(DB_PATH) as conn:
+    with get_conn(DATABASE_URL) as conn:
         row = conn.execute(
-            "SELECT * FROM model_metadata WHERE model_name = ?", (model_name,)
+            "SELECT * FROM model_metadata WHERE model_name = %s", (model_name,)
         ).fetchone()
     return _row_to_meta(row) if row else synthesized(model_name)
 
 
 def list_metadata() -> dict[str, dict]:
-    with get_conn(DB_PATH) as conn:
+    with get_conn(DATABASE_URL) as conn:
         rows = conn.execute("SELECT * FROM model_metadata").fetchall()
     return {r["model_name"]: _row_to_meta(r) for r in rows}
 
@@ -160,28 +160,28 @@ def upsert_metadata(model_name: str, **fields) -> dict:
     if unknown:
         raise ValueError(f"不可寫入的欄位：{sorted(unknown)}")
 
-    with get_conn(DB_PATH) as conn:
+    with get_conn(DATABASE_URL) as conn:
         row = conn.execute(
-            "SELECT * FROM model_metadata WHERE model_name = ?", (model_name,)
+            "SELECT * FROM model_metadata WHERE model_name = %s", (model_name,)
         ).fetchone()
         if row is None:
             merged = {k: DEFAULTS[k] for k in _WRITABLE}
             merged.update(fields)
             cols = ", ".join(["model_name"] + _WRITABLE)
-            marks = ", ".join(["?"] * (len(_WRITABLE) + 1))
+            marks = ", ".join(["%s"] * (len(_WRITABLE) + 1))
             conn.execute(
                 f"INSERT INTO model_metadata ({cols}) VALUES ({marks})",
                 [model_name] + [merged[k] for k in _WRITABLE],
             )
         elif fields:
-            sets = ", ".join(f"{k}=?" for k in fields)
+            sets = ", ".join(f"{k}=%s" for k in fields)
             conn.execute(
-                f"UPDATE model_metadata SET {sets}, updated_at=datetime('now') WHERE model_name=?",
+                f"UPDATE model_metadata SET {sets}, updated_at=now()::text WHERE model_name=%s",
                 list(fields.values()) + [model_name],
             )
         bump_version(conn)
         return _row_to_meta(
-            conn.execute("SELECT * FROM model_metadata WHERE model_name = ?", (model_name,)).fetchone()
+            conn.execute("SELECT * FROM model_metadata WHERE model_name = %s", (model_name,)).fetchone()
         )
 
 
@@ -190,8 +190,8 @@ def delete_metadata(model_name: str) -> None:
     upstream/litellm_model/api_key 全部拿不回來（LiteLLM 的 /model/info 會遮罩 key）。
     用量累計（model_spend）刻意保留，避免刪掉再上架同名模型就把歷史花費歸零。
     """
-    with get_conn(DB_PATH) as conn:
-        conn.execute("DELETE FROM model_metadata WHERE model_name=?", (model_name,))
+    with get_conn(DATABASE_URL) as conn:
+        conn.execute("DELETE FROM model_metadata WHERE model_name=%s", (model_name,))
         bump_version(conn)
 
 
@@ -209,9 +209,9 @@ def list_spend() -> dict[str, dict]:
     """
     period = current_period()
     out: dict[str, dict] = {}
-    with get_conn(DB_PATH) as conn:
+    with get_conn(DATABASE_URL) as conn:
         rows = conn.execute(
-            "SELECT model_name, period, spend_usd, calls FROM model_spend WHERE period IN (?, 'total')",
+            "SELECT model_name, period, spend_usd, calls FROM model_spend WHERE period IN (%s, 'total')",
             (period,),
         ).fetchall()
     for r in rows:
@@ -227,9 +227,9 @@ def list_spend() -> dict[str, dict]:
 def get_spend(model_name: str) -> dict:
     """回傳 {"monthly": 本月花費, "total": 累計花費, "calls": 本月呼叫次數, "period": "YYYY-MM"}。"""
     period = current_period()
-    with get_conn(DB_PATH) as conn:
+    with get_conn(DATABASE_URL) as conn:
         rows = conn.execute(
-            "SELECT period, spend_usd, calls FROM model_spend WHERE model_name=? AND period IN (?, 'total')",
+            "SELECT period, spend_usd, calls FROM model_spend WHERE model_name=%s AND period IN (%s, 'total')",
             (model_name, period),
         ).fetchall()
     by_period = {r["period"]: r for r in rows}
@@ -266,7 +266,7 @@ def budget_state(meta: dict, spend: dict) -> dict:
 # ── model_presets（上架表單的常用範本）────────────────────────────────────────
 
 def list_presets() -> list[dict]:
-    with get_conn(DB_PATH) as conn:
+    with get_conn(DATABASE_URL) as conn:
         rows = conn.execute(
             "SELECT preset_name, payload, updated_at FROM model_presets ORDER BY preset_name"
         ).fetchall()
@@ -293,14 +293,14 @@ def save_preset(preset_name: str, payload: dict) -> None:
     if not name:
         raise HTTPException(status_code=422, detail="範本名稱不可留空")
     safe = {k: v for k, v in payload.items() if k != "api_key"}
-    with get_conn(DB_PATH) as conn:
+    with get_conn(DATABASE_URL) as conn:
         conn.execute(
-            "INSERT INTO model_presets (preset_name, payload) VALUES (?, ?) "
-            "ON CONFLICT(preset_name) DO UPDATE SET payload=excluded.payload, updated_at=datetime('now')",
+            "INSERT INTO model_presets (preset_name, payload) VALUES (%s, %s) "
+            "ON CONFLICT(preset_name) DO UPDATE SET payload=excluded.payload, updated_at=now()::text",
             (name, json.dumps(safe, ensure_ascii=False)),
         )
 
 
 def delete_preset(preset_name: str) -> None:
-    with get_conn(DB_PATH) as conn:
-        conn.execute("DELETE FROM model_presets WHERE preset_name=?", (preset_name,))
+    with get_conn(DATABASE_URL) as conn:
+        conn.execute("DELETE FROM model_presets WHERE preset_name=%s", (preset_name,))

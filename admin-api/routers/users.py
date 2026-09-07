@@ -3,7 +3,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from auth import verify_admin_key
-from database import DB_PATH, bump_version, get_conn, parse_json_fields, row_to_dict
+from database import DATABASE_URL, bump_version, get_conn, parse_json_fields, row_to_dict
 from models import UserIn, UserOut, UserPatch
 
 router = APIRouter(prefix="/api/v1/users", dependencies=[Depends(verify_admin_key)])
@@ -13,7 +13,7 @@ _JSON_FIELDS = ["models", "aliases", "metadata"]
 
 def _fetch_user(conn, user_id: str) -> dict:
     row = conn.execute(
-        "SELECT * FROM users WHERE user_id = ?", (user_id,)
+        "SELECT * FROM users WHERE user_id = %s", (user_id,)
     ).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail=f"User '{user_id}' not found")
@@ -25,7 +25,7 @@ def _fetch_user(conn, user_id: str) -> dict:
 
 def _dept_exists(conn, dept_id: str) -> bool:
     return conn.execute(
-        "SELECT 1 FROM departments WHERE dept_id = ?", (dept_id,)
+        "SELECT 1 FROM departments WHERE dept_id = %s", (dept_id,)
     ).fetchone() is not None
 
 
@@ -36,13 +36,13 @@ def list_users(
 ):
     clauses, params = [], []
     if dept_id:
-        clauses.append("dept_id = ?")
+        clauses.append("dept_id = %s")
         params.append(dept_id)
     if account_type:
-        clauses.append("account_type = ?")
+        clauses.append("account_type = %s")
         params.append(account_type)
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-    with get_conn(DB_PATH) as conn:
+    with get_conn(DATABASE_URL) as conn:
         rows = conn.execute(
             f"SELECT * FROM users {where} ORDER BY user_id", params
         ).fetchall()
@@ -56,11 +56,11 @@ def list_users(
 
 @router.post("", response_model=UserOut, status_code=201)
 def create_user(body: UserIn):
-    with get_conn(DB_PATH) as conn:
+    with get_conn(DATABASE_URL) as conn:
         if not _dept_exists(conn, body.dept_id):
             raise HTTPException(status_code=404, detail=f"Department '{body.dept_id}' not found")
         exists = conn.execute(
-            "SELECT 1 FROM users WHERE api_key = ? OR user_id = ?",
+            "SELECT 1 FROM users WHERE api_key = %s OR user_id = %s",
             (body.api_key, body.user_id),
         ).fetchone()
         if exists:
@@ -69,7 +69,7 @@ def create_user(body: UserIn):
             """INSERT INTO users
                (api_key, key_name, user_id, user_email, dept_id, account_type,
                 models, rpm_limit, tpm_limit, aliases, metadata, blocked)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
             (
                 body.api_key,
                 body.key_name,
@@ -91,22 +91,22 @@ def create_user(body: UserIn):
 
 @router.get("/{user_id}", response_model=UserOut)
 def get_user(user_id: str):
-    with get_conn(DB_PATH) as conn:
+    with get_conn(DATABASE_URL) as conn:
         return _fetch_user(conn, user_id)
 
 
 @router.put("/{user_id}", response_model=UserOut)
 def update_user(user_id: str, body: UserIn):
-    with get_conn(DB_PATH) as conn:
+    with get_conn(DATABASE_URL) as conn:
         _fetch_user(conn, user_id)
         if not _dept_exists(conn, body.dept_id):
             raise HTTPException(status_code=404, detail=f"Department '{body.dept_id}' not found")
         conn.execute(
             """UPDATE users SET
-               api_key=?, key_name=?, user_email=?, dept_id=?, account_type=?,
-               models=?, rpm_limit=?, tpm_limit=?, aliases=?, metadata=?, blocked=?,
-               updated_at=datetime('now')
-               WHERE user_id=?""",
+               api_key=%s, key_name=%s, user_email=%s, dept_id=%s, account_type=%s,
+               models=%s, rpm_limit=%s, tpm_limit=%s, aliases=%s, metadata=%s, blocked=%s,
+               updated_at=now()::text
+               WHERE user_id=%s""",
             (
                 body.api_key,
                 body.key_name,
@@ -128,7 +128,7 @@ def update_user(user_id: str, body: UserIn):
 
 @router.patch("/{user_id}", response_model=UserOut)
 def patch_user(user_id: str, body: UserPatch):
-    with get_conn(DB_PATH) as conn:
+    with get_conn(DATABASE_URL) as conn:
         current = _fetch_user(conn, user_id)
         updates = body.model_dump(exclude_none=True)
         if not updates:
@@ -138,34 +138,34 @@ def patch_user(user_id: str, body: UserPatch):
         fields = []
         values = []
         for key, val in updates.items():
-            fields.append(f"{key}=?")
+            fields.append(f"{key}=%s")
             if key in ("models", "aliases", "metadata"):
                 values.append(json.dumps(val, ensure_ascii=False))
             elif key == "blocked":
                 values.append(int(val))
             else:
                 values.append(val)
-        fields.append("updated_at=datetime('now')")
+        fields.append("updated_at=now()::text")
         values.append(user_id)
-        conn.execute(f"UPDATE users SET {', '.join(fields)} WHERE user_id=?", values)
+        conn.execute(f"UPDATE users SET {', '.join(fields)} WHERE user_id=%s", values)
         bump_version(conn)
         return _fetch_user(conn, user_id)
 
 
 @router.delete("/{user_id}", status_code=204)
 def delete_user(user_id: str):
-    with get_conn(DB_PATH) as conn:
+    with get_conn(DATABASE_URL) as conn:
         _fetch_user(conn, user_id)
-        conn.execute("DELETE FROM users WHERE user_id=?", (user_id,))
+        conn.execute("DELETE FROM users WHERE user_id=%s", (user_id,))
         bump_version(conn)
 
 
 @router.post("/{user_id}/block", response_model=UserOut)
 def block_user(user_id: str):
-    with get_conn(DB_PATH) as conn:
+    with get_conn(DATABASE_URL) as conn:
         _fetch_user(conn, user_id)
         conn.execute(
-            "UPDATE users SET blocked=1, updated_at=datetime('now') WHERE user_id=?",
+            "UPDATE users SET blocked=1, updated_at=now()::text WHERE user_id=%s",
             (user_id,),
         )
         bump_version(conn)
@@ -174,10 +174,10 @@ def block_user(user_id: str):
 
 @router.post("/{user_id}/unblock", response_model=UserOut)
 def unblock_user(user_id: str):
-    with get_conn(DB_PATH) as conn:
+    with get_conn(DATABASE_URL) as conn:
         _fetch_user(conn, user_id)
         conn.execute(
-            "UPDATE users SET blocked=0, updated_at=datetime('now') WHERE user_id=?",
+            "UPDATE users SET blocked=0, updated_at=now()::text WHERE user_id=%s",
             (user_id,),
         )
         bump_version(conn)
@@ -187,10 +187,10 @@ def unblock_user(user_id: str):
 @router.post("/{user_id}/regenerate-key", response_model=UserOut)
 def regenerate_key(user_id: str):
     new_key = f"sk-{uuid.uuid4().hex}"
-    with get_conn(DB_PATH) as conn:
+    with get_conn(DATABASE_URL) as conn:
         _fetch_user(conn, user_id)
         conn.execute(
-            "UPDATE users SET api_key=?, updated_at=datetime('now') WHERE user_id=?",
+            "UPDATE users SET api_key=%s, updated_at=now()::text WHERE user_id=%s",
             (new_key, user_id),
         )
         bump_version(conn)

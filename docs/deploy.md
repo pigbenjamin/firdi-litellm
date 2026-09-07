@@ -115,30 +115,42 @@ cp .env.example .env
 | Langfuse | `LANGFUSE_PUBLIC_KEY` / `_SECRET_KEY` / `_HOST` | 要觀測性才需要，可留空 |
 | Postgres | `POSTGRES_PASSWORD` | LiteLLM `store_model_in_db` 用（見 [external-models-ops.md「路線 C」](external-models-ops.md)），必須改，不可沿用 `change-me` |
 | 部門管理入口 | `ADMIN_WEB_USERNAMES` | 新環境的 Keycloak 管理帳號 `preferred_username`（逗號分隔）；另外要在 Keycloak 幫 `firdi-admin-api-selfservice` client 補兩個 redirect URI，見 [keycloak/SETUP.md](../keycloak/SETUP.md) 一之二與 [admin-web.md](admin-web.md) |
-| K8s PVC / hostPath | `K8S_PVC_STORAGE_CLASS`（users-db-pvc/litellm-logs-pvc/postgres-data-pvc 用）、`K8S_HF_CACHE_HOST_PATH` / `K8S_MARKER_INGEST_HOST_PATH`（仍是 hostPath，改成這台機器要用的路徑；不用預先 `mkdir`，`deploy.sh` 會自動建立） | 見下方說明 |
+| K8s PVC / hostPath | `K8S_PVC_STORAGE_CLASS`（litellm-logs-pvc/postgres-data-pvc 用）、`K8S_HF_CACHE_HOST_PATH` / `K8S_MARKER_INGEST_HOST_PATH`（仍是 hostPath，改成這台機器要用的路徑；不用預先 `mkdir`，`deploy.sh` 會自動建立） | 見下方說明 |
 | 多節點（單節點可留空） | `REGISTRY` / `K8S_GPU_NODE_HOSTNAME` | 見第 4 節 |
 
-## 3. 使用者資料庫（`users-db-pvc`，動態佈建）
+## 3. 使用者資料庫（`firdi_users`，Postgres）
 
-`users-db-pvc` 是 storageClassName 動態佈建的 PVC（見 `k8s/shared-storage/pvc.yaml`），不是 hostPath，本機沒有檔案可以直接對應到裡面的內容。`deploy.sh users-db`（`deploy.sh all` 也會在 litellm 部署完後自動跑一次）邏輯是：
+2026-09 起部門/使用者權限資料已從 `users-db-pvc`(SQLite) 遷到 Postgres（沿用
+`firdi-postgres`，獨立的 `firdi_users` database，跟 `litellm` database 的
+`store_model_in_db` 無關，見 `k8s/postgres/`、`admin-api/database.py`）。
 
-1. 找 litellm Pod，檢查 `/app/data/users.db` 是否已存在（存在就跳過，不會覆蓋正式資料）。
-2. 不存在的話：若 `.env` 的 `K8S_DATA_HOST_PATH` 指到的目錄下有既有 `users.db`（舊機器 hostPath 時代遺留、或手動搬過來的），直接用 `kubectl cp` 灌那份既有資料；否則才退回用 `config/users.json`（模板資料）跑 `migrate_users_json.py` 產生一個全新空白的 `users.db` 再灌進去。
+- **全新環境**：`firdi_users` 這顆 database 沒辦法靠 `POSTGRES_DB` 環境變數自動建
+  （這顆 Postgres 已經有 `litellm` database 的既有資料），第一次部署要手動建一次：
+  ```bash
+  kubectl exec -n ai-platform deploy/postgres -- psql -U litellm -d litellm \
+    -c "CREATE DATABASE firdi_users OWNER litellm;"
+  ```
+  六張表由 admin-api 啟動時自動建立（`init_db()`，見 `admin-api/main.py` 的
+  `lifespan`），之後靠 Admin API / Keycloak 同步建立使用者，不需要手動建表。
+- **要延續舊機器既有使用者/部門**：先把舊機器的 `users.db`（SQLite，`kubectl cp`
+  出 litellm Pod）用 `scripts/migrate_users_db_to_postgres.py` 搬進新機器的
+  `firdi_users`；可重複執行（主鍵 UPSERT），核對六張表的 row count，見
+  [README.md「4b. 部署 Postgres」](../README.md#4b-部署-postgresfirdi-postgresstore_model_in_db--部門使用者權限)。
 
-- **全新環境**：`K8S_DATA_HOST_PATH` 留空或指到不存在的路徑即可，直接用預設流程，之後靠 Admin API / Keycloak 同步建立使用者。
-- **要延續舊機器既有使用者/部門**：先把舊機器的 `users.db` 複製到新機器 `.env` 的 `K8S_DATA_HOST_PATH` 目錄下（檔名固定 `users.db`），再跑 `deploy.sh users-db`（或整套 `deploy.sh all`）即可自動搬進 PVC；也可以自己手動 `kubectl cp <本機路徑> ai-platform/<litellm-pod>:/app/data/users.db`。
+想直接查目前 DB 內容（部門、使用者、`db_version`），用 `./scripts/show_db.sh`
+（透過 `kubectl exec` 進 postgres Pod 查，不用自己組 `psql` 指令）。
 
 ### 3.1 固定服務帳號（`config/service_accounts.json`）
 
-`users-db` 只負責把「一整份 users.db」搬進新機器；但**服務帳號**（`account_type=service`，例如 RAG pipeline、聊天紀錄整理等固定跑的自動化角色）通常是新機器也要重新具備、而不是單純延續舊資料的東西。`deploy.sh service-accounts`（`deploy.sh all` 也會在 admin-api 部署完後自動跑一次）讀 `config/service_accounts.json` 這份 git 追蹤的清單，收斂到 admin-api 目前狀態：帳號不存在就建立（新 `api_key` 只印一次，需自行存進 Secret）、已存在只同步 models/rate limit 等設定、絕不覆蓋既有 key。詳細規則見 [admin-api.md「固定服務帳號」](admin-api.md#固定服務帳號新機器--重灌環境必須帶的帳號)。
+延續舊機器的資料只負責搬「既有使用者/部門」；但**服務帳號**（`account_type=service`，例如 RAG pipeline、聊天紀錄整理等固定跑的自動化角色）通常是新機器也要重新具備、而不是單純延續舊資料的東西。`deploy.sh service-accounts`（`deploy.sh all` 也會在 admin-api 部署完後自動跑一次）讀 `config/service_accounts.json` 這份 git 追蹤的清單，收斂到 admin-api 目前狀態：帳號不存在就建立（新 `api_key` 只印一次，需自行存進 Secret）、已存在只同步 models/rate limit 等設定、絕不覆蓋既有 key。詳細規則見 [admin-api.md「固定服務帳號」](admin-api.md#固定服務帳號新機器--重灌環境必須帶的帳號)。
 
 ## 4. 單節點 vs 多節點
 
-hf-cache（模型快取）與 marker-ingest（PDF 共用目錄）這兩塊仍是 **hostPath**，本質上綁定在某一台實體節點的本地磁碟上。單節點 k3s 沒有這個問題（叢集只有一個節點，pod 不可能排到別的地方）；換成真正的多節點 k8s 叢集後，兩件事一定要處理，否則 pod 可能被排到沒有該 hostPath 目錄的節點。（`users-db-pvc` / `litellm-logs-pvc` 已經是動態佈建的 PVC，不受這節影響；admin-api 改用 `podAffinity` 釘住 litellm 所在節點來滿足 RWO 限制，見 `k8s/admin-api/deployment.yaml`。）
+hf-cache（模型快取）與 marker-ingest（PDF 共用目錄）這兩塊仍是 **hostPath**，本質上綁定在某一台實體節點的本地磁碟上。單節點 k3s 沒有這個問題（叢集只有一個節點，pod 不可能排到別的地方）；換成真正的多節點 k8s 叢集後，兩件事一定要處理，否則 pod 可能被排到沒有該 hostPath 目錄的節點。（`litellm-logs-pvc` 已經是動態佈建的 PVC，不受這節影響；admin-api 改用 `podAffinity` 釘住 litellm 所在節點來滿足 RWO 限制，見 `k8s/admin-api/deployment.yaml`。）
 
 ### 4.1 Image 分發
 
-`deploy.sh` 對 `admin-api` / `light-models` 是本機 `docker build`；要讓其他節點的 kubelet 抓得到，`.env` 設定 `REGISTRY`（例如 `registry.internal:5000` 或 Docker Hub 帳號）：
+`deploy.sh` 對 `admin-api` / `litellm` / `light-models` 是本機 `docker build`（litellm 是自建的薄 image，在官方 `ghcr.io/berriai/litellm` 上疊一層 Postgres driver，見 `k8s/litellm/Dockerfile`）；要讓其他節點的 kubelet 抓得到，`.env` 設定 `REGISTRY`（例如 `registry.internal:5000` 或 Docker Hub 帳號）：
 
 ```bash
 REGISTRY=registry.internal:5000
@@ -196,7 +208,7 @@ K8S_GPU_NODE_HOSTNAME=node-b       # 承載 K8S_MARKER_INGEST_HOST_PATH 的節�
 - 該節點沒有 `nvidia.com/gpu` allocatable → 大聲 `[WARN]`（不中止，因為 device plugin 可能還沒裝，見第 0 節）。
 - 既有 `marker-ingest-pv` 的 `hostPath` / `nodeAffinity` 與 `.env` 不一致 → 中止，並把重建指令印出來（PV 這兩個欄位不可變，`kubectl apply` 改不動它）。
 
-`users-db-pvc`（admin-api + litellm 共用）不再靠節點釘選，而是 admin-api 用 `podAffinity` 主動釘住 litellm Pod 所在節點（見 `k8s/admin-api/deployment.yaml`），滿足 Ceph RBD / local-path 這類 storageClassName 的 ReadWriteOnce 限制；`litellm-logs-pvc` 只有 litellm 自己掛，沒有跨 Deployment 共用問題，不需要 affinity。
+`litellm-logs-pvc`（admin-api + litellm 共用）不靠節點釘選，而是 admin-api 用 `podAffinity` 主動釘住 litellm Pod 所在節點（見 `k8s/admin-api/deployment.yaml`），滿足 Ceph RBD / local-path 這類 storageClassName 的 ReadWriteOnce 限制。2026-09 前這裡還有一顆同樣共用的 `users-db-pvc`，遷到 Postgres 後已經不需要了，podAffinity 現在單純是為了 `litellm-logs-pvc`。
 
 > 多台 GPU 節點（例如切換 `K8S_GPU_NODE_HOSTNAME` 在 gpu01/gpu02 之間）時，第 0 節「RuntimeClass "nvidia"」那步要**在每一台 GPU 節點各自確認/安裝過**——containerd 設定是每台機器獨立的，gpu01 裝好不代表 gpu02 也好了；`RuntimeClass` 物件本身才是叢集層級只需要建一次。同理 `K8S_HF_CACHE_HOST_PATH` 這類 hostPath 快取，內容也是每台節點各自獨立，換節點等於換一份全新（或要手動搬過去）的快取。
 
@@ -221,7 +233,7 @@ kubectl delete pv marker-ingest-pv
 ./scripts/deploy.sh light-models
 ```
 
-換節點前記得確認新節點上已有 `K8S_HF_CACHE_HOST_PATH`（沒有的話會重新下載模型 + 重新 `torch.compile`，首次啟動約 15~25 分鐘）與 `K8S_MARKER_INGEST_HOST_PATH` 目錄；若走 `REGISTRY` 流程，`deploy.sh` 會自動處理 image 分發，不用額外操作。`litellm` / `admin-api` / `secrets` / `storage` 不受影響（`users-db-pvc` / `litellm-logs-pvc` 是動態佈建的 PVC，跟 `K8S_GPU_NODE_HOSTNAME` 無關）。
+換節點前記得確認新節點上已有 `K8S_HF_CACHE_HOST_PATH`（沒有的話會重新下載模型 + 重新 `torch.compile`，首次啟動約 15~25 分鐘）與 `K8S_MARKER_INGEST_HOST_PATH` 目錄；若走 `REGISTRY` 流程，`deploy.sh` 會自動處理 image 分發，不用額外操作。`litellm` / `admin-api` / `secrets` / `storage` 不受影響（`litellm-logs-pvc` 是動態佈建的 PVC，跟 `K8S_GPU_NODE_HOSTNAME` 無關）。
 
 #### 4.2.1 讓 light-models 也浮動：marker-ingest 改用 CephFS（多節點叢集，例如 k8s01）
 
@@ -288,7 +300,7 @@ kubectl delete pv marker-ingest-pv
 ## 6. 一鍵部署
 
 ```bash
-./scripts/deploy.sh          # secrets → storage(PVC) → postgres → priorityclasses → 3個 vLLM → litellm → users.db 初始化 → admin-api → 固定服務帳號
+./scripts/deploy.sh          # secrets → storage(PVC) → postgres → priorityclasses → 3個 vLLM → litellm → admin-api → 固定服務帳號
 ./scripts/deploy.sh status   # 檢查 Pod/Service 狀態、印出 NodeIP + port
 ```
 
@@ -302,8 +314,7 @@ kubectl delete pv marker-ingest-pv
 ./scripts/deploy.sh gemma-4-26b
 ./scripts/deploy.sh light-models
 ./scripts/deploy.sh litellm
-./scripts/deploy.sh users-db     # litellm Pod Ready 後才能執行，見第 3 節
-./scripts/deploy.sh admin-api
+./scripts/deploy.sh admin-api      # firdi_users 的六張表由 admin-api 啟動時自動建立，見第 3 節
 ./scripts/deploy.sh service-accounts  # admin-api Pod Ready 後才能執行，見第 3.1 節
 ```
 

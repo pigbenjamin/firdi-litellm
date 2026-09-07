@@ -139,7 +139,7 @@ enforcement 在 `config/custom_auth.py` 的 `_effective_models()`，兩邊邏輯
 
 ## 部門（Departments）
 
-部門是模型權限的第一層控制單位，定義該部門所有成員共用的模型白名單與流量上限。
+部門是模型權限的第一層控制單位，定義該部門所有成員共用的模型白名單。
 
 ### 資料結構
 
@@ -149,8 +149,6 @@ enforcement 在 `config/custom_auth.py` 的 `_effective_models()`，兩邊邏輯
   "dept_name": "工程部",
   "openrouter_api_key": "sk-or-...",
   "allowed_models": ["gemma-4-31B-it", "gemma-4-26B-A4B-it"],
-  "dept_rpm_limit": 300,
-  "dept_tpm_limit": 1000000,
   "provider_keys": {"openrouter": "sk-or-...", "openai": "sk-..."},
   "created_at": "2025-01-01T00:00:00",
   "updated_at": "2025-01-01T00:00:00"
@@ -163,8 +161,6 @@ enforcement 在 `config/custom_auth.py` 的 `_effective_models()`，兩邊邏輯
 | `dept_name` | string | 部門顯示名稱 |
 | `openrouter_api_key` | string | 此部門存取雲端 OpenRouter 的 API Key（`provider_keys.openrouter` 的同義寫法，見下） |
 | `allowed_models` | string[] | 部門白名單模型清單，`["*"]` 代表全部允許 |
-| `dept_rpm_limit` | int \| null | 部門每分鐘請求數上限，`null` 為不限制 |
-| `dept_tpm_limit` | int \| null | 部門每分鐘 token 數上限，`null` 為不限制 |
 | `provider_keys` | object | provider → key 的 dict（決策 E，見 [admin-web.md](admin-web.md)）。`openrouter_api_key` 與這裡的 `"openrouter"` 這一格由 admin-api 自動同步，寫哪邊都可以；其他 provider（`openai`/`anthropic`/`gemini`/`other`）只能透過這個欄位設定 |
 
 PATCH 時 `provider_keys` 是**淺層合併**：只有出現在請求 body 裡的 provider 會被
@@ -197,9 +193,7 @@ curl http://<host>:30408/api/v1/departments \
   "dept_id": "data-science",
   "dept_name": "資料科學部",
   "openrouter_api_key": "sk-or-...",
-  "allowed_models": ["gemma-4-31B-it", "gemma-4-26B-A4B-it", "embeddinggemma-300m"],
-  "dept_rpm_limit": 200,
-  "dept_tpm_limit": 500000
+  "allowed_models": ["gemma-4-31B-it", "gemma-4-26B-A4B-it", "embeddinggemma-300m"]
 }
 ```
 
@@ -233,8 +227,7 @@ curl http://<host>:30408/api/v1/departments \
 
 ```json
 {
-  "allowed_models": ["gemma-4-31B-it"],
-  "dept_rpm_limit": 100
+  "allowed_models": ["gemma-4-31B-it"]
 }
 ```
 
@@ -591,7 +584,7 @@ C」](external-models-ops.md)）的模型，不含 `litellm_config.yaml` `model_
 - **這個端點刻意只列 DB-managed 模型**，不含 `litellm_config.yaml` `model_list` 定義
   的地端模型——這是既有契約。admin-web 的模型清單頁則兩者都列（地端模型標「既有」、
   路由唯讀），因為管理者需要在同一個地方看到平台上所有的模型。
-- `meta` 是 admin-api 自己 SQLite `model_metadata` 表的內容（不在 LiteLLM 裡）。
+- `meta` 是 admin-api 自己 Postgres（firdi_users database）`model_metadata` 表的內容（不在 LiteLLM 裡）。
   `has_record: false` 代表這個 model_name 沒有管理紀錄——這個功能上線前就存在的
   模型都是這樣，欄位是合成的預設值（`status: "published"`），不受狀態機管理。
 - `registered: false` 代表這筆只存在於 `model_metadata`，LiteLLM 那邊沒有——正常
@@ -697,7 +690,7 @@ curl -X DELETE "http://<host>:30408/api/v1/models/external/<id>" \
 
 ### `POST /api/v1/sync/keycloak`
 
-接收 Keycloak 使用者事件，自動同步使用者資料至 SQLite。
+接收 Keycloak 使用者事件，自動同步使用者資料至 Postgres（firdi_users database）。
 
 **不需要 Admin API Key**，改用 `X-Webhook-Secret` header 認證。
 
@@ -845,7 +838,7 @@ curl -X POST http://<host>:30408/api/v1/users/<user_id>/regenerate-key \
 
 服務帳號供程式直接呼叫 LiteLLM 使用（CI/CD、排程腳本、後端服務等），不透過 Keycloak 建立，需手動管理生命週期。
 
-> **這個平台固定需要的服務帳號，請走 `config/service_accounts.json` + `scripts/seed_service_accounts.py`**（見下方獨立章節），不要只用下面的 curl 建一次就結束——那樣這個帳號只活在當下這台機器的 SQLite 裡，git 完全沒有紀錄，換機器或重灌 `users-db-pvc` 會整個消失且無感。下面的 curl 流程適用於**臨時測試**或**還沒決定要不要固定下來**的一次性帳號。
+> **這個平台固定需要的服務帳號，請走 `config/service_accounts.json` + `scripts/seed_service_accounts.py`**（見下方獨立章節），不要只用下面的 curl 建一次就結束——那樣這個帳號只活在 firdi_users（Postgres）裡，git 完全沒有紀錄，換環境或重建 database 會整個消失且無感。下面的 curl 流程適用於**臨時測試**或**還沒決定要不要固定下來**的一次性帳號。
 
 **建議命名慣例**
 - `user_id`：`svc-<服務名稱>`，例如 `svc-rag-pipeline`
@@ -927,5 +920,5 @@ ADMIN_API_KEY=xxx ./scripts/seed_service_accounts.py --only svc-chat-summarizer
 
 ## 權限生效時間
 
-Admin API 的所有寫入操作會同時遞增 SQLite `db_version` 計數器。  
+Admin API 的所有寫入操作會同時遞增 firdi_users（Postgres）的 `db_version` 計數器。  
 LiteLLM 的 `custom_auth.py` 每次驗證請求時檢查 `db_version`，版本變化時立即重載快取。在版本未變且快取未過期（TTL=30s）的情況下使用舊快取，因此**最多 30 秒生效**。

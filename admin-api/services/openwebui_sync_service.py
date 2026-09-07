@@ -35,7 +35,7 @@ import os
 import httpx
 from fastapi import HTTPException
 
-from database import DB_PATH, bump_version, get_conn
+from database import DATABASE_URL, bump_version, get_conn
 
 OPENWEBUI_URL = os.getenv("OPENWEBUI_URL", "").rstrip("/")
 OPENWEBUI_ADMIN_KEY = os.getenv("OPENWEBUI_ADMIN_KEY", "")
@@ -124,7 +124,7 @@ async def _fetch_user_mapping(client: httpx.AsyncClient, owui: dict) -> dict[str
 
     # DB email → user_id（email 回退用；只收 human 帳號、email 非空）
     email2uid: dict[str, str] = {}
-    with get_conn(DB_PATH) as conn:
+    with get_conn(DATABASE_URL) as conn:
         for row in conn.execute(
             "SELECT user_id, user_email FROM users WHERE account_type='human'"
         ).fetchall():
@@ -209,7 +209,7 @@ async def pull_openwebui_model_access(dry_run: bool = False) -> dict:
     unknown_depts = []   # OpenWebUI 有 group 授權但 DB 無此部門
     unknown_users = []   # OpenWebUI 有 user 授權但 DB 無此使用者
 
-    with get_conn(DB_PATH) as conn:
+    with get_conn(DATABASE_URL) as conn:
         db_dept_ids = set()
         for row in conn.execute("SELECT dept_id, allowed_models FROM departments").fetchall():
             db_dept_ids.add(row["dept_id"])
@@ -222,7 +222,7 @@ async def pull_openwebui_model_access(dry_run: bool = False) -> dict:
                 changed_depts.append({"dept_id": row["dept_id"], "from": current, "to": desired})
                 if not dry_run:
                     conn.execute(
-                        "UPDATE departments SET allowed_models=? WHERE dept_id=?",
+                        "UPDATE departments SET allowed_models=%s WHERE dept_id=%s",
                         (json.dumps(desired, ensure_ascii=False), row["dept_id"]),
                     )
 
@@ -241,7 +241,7 @@ async def pull_openwebui_model_access(dry_run: bool = False) -> dict:
                 changed_users.append({"user_id": row["user_id"], "from": current, "to": desired})
                 if not dry_run:
                     conn.execute(
-                        "UPDATE users SET models=?, updated_at=datetime('now') WHERE user_id=?",
+                        "UPDATE users SET models=%s, updated_at=now()::text WHERE user_id=%s",
                         (json.dumps(desired, ensure_ascii=False), row["user_id"]),
                     )
 
@@ -286,7 +286,7 @@ async def push_model_access_to_openwebui(target: str = "a", dry_run: bool = Fals
         raise HTTPException(status_code=500, detail=f"target '{t}' URL / admin key not configured")
 
     # DB 期望狀態
-    with get_conn(DB_PATH) as conn:
+    with get_conn(DATABASE_URL) as conn:
         depts = []
         for r in conn.execute("SELECT dept_id, allowed_models FROM departments").fetchall():
             try:

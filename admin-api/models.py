@@ -7,16 +7,12 @@ class DepartmentIn(BaseModel):
     dept_name: str
     openrouter_api_key: str = ""
     allowed_models: list[str] = Field(default_factory=list)
-    dept_rpm_limit: int | None = None
-    dept_tpm_limit: int | None = None
 
 
 class DepartmentPatch(BaseModel):
     dept_name: str | None = None
     openrouter_api_key: str | None = None
     allowed_models: list[str] | None = None
-    dept_rpm_limit: int | None = None
-    dept_tpm_limit: int | None = None
     # 決策 E：provider → key 的 dict（如 {"openai": "sk-...", "anthropic": "sk-ant-..."}）。
     # 淺層合併進現有 provider_keys，只有出現在這個 dict 裡的 provider 會被改動；
     # 值為空字串視同不修改該 provider（跟 openrouter_api_key 的既有慣例一致，
@@ -29,8 +25,6 @@ class DepartmentOut(BaseModel):
     dept_name: str
     openrouter_api_key: str
     allowed_models: list[str]
-    dept_rpm_limit: int | None
-    dept_tpm_limit: int | None
     provider_keys: dict[str, str]
     created_at: str
     updated_at: str

@@ -2,9 +2,11 @@
 """dev_admin_web.py — 在本機把 admin-web 跑起來，用瀏覽器點完整流程
 
 給「改完想先看看畫面長怎樣」用的。**不需要叢集、不需要 Keycloak、不需要
-LiteLLM、不需要 OpenWebUI**——這支腳本在同一個 process 裡：
+LiteLLM、不需要 OpenWebUI**（但需要本機 docker——2026-09 users-db-pvc(SQLite)
+遷到 Postgres 後，這支腳本改成自動起一個跟著 --data-dir 走的本機 Postgres
+容器，見 `_ensure_local_postgres()`）——這支腳本在同一個 process 裡：
 
-  1. 用暫存檔當 users.db，塞一些假的部門與使用者
+  1. 起一個本機 Postgres 容器當 firdi_users，塞一些假的部門與使用者
   2. 起一個假的 LiteLLM + 假的 OpenWebUI（同一個 http.server，用路徑前綴區分），
      寫法照 scripts/mock_openwebui.py 的樣式
   3. 把 require_admin 這個 dependency 換掉，直接當成管理員登入
@@ -69,7 +71,74 @@ if args.fresh and os.path.isdir(_TMP):
     import shutil
     shutil.rmtree(_TMP)
 os.makedirs(_TMP, exist_ok=True)
-os.environ["USER_AUTH_DB_PATH"] = os.path.join(_TMP, "users.db")
+
+
+def _ensure_local_postgres(data_dir: str, fresh: bool) -> str:
+    """2026-09 users-db-pvc(SQLite) 遷到 Postgres 後，這支「不需要叢集」的本機
+    開發工具沒辦法再靠「換一個暫存檔路徑」取得資料庫——改成本機用 docker 起一顆
+    跟著 --data-dir 走的 Postgres（named volume，容器/volume 名稱是 data_dir 的
+    hash，同一個 --data-dir 重跑會接回同一份資料，符合這支腳本「重開服務資料
+    還在」的既有設計；--fresh 會連同這顆 volume 一起清掉）。
+    """
+    import hashlib
+    import subprocess
+    import time
+
+    if subprocess.run(["docker", "info"], capture_output=True).returncode != 0:
+        print("需要本機 docker 才能跑這支開發工具（起一個跟著 --data-dir 走的 Postgres 容器）",
+              file=sys.stderr)
+        sys.exit(1)
+
+    tag = hashlib.sha256(data_dir.encode()).hexdigest()[:12]
+    container = f"firdi-devweb-pg-{tag}"
+    volume = f"firdi-devweb-pgdata-{tag}"
+
+    if fresh:
+        subprocess.run(["docker", "rm", "-f", container], capture_output=True)
+        subprocess.run(["docker", "volume", "rm", volume], capture_output=True)
+
+    running = subprocess.run(
+        ["docker", "ps", "-q", "--filter", f"name=^{container}$", "--filter", "status=running"],
+        capture_output=True, text=True,
+    ).stdout.strip()
+    if not running:
+        exists = subprocess.run(
+            ["docker", "ps", "-aq", "--filter", f"name=^{container}$"],
+            capture_output=True, text=True,
+        ).stdout.strip()
+        if exists:
+            subprocess.run(["docker", "start", container], check=True, capture_output=True)
+        else:
+            subprocess.run(
+                ["docker", "run", "-d", "--name", container,
+                 "-v", f"{volume}:/var/lib/postgresql/data",
+                 "-p", "127.0.0.1::5432",
+                 "-e", "POSTGRES_USER=litellm", "-e", "POSTGRES_PASSWORD=dev",
+                 "-e", "POSTGRES_DB=firdi_users",
+                 "postgres:16-alpine"],
+                check=True, capture_output=True,
+            )
+
+    port_out = subprocess.run(
+        ["docker", "port", container, "5432/tcp"], capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    port = port_out.rsplit(":", 1)[-1]
+
+    dsn = f"postgresql://litellm:dev@127.0.0.1:{port}/firdi_users"
+    deadline = time.monotonic() + 30
+    last_err = None
+    while time.monotonic() < deadline:
+        try:
+            import psycopg2
+            psycopg2.connect(dsn).close()
+            return dsn
+        except Exception as e:  # noqa: BLE001 — 只是輪詢容器 ready，任何連線失敗都重試
+            last_err = e
+            time.sleep(0.5)
+    raise RuntimeError(f"本機 Postgres 容器（{container}）30 秒內沒有 ready：{last_err}")
+
+
+os.environ["USER_AUTH_DATABASE_URL"] = _ensure_local_postgres(_TMP, args.fresh)
 os.environ["ADMIN_AUDIT_LOG_PATH"] = os.path.join(_TMP, "admin-web-audit.jsonl")
 os.environ["LOG_PATH"] = os.path.join(_TMP, "usage.jsonl")
 os.environ["LITELLM_MASTER_KEY"] = "sk-dev-master"
@@ -293,9 +362,9 @@ class MockHandler(BaseHTTPRequestHandler):
 
 # ── 種一些假資料 ──────────────────────────────────────────────────────────────
 
-from database import DB_PATH, get_conn, init_db  # noqa: E402
+from database import DATABASE_URL, get_conn, init_db  # noqa: E402
 
-init_db(DB_PATH)
+init_db(DATABASE_URL)
 
 # HR 刻意設成 ["*"]（不限制）：授權矩陣要驗「* 部門不列進矩陣、只在上方以警告
 # 列出」，本機得先有這樣一個部門才驗得到。
@@ -314,28 +383,30 @@ _USERS = [
 
 
 def seed():
-    with get_conn(DB_PATH) as conn:
+    with get_conn(DATABASE_URL) as conn:
         for dept_id, name, allowed in _DEPTS:
             conn.execute(
-                "INSERT OR IGNORE INTO departments (dept_id, dept_name, allowed_models, provider_keys) "
-                "VALUES (?, ?, ?, ?)",
+                "INSERT INTO departments (dept_id, dept_name, allowed_models, provider_keys) "
+                "VALUES (%s, %s, %s, %s) ON CONFLICT (dept_id) DO NOTHING",
                 (dept_id, name, json.dumps(allowed),
                  json.dumps({"openrouter": "sk-or-dev-1234"}) if dept_id == "RD" else "{}"),
             )
         for user_id, email, dept_id in _USERS:
             conn.execute(
-                "INSERT OR IGNORE INTO users (api_key, key_name, user_id, user_email, dept_id, models) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO users (api_key, key_name, user_id, user_email, dept_id, models) "
+                "VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (api_key) DO NOTHING",
                 (f"sk-dev-{user_id}", email.split('@')[0], user_id, email, dept_id, "[]"),
             )
         # 給既有的地端模型塞一點用量，額度那一欄才看得到東西
         conn.execute(
-            "INSERT OR IGNORE INTO model_spend (model_name, period, spend_usd, calls) "
-            "VALUES ('gemma-4-31B-it', strftime('%Y-%m','now'), 12.3456, 421)"
+            "INSERT INTO model_spend (model_name, period, spend_usd, calls) "
+            "VALUES ('gemma-4-31B-it', to_char(now(), 'YYYY-MM'), 12.3456, 421) "
+            "ON CONFLICT (model_name, period) DO NOTHING"
         )
         conn.execute(
-            "INSERT OR IGNORE INTO model_spend (model_name, period, spend_usd, calls) "
-            "VALUES ('gemma-4-31B-it', 'total', 58.9012, 1893)"
+            "INSERT INTO model_spend (model_name, period, spend_usd, calls) "
+            "VALUES ('gemma-4-31B-it', 'total', 58.9012, 1893) "
+            "ON CONFLICT (model_name, period) DO NOTHING"
         )
 
 
@@ -364,7 +435,7 @@ if __name__ == "__main__":
 
     print(f"""
   假的 LiteLLM / OpenWebUI  http://127.0.0.1:{args.mock_port}
-  users.db                  {DB_PATH}
+  Postgres（firdi_users）    {DATABASE_URL.split('@')[-1]}（docker container，見 _ensure_local_postgres）
   稽核紀錄                  {os.environ['ADMIN_AUDIT_LOG_PATH']}
   身分驗證                  已繞過，一律當成 firdiadm 登入{_EXPOSED}
   假上游的推論端點          {'一律回 HTTP ' + str(args.fail) if args.fail else '一律成功（200）'}

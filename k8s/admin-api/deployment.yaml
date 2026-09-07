@@ -7,10 +7,13 @@ metadata:
     app: admin-api
 spec:
   replicas: 1
-  # users-db-pvc 是 ReadWriteOnce，預設 RollingUpdate 會先生新 pod、等新 pod Ready
-  # 才砍舊的——但新 pod 搶不到舊 pod 還握著的 RWO volume，永遠 Ready 不了，滾動更新
-  # 死鎖（同樣的坑 gemma-4-31b/26b 的 Deployment 也踩過，見那邊 strategy 註解）。
-  # 改成 Recreate：先砍舊 pod 釋放 volume，再起新 pod。
+  # litellm-logs-pvc（audit jsonl）是 ReadWriteOnce、跟 litellm 共用，預設
+  # RollingUpdate 會先生新 pod、等新 pod Ready 才砍舊的——但新 pod 搶不到舊 pod
+  # 還握著的 RWO volume，永遠 Ready 不了，滾動更新死鎖（同樣的坑 gemma-4-31b/26b
+  # 的 Deployment 也踩過，見那邊 strategy 註解）。改成 Recreate：先砍舊 pod
+  # 釋放 volume，再起新 pod。
+  # （2026-09 users-db-pvc 遷到 Postgres 後這顆 RWO 已經不需要了，但
+  # litellm-logs-pvc 還在共用，這條 Recreate 不能拿掉。）
   strategy:
     type: Recreate
   selector:
@@ -21,9 +24,11 @@ spec:
       labels:
         app: admin-api
     spec:
-      # users-db-pvc 是 ReadWriteOnce，litellm 也掛同一顆——RWO 同一時間只能掛在一個
-      # 節點，用 podAffinity 把這個 Pod 釘住 litellm Pod 所在節點，兩者才能同時掛上。
-      # litellm 在 deploy_all 裡先部署，這裡才會有現成的 litellm Pod 可以 affine。
+      # litellm-logs-pvc 是 ReadWriteOnce，litellm 也掛同一顆——RWO 同一時間只能掛在
+      # 一個節點，用 podAffinity 把這個 Pod 釘住 litellm Pod 所在節點，兩者才能同時
+      # 掛上。litellm 在 deploy_all 裡先部署，這裡才會有現成的 litellm Pod 可以
+      # affine。（2026-09 users-db-pvc 遷到 Postgres 後不再是這裡的理由，但
+      # litellm-logs-pvc 還在共用，podAffinity 不能拿掉。）
       affinity:
         podAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
@@ -44,8 +49,14 @@ spec:
                 secretKeyRef:
                   name: admin-api-secrets
                   key: api-key
-            - name: USER_AUTH_DB_PATH
-              value: /app/data/users.db
+            # 2026-09 從 users-db-pvc(SQLite) 遷到 Postgres（見 k8s/postgres/、
+            # admin-api/database.py）。跟 litellm-secrets 的 database-url 不是
+            # 同一個 key——那個是 store_model_in_db 用的 litellm database。
+            - name: USER_AUTH_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: admin-api-secrets
+                  key: user-auth-database-url
             - name: WEBHOOK_SECRET
               valueFrom:
                 secretKeyRef:
@@ -154,8 +165,6 @@ spec:
               cpu: "500m"
               memory: "256Mi"
           volumeMounts:
-            - name: users-db
-              mountPath: /app/data
             # admin-web 稽核 jsonl 預設寫這裡（ADMIN_AUDIT_LOG_PATH 預設
             # /app/logs/admin-web-audit.jsonl，見 admin-api/audit.py）；跟
             # litellm 共用同一顆 PVC（見 k8s/shared-storage/pvc.yaml 的註解）。
@@ -174,9 +183,6 @@ spec:
             initialDelaySeconds: 5
             periodSeconds: 10
       volumes:
-        - name: users-db
-          persistentVolumeClaim:
-            claimName: users-db-pvc
         - name: logs
           persistentVolumeClaim:
             claimName: litellm-logs-pvc

@@ -5,7 +5,6 @@
 #   ./scripts/deploy.sh              # 部署全部（storage → postgres → internal-lb → vllm → litellm → admin-api）
 #   ./scripts/deploy.sh storage      # 只建立 users-db-pvc / litellm-logs-pvc
 #   ./scripts/deploy.sh postgres     # 只部署 Postgres（LiteLLM store_model_in_db 專用，見 docs/external-models-ops.md「路線 C」）
-#   ./scripts/deploy.sh users-db     # 只檢查/初始化 users.db（灌進 users-db-pvc）
 #   ./scripts/deploy.sh service-accounts  # 收斂 config/service_accounts.json 定義的固定服務帳號
 #   ./scripts/deploy.sh gemma-4-31b  # 只部署 gemma-4-31b-vllm（思考型）
 #   ./scripts/deploy.sh gemma-4-26b  # 只部署 gemma-4-26b-vllm（快捷型）
@@ -72,6 +71,11 @@ deploy_secrets() {
     # 「路線 C」與 k8s/postgres/）。DATABASE_URL 組成的 host 固定指向
     # k8s/postgres/service.yaml 的 postgres-service，密碼取自下面的 postgres-secrets。
     local database_url="postgresql://litellm:${POSTGRES_PASSWORD:-change-me-postgres-password}@postgres-service.${NS}.svc.cluster.local:5432/litellm"
+    # 2026-09：users-db-pvc(SQLite) 遷到 Postgres 用的連線字串——同一顆 Postgres
+    # instance，但是獨立的 firdi_users database（見 k8s/postgres/deployment.yaml
+    # 的註解），跟上面 store_model_in_db 用的 database_url 不要搞混。firdi_users
+    # 是一次性手動 CREATE DATABASE 建的，不會自動產生。
+    local user_auth_database_url="postgresql://litellm:${POSTGRES_PASSWORD:-change-me-postgres-password}@postgres-service.${NS}.svc.cluster.local:5432/firdi_users"
 
     kubectl create secret generic litellm-secrets \
         --from-literal=master-key="${LITELLM_MASTER_KEY:-sk-firdi-master-change-me}" \
@@ -85,6 +89,7 @@ deploy_secrets() {
         --from-literal=langfuse-secret-key="${LANGFUSE_SECRET_KEY:-}" \
         --from-literal=langfuse-host="${LANGFUSE_HOST:-}" \
         --from-literal=database-url="$database_url" \
+        --from-literal=user-auth-database-url="$user_auth_database_url" \
         --namespace="$NS" \
         --dry-run=client -o yaml | kubectl apply -f -
 
@@ -111,6 +116,7 @@ deploy_secrets() {
 
     kubectl create secret generic admin-api-secrets \
         --from-literal=api-key="${ADMIN_API_KEY:-sk-admin-change-me}" \
+        --from-literal=user-auth-database-url="$user_auth_database_url" \
         --from-literal=webhook-secret="${WEBHOOK_SECRET:-change-me-webhook-secret}" \
         --from-literal=keycloak-url="${KEYCLOAK_URL:-}" \
         --from-literal=keycloak-realm="${KEYCLOAK_REALM:-}" \
@@ -278,65 +284,14 @@ deploy_priorityclasses() {
     ok "PriorityClass 完成"
 }
 
-# users-db-pvc 是動態佈建（Ceph/local-path），host 端不再能像過去 hostPath 那樣
-# 直接寫檔案進 PV 內容，改成本機準備一份 users.db，用 kubectl cp 灌進已經掛載
-# users-db-pvc 的 litellm Pod。只在 PVC 內還沒有 users.db 時才動手，避免每次重跑
-# deploy.sh 都拿 config/users.json 這份範本資料蓋掉正式環境已經在跑的使用者資料
-# （users.db 是活資料庫，換模型名稱請用 scripts/migrate_model_names.sh，不要直接改）。
-seed_users_db() {
-    info "檢查 users.db..."
-    local pod
-    pod=$(kubectl get pod -n "$NS" -l app=litellm -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
-    if [[ -z "$pod" ]]; then
-        warn "找不到 litellm Pod，略過 users.db 初始化（litellm 部署好之後執行 ./scripts/deploy.sh users-db 手動補上）"
-        return 0
-    fi
-    if ! kubectl wait -n "$NS" "pod/$pod" --for=condition=Ready --timeout=120s >/dev/null 2>&1; then
-        warn "litellm Pod 尚未 Ready，略過 users.db 初始化（稍後執行 ./scripts/deploy.sh users-db 手動補上）"
-        return 0
-    fi
-
-    # 連續測 3 次、間隔 2 秒才判定「檔案不存在」：admin-api/litellm 若剛好在
-    # Recreate 重啟過渡期間被檢查到，RWO volume 有時會有短暫沒完全 ready 的瞬間，
-    # 單測一次就判定「PVC 內沒資料」曾經真的把 421 個 Keycloak 使用者誤判成全新
-    # 環境、蓋成 config/users.json 的範本假資料（2026-08-05 事故）。
-    local exists=0 i
-    for i in 1 2 3; do
-        if kubectl exec -n "$NS" "$pod" -- test -f /app/data/users.db 2>/dev/null; then
-            exists=1
-            break
-        fi
-        sleep 2
-    done
-    if [[ "$exists" == "1" ]]; then
-        ok "users.db 已存在於 PVC，略過初始化"
-        return 0
-    fi
-
-    warn "════════════════════════════════════════════════════════════════"
-    warn "偵測不到 users.db，即將用 config/users.json 範本資料建立全新 DB。"
-    warn "如果這不是全新環境（PVC 應該已經有正式使用者資料），現在請按 Ctrl+C"
-    warn "中止，先查清楚為什麼檔案不見了，不要讓範本假資料蓋過去。"
-    warn "════════════════════════════════════════════════════════════════"
-    sleep 5
-
-    local tmp_db legacy_db
-    tmp_db="$(mktemp --suffix=.db)"
-    legacy_db="${K8S_DATA_HOST_PATH:-}/users.db"
-    if [[ -n "${K8S_DATA_HOST_PATH:-}" && -f "$legacy_db" ]]; then
-        info "偵測到舊 hostPath 遺留的 users.db（$legacy_db），搬進 PVC..."
-        cp "$legacy_db" "$tmp_db"
-    else
-        info "PVC 內尚無 users.db，且無舊資料可搬，用 config/users.json 範本產生..."
-        python3 "$REPO_ROOT/scripts/migrate_users_json.py" \
-            --json "$REPO_ROOT/config/users.json" \
-            --db "$tmp_db"
-    fi
-
-    kubectl cp "$tmp_db" "$NS/$pod:/app/data/users.db"
-    rm -f "$tmp_db"
-    ok "users.db 已寫入 PVC"
-}
+# 2026-09：users-db-pvc(SQLite) 已遷到 Postgres（見 k8s/postgres/、
+# admin-api/database.py）。以前這裡有個 seed_users_db()，負責在 PVC 內沒有
+# users.db 時用 config/users.json 範本或舊 hostPath 遺留檔案灌一份進去——
+# litellm/admin-api 兩邊都已經不再掛 users-db-pvc、不再讀 /app/data/users.db，
+# 這個函式已經沒有意義（灌的路徑在容器裡根本不存在了），連同 `deploy.sh
+# users-db` 這個子指令一起移除。firdi_users 這顆 Postgres database 的初始化
+# 改成 admin-api 啟動時自動跑 database.py 的 init_db()（見 admin-api/main.py
+# 的 lifespan），資料搬遷是一次性腳本（見 scripts/migrate_users_db_to_postgres.py）。
 
 # 固定必須存在的服務帳號（account_type=service，如聊天紀錄整理、RAG pipeline 等）不像
 # 人類帳號有 Keycloak webhook 自動同步，改用 config/service_accounts.json 宣告 + 這支
@@ -608,9 +563,19 @@ deploy_litellm() {
     kubectl get deployment litellm -n "$NS" &>/dev/null && existed=true
 
     deploy_litellm_configmaps
+
+    # 官方 image 是 Wolfi-based、不含任何 DB driver（custom_auth.py/custom_logger.py
+    # 要連 users-db 那顆 Postgres 需要 psycopg2），自建一層薄的 image 補上（見
+    # k8s/litellm/Dockerfile）。
+    info "Build litellm image..."
+    build_and_publish_image "firdi-litellm:latest" "$REPO_ROOT/k8s/litellm" "$REPO_ROOT/k8s/litellm/Dockerfile"
+    export LITELLM_IMAGE="$IMAGE_REF"
+    export LITELLM_IMAGE_PULL_POLICY="$IMAGE_PULL_POLICY"
+
     info "部署 LiteLLM..."
     envsubst < "$REPO_ROOT/k8s/litellm/deployment.yaml" | kubectl apply -f -
     kubectl apply -f "$REPO_ROOT/k8s/litellm/service.yaml"
+    apply_image_pull_secret litellm
 
     # ConfigMap 改了但 Deployment 的 spec 沒變時，kubectl apply 不會產生新的
     # ReplicaSet，pod 也就不會重啟。掛載的檔案雖然會被 kubelet 同步更新，但
@@ -835,7 +800,6 @@ deploy_all() {
     deploy_vllm gemma-4-26b
     deploy_vllm light-models
     deploy_litellm
-    seed_users_db
     deploy_admin_api
     deploy_service_accounts
     echo ""
@@ -859,7 +823,6 @@ main() {
         all)          deploy_all ;;
         storage)      deploy_storage ;;
         postgres)     deploy_postgres ;;
-        users-db)     seed_users_db ;;
         service-accounts) deploy_service_accounts ;;
         secrets)      deploy_secrets ;;
         priorityclasses) deploy_priorityclasses ;;

@@ -9,7 +9,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Security
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from database import DB_PATH, bump_version, get_conn, row_to_dict
+from database import DATABASE_URL, bump_version, get_conn, row_to_dict
 from keycloak import fetch_userinfo
 from models import MeOut
 
@@ -42,15 +42,15 @@ def resolve_db_user(claims: dict) -> dict | None:
     sub = (claims.get("sub") or "").strip()
     email = (claims.get("email") or "").strip()
 
-    with get_conn(DB_PATH) as conn:
+    with get_conn(DATABASE_URL) as conn:
         row = None
         if sub:
             row = conn.execute(
-                "SELECT * FROM users WHERE user_id = ?", (sub,)
+                "SELECT * FROM users WHERE user_id = %s", (sub,)
             ).fetchone()
         if row is None and email:
             row = conn.execute(
-                "SELECT * FROM users WHERE lower(user_email) = lower(?)", (email,)
+                "SELECT * FROM users WHERE lower(user_email) = lower(%s)", (email,)
             ).fetchone()
 
     return row_to_dict(row) if row is not None else None
@@ -76,7 +76,7 @@ async def current_user(
 def to_me_out(conn, record: dict) -> MeOut:
     """DB record → MeOut。routers/me_web.py 也用這個組出網頁要顯示的欄位。"""
     dept = conn.execute(
-        "SELECT allowed_models FROM departments WHERE dept_id = ?",
+        "SELECT allowed_models FROM departments WHERE dept_id = %s",
         (record["dept_id"],),
     ).fetchone()
     dept_allowed = json.loads(dept["allowed_models"]) if dept else []
@@ -96,23 +96,23 @@ def regenerate_key_for(conn, user_id: str) -> MeOut:
     """重設指定使用者的 API key 並回傳更新後的 MeOut。共用給 JSON API 與網頁流程。"""
     new_key = f"sk-{uuid.uuid4().hex}"
     conn.execute(
-        "UPDATE users SET api_key=?, updated_at=datetime('now') WHERE user_id=?",
+        "UPDATE users SET api_key=%s, updated_at=now()::text WHERE user_id=%s",
         (new_key, user_id),
     )
     bump_version(conn)
-    row = conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
+    row = conn.execute("SELECT * FROM users WHERE user_id = %s", (user_id,)).fetchone()
     return to_me_out(conn, row_to_dict(row))
 
 
 @router.get("", response_model=MeOut)
 def get_me(record: dict = Depends(current_user)):
     """查詢自己的 API key 與可用模型。"""
-    with get_conn(DB_PATH) as conn:
+    with get_conn(DATABASE_URL) as conn:
         return to_me_out(conn, record)
 
 
 @router.post("/regenerate-key", response_model=MeOut)
 def regenerate_own_key(record: dict = Depends(current_user)):
     """重設自己的 API key。舊 key 立即失效，所有填了舊 key 的工具都要更新。"""
-    with get_conn(DB_PATH) as conn:
+    with get_conn(DATABASE_URL) as conn:
         return regenerate_key_for(conn, record["user_id"])

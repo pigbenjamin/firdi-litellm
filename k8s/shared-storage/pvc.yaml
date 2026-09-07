@@ -3,10 +3,12 @@
 # 套用前請先 source .env，再用 envsubst 展開變數：
 #   source .env && envsubst < k8s/shared-storage/pvc.yaml | kubectl apply -f -
 #
-# users-db-pvc 同時被 admin-api、litellm 兩個 Deployment 掛 ReadWriteOnce——RWO 同一
-# 時間只能掛在一個節點，兩個 Pod 必須排到同一節點才能都掛得上。做法是在
-# k8s/admin-api/deployment.yaml 用 podAffinity 把 admin-api 釘住 litellm 所在節點，
-# 這裡不需要再處理。
+# 2026-09：users-db-pvc(SQLite) 已遷到 Postgres（見 k8s/postgres/、
+# admin-api/database.py），litellm/admin-api 的 deployment.yaml 都已經不再掛這顆
+# PVC 了。**這裡刻意還沒刪掉這個資源定義**：要等正式環境確認資料搬移完成（跑過
+# 一次性搬遷腳本、核對過 row count）之後，才能安全 `kubectl delete pvc
+# users-db-pvc -n ai-platform` 並把下面這段拿掉——PVC 裡在那之前仍是唯一一份
+# production 資料，不要提前刪。
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -21,8 +23,8 @@ spec:
       storage: 1Gi
 ---
 # admin-api 掛這顆存 admin-web 的稽核 jsonl（見 admin-api/audit.py），跟 litellm 的
-# usage.jsonl 不同檔名、同一個目錄——admin-api 本來就靠 podAffinity 釘在 litellm
-# 所在節點（跟 users-db-pvc 同理），RWO 才能同時掛上兩個 Deployment。
+# usage.jsonl 不同檔名、同一個目錄——admin-api 靠 podAffinity 釘在 litellm 所在
+# 節點，RWO 才能同時掛上兩個 Deployment。
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:

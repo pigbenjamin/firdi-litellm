@@ -39,7 +39,55 @@ sys.path.insert(0, str(REPO / "admin-api"))
 sys.path.insert(0, str(REPO / "config"))
 
 _TMP = tempfile.mkdtemp(prefix="firdi-lifecycle-")
-os.environ["USER_AUTH_DB_PATH"] = os.path.join(_TMP, "users.db")
+
+
+def _start_ephemeral_postgres() -> str:
+    """2026-09 users-db-pvc(SQLite) 遷到 Postgres 後，這支「不需要任何叢集」的
+    離線測試沒辦法再靠「換一個暫存檔路徑」取得乾淨的資料庫——改成本機用 docker
+    起一個用完即丟的 Postgres 容器，保留原本零外部相依的測試性質（只多一個
+    docker 依賴，CI/本機都已經有）。
+    """
+    import atexit
+    import socket
+    import subprocess
+    import time
+
+    if subprocess.run(["docker", "info"], capture_output=True).returncode != 0:
+        # 這裡跑在 GREEN/RED 等顏色常數定義之前（它們宣告在這段 os.environ 設定
+        # 之後），故意不用，純文字就好。
+        print("[FAIL] 需要本機 docker 才能跑這支離線測試（起一個暫時的 Postgres 容器）", file=sys.stderr)
+        sys.exit(1)
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+
+    container = f"firdi-lifecycle-pg-{os.getpid()}"
+    subprocess.run(
+        ["docker", "run", "--rm", "-d", "--name", container,
+         "-p", f"{port}:5432",
+         "-e", "POSTGRES_USER=litellm", "-e", "POSTGRES_PASSWORD=test",
+         "-e", "POSTGRES_DB=firdi_users",
+         "postgres:16-alpine"],
+        check=True, capture_output=True,
+    )
+    atexit.register(lambda: subprocess.run(["docker", "rm", "-f", container], capture_output=True))
+
+    dsn = f"postgresql://litellm:test@127.0.0.1:{port}/firdi_users"
+    deadline = time.monotonic() + 30
+    last_err = None
+    while time.monotonic() < deadline:
+        try:
+            import psycopg2
+            psycopg2.connect(dsn).close()
+            return dsn
+        except Exception as e:  # noqa: BLE001 — 只是輪詢容器 ready，任何連線失敗都重試
+            last_err = e
+            time.sleep(0.5)
+    raise RuntimeError(f"本機 Postgres 容器（{container}）30 秒內沒有 ready：{last_err}")
+
+
+os.environ["USER_AUTH_DATABASE_URL"] = _start_ephemeral_postgres()
 os.environ["ADMIN_AUDIT_LOG_PATH"] = os.path.join(_TMP, "audit.jsonl")
 # config/ 的兩個 hook 都會 write_log 到 LOG_PATH；不換掉會去寫 /app/logs 而 PermissionError
 os.environ["LOG_PATH"] = os.path.join(_TMP, "usage.jsonl")
@@ -129,9 +177,9 @@ class FakeLiteLLM:
 
 FAKE = FakeLiteLLM()
 
-from database import DB_PATH, get_conn, init_db  # noqa: E402
+from database import DATABASE_URL, get_conn, init_db  # noqa: E402
 
-init_db(DB_PATH)
+init_db(DATABASE_URL)
 
 from services import model_access_service, model_metadata_service, models_service  # noqa: E402
 
@@ -255,24 +303,24 @@ ADMIN = {"preferred_username": "firdiadm", "sub": "test-sub", "email": "admin@ex
 
 
 def seed_departments():
-    with get_conn(DB_PATH) as conn:
+    with get_conn(DATABASE_URL) as conn:
         conn.execute(
-            "INSERT INTO departments (dept_id, dept_name, allowed_models) VALUES (?, ?, ?)",
+            "INSERT INTO departments (dept_id, dept_name, allowed_models) VALUES (%s, %s, %s)",
             ("RD", "研發部", json.dumps(["gemma-4-31B-it"])),
         )
         conn.execute(
-            "INSERT INTO departments (dept_id, dept_name, allowed_models) VALUES (?, ?, ?)",
+            "INSERT INTO departments (dept_id, dept_name, allowed_models) VALUES (%s, %s, %s)",
             ("SALES", "業務部", json.dumps([])),
         )
         for i in range(3):
             conn.execute(
                 "INSERT INTO users (api_key, key_name, user_id, user_email, dept_id, models) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
+                "VALUES (%s, %s, %s, %s, %s, %s)",
                 (f"sk-rd-{i}", f"rd{i}", f"uid-rd-{i}", f"rd{i}@example.com", "RD", "[]"),
             )
         conn.execute(
             "INSERT INTO users (api_key, key_name, user_id, user_email, dept_id, models) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
+            "VALUES (%s, %s, %s, %s, %s, %s)",
             ("sk-sales-0", "sales0", "uid-sales-0", "sales0@example.com", "SALES", "[]"),
         )
 
@@ -429,9 +477,9 @@ check(not any(d["model_name"] == NAME for d in FAKE.deployments), "停用後 Lit
 meta = model_metadata_service.get_metadata(NAME)
 check(meta["status"] == "disabled" and meta["litellm_model"] == "openai/anthropic/claude-sonnet-4-5",
       "停用後設定完整保留")
-with get_conn(DB_PATH) as conn:
+with get_conn(DATABASE_URL) as conn:
     allowed = json.loads(conn.execute(
-        "SELECT allowed_models FROM departments WHERE dept_id='RD'").fetchone()[0])
+        "SELECT allowed_models FROM departments WHERE dept_id='RD'").fetchone()["allowed_models"])
 check(NAME in allowed, "停用刻意不動 allowed_models（授權是獨立的一件事）")
 ok, _ = run(_auth_model("sk-rd-0", NAME))
 check(not ok, "停用後使用者打不通")
@@ -815,8 +863,8 @@ for path, data, label in [
 
 # 反面：DB 裡本來就有的失效授權（模型被刪了、授權還在）不能因此卡住儲存——
 # 它沒有對應的 checkbox，所以不會出現在送上來的清單裡，該被正常清理掉。
-with get_conn(DB_PATH) as conn:
-    conn.execute("UPDATE departments SET allowed_models=? WHERE dept_id='RD'",
+with get_conn(DATABASE_URL) as conn:
+    conn.execute("UPDATE departments SET allowed_models=%s WHERE dept_id='RD'",
                  (json.dumps(["gemma-4-31B-it", "deleted-long-ago"]),))
 resp = client.get("/api/v1/admin/web/access")
 check("deleted-long-ago" in resp.text and "chip-stale" in resp.text,
@@ -877,8 +925,8 @@ check(resp.status_code == 422, "scope 帶不存在的部門 → 422", str(resp.s
 
 # ＊（不限制）的部門：總覽只顯示不給編輯，直接開編輯頁也要擋下來——在畫面上按
 # 一次儲存就會把「不限制」換成凍結的逐筆清單，之後新上架的模型它就不會自動有了。
-with get_conn(DB_PATH) as conn:
-    conn.execute("UPDATE departments SET allowed_models=? WHERE dept_id='SALES'",
+with get_conn(DATABASE_URL) as conn:
+    conn.execute("UPDATE departments SET allowed_models=%s WHERE dept_id='SALES'",
                  (json.dumps(["*"]),))
 resp = client.get("/api/v1/admin/web/access")
 check("＊ 不限制" in resp.text, "總覽把 ＊ 部門標成「不限制」")
@@ -889,8 +937,8 @@ resp = client.post("/api/v1/admin/web/access/departments/apply",
                    data={"grants": [f"SALES{'|'}gemma-4-31B-it"], "scope": ["SALES"]})
 check(resp.status_code == 422, "把 ＊ 部門塞進 scope → 422", str(resp.status_code))
 check(model_access_service.get_dept("SALES")["allowed_models"] == ["*"], "＊ 沒有被換掉")
-with get_conn(DB_PATH) as conn:
-    conn.execute("UPDATE departments SET allowed_models=? WHERE dept_id='SALES'",
+with get_conn(DATABASE_URL) as conn:
+    conn.execute("UPDATE departments SET allowed_models=%s WHERE dept_id='SALES'",
                  (json.dumps(["gemma-4-31B-it"]),))
 
 # 個人授權編輯頁沿用同一組差異提示
@@ -956,8 +1004,8 @@ check(model_access_service.get_dept("RD")["allowed_models"] == sorted(["gemma-4-
 # 最小寫入面積：這個模型的狀態沒變的部門，一個字都不該被寫——連它裡面的失效授權
 # 都不能被順手清掉。表單若改成「把各部門的其他模型全塞 hidden 送回來」就守不住
 # 這一條（那份是開頁時的快照，會蓋掉別人同時的改動）。
-with get_conn(DB_PATH) as conn:
-    conn.execute("UPDATE departments SET allowed_models=? WHERE dept_id='RD'",
+with get_conn(DATABASE_URL) as conn:
+    conn.execute("UPDATE departments SET allowed_models=%s WHERE dept_id='RD'",
                  (json.dumps(["gemma-4-31B-it", "zombie-model", NAME]),))
 resp = client.post("/api/v1/admin/web/access/model/apply",
                    data={"model_name": NAME, "depts": ["RD", "SALES"]})
@@ -976,8 +1024,8 @@ check("zombie-model" not in model_access_service.get_dept("RD")["allowed_models"
       "RD 這次有變動 → 失效授權一併清掉")
 
 # ＊（不限制）的部門：不列入勾選，硬塞進表單也要被擋
-with get_conn(DB_PATH) as conn:
-    conn.execute("UPDATE departments SET allowed_models=? WHERE dept_id='RD'",
+with get_conn(DATABASE_URL) as conn:
+    conn.execute("UPDATE departments SET allowed_models=%s WHERE dept_id='RD'",
                  (json.dumps(["*"]),))
 resp = client.get(f"/api/v1/admin/web/access/model/edit?model_name={enc_name}")
 check(resp.text.count('name="depts"') == 1, "＊ 部門不給 checkbox",
@@ -987,8 +1035,8 @@ resp = client.post("/api/v1/admin/web/access/model/apply",
                    data={"model_name": NAME, "depts": ["RD"]})
 check(resp.status_code == 422, "把 ＊ 部門塞進表單 → 422", str(resp.status_code))
 check(model_access_service.get_dept("RD")["allowed_models"] == ["*"], "＊ 沒有被換掉")
-with get_conn(DB_PATH) as conn:
-    conn.execute("UPDATE departments SET allowed_models=? WHERE dept_id='RD'",
+with get_conn(DATABASE_URL) as conn:
+    conn.execute("UPDATE departments SET allowed_models=%s WHERE dept_id='RD'",
                  (json.dumps(["gemma-4-31B-it"]),))
 
 # 入口：三個地方都要進得去，不然這一頁等於不存在

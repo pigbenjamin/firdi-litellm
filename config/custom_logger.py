@@ -1,16 +1,32 @@
 import json
 import os
-import sqlite3
 from datetime import datetime, timezone
 from threading import Lock
 from typing import Any
 
+import psycopg2
+import psycopg2.pool
 from litellm.integrations.custom_logger import CustomLogger
 
 _WRITE_LOCK = Lock()
 _SPEND_LOCK = Lock()
 
-DEFAULT_DB_PATH = "/app/data/users.db"
+# 2026-09 從 users-db-pvc(SQLite) 遷到 Postgres。刻意不 `import custom_auth` 共用
+# 它的連線池——litellm 用 importlib.util.spec_from_file_location 直接從檔案路徑
+# 載入這兩個 ConfigMap 掛載的檔案（見 litellm/proxy/types_utils/utils.py 的
+# get_instance_fn），不會把 /app/config 加進 sys.path，跨檔案 import 在真正的
+# litellm 執行環境裡會是 ModuleNotFoundError（本機手動測試時自己塞了 sys.path 才
+# 沒踩到，部署到叢集才炸出來）。這裡自己獨立管一份連線池。
+DEFAULT_DATABASE_URL = "postgresql://litellm:litellm@localhost:5432/firdi_users"
+_pool: psycopg2.pool.ThreadedConnectionPool | None = None
+
+
+def _get_pool() -> psycopg2.pool.ThreadedConnectionPool:
+    global _pool
+    if _pool is None:
+        dsn = os.getenv("USER_AUTH_DATABASE_URL", DEFAULT_DATABASE_URL)
+        _pool = psycopg2.pool.ThreadedConnectionPool(1, 10, dsn=dsn)
+    return _pool
 
 
 def write_log(record: dict) -> None:
@@ -81,27 +97,32 @@ def record_spend(model_name: str, cost: float) -> None:
     """
     if not model_name:
         return
-    db_path = os.getenv("USER_AUTH_DB_PATH", DEFAULT_DB_PATH)
     period = datetime.now(timezone.utc).strftime("%Y-%m")
+    pool = _get_pool()
+    # 注意：SET 右側的 spend_usd/calls 一定要加上表名前綴——不加的話 Postgres 會報
+    # AmbiguousColumn（SQLite 不加也能跑，這是原本記憶裡誤判成「已經相容」的地方,
+    # 實測才發現要修正）。
     sql = (
-        "INSERT INTO model_spend (model_name, period, spend_usd, calls) VALUES (?, ?, ?, 1) "
+        "INSERT INTO model_spend (model_name, period, spend_usd, calls) VALUES (%s, %s, %s, 1) "
         "ON CONFLICT(model_name, period) DO UPDATE SET "
-        "spend_usd = spend_usd + excluded.spend_usd, calls = calls + 1, updated_at = datetime('now')"
+        "spend_usd = model_spend.spend_usd + excluded.spend_usd, "
+        "calls = model_spend.calls + 1, updated_at = now()::text"
     )
     with _SPEND_LOCK:
-        conn = sqlite3.connect(db_path, timeout=10)
+        conn = pool.getconn()
+        conn.autocommit = True
+        broken = False
         try:
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA synchronous=NORMAL")
-            conn.execute(sql, (model_name, period, cost))
-            conn.execute(sql, (model_name, "total", cost))
-            conn.commit()
-        except sqlite3.OperationalError:
-            # 表還不存在（admin-api 還沒跑過 init_db）或短暫鎖住——用量累計不該
-            # 影響這次呼叫本身，靜默跳過，jsonl 那份記錄仍然完整。
-            conn.rollback()
+            cur = conn.cursor()
+            try:
+                cur.execute(sql, (model_name, period, cost))
+                cur.execute(sql, (model_name, "total", cost))
+            except Exception:
+                # 表還不存在（admin-api 還沒跑過 init_db）或短暫的連線問題——用量
+                # 累計不該影響這次呼叫本身，靜默跳過，jsonl 那份記錄仍然完整。
+                broken = True
         finally:
-            conn.close()
+            pool.putconn(conn, close=broken)
 
 
 class FirdiLogger(CustomLogger):

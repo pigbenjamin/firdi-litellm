@@ -252,6 +252,12 @@ href="permission-sync.md">permission-sync.md</a>。本文件的部門/使用者�
 <hr />
 <h2 id="接口總表">接口總表</h2>
 <table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
 <thead>
 <tr class="header">
 <th>方法</th>
@@ -280,125 +286,199 @@ href="permission-sync.md">permission-sync.md</a>。本文件的部門/使用者�
 <td>Admin Key</td>
 </tr>
 <tr class="even">
+<td><code>GET</code></td>
+<td><code>/api/v1/models/external</code></td>
+<td>列出 DB-managed（自助上架）的模型</td>
+<td>Admin Key</td>
+</tr>
+<tr class="odd">
+<td><code>POST</code></td>
+<td><code>/api/v1/models/external</code></td>
+<td>自助上架外部模型（OpenRouter／原生 Provider）</td>
+<td>Admin Key</td>
+</tr>
+<tr class="even">
+<td><code>DELETE</code></td>
+<td><code>/api/v1/models/external/{model_id}</code></td>
+<td>刪除 DB-managed 模型</td>
+<td>Admin Key</td>
+</tr>
+<tr class="odd">
 <td></td>
 <td></td>
 <td></td>
 <td></td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td><code>GET</code></td>
 <td><code>/api/v1/departments</code></td>
 <td>列出所有部門</td>
 <td>Admin Key</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td><code>POST</code></td>
 <td><code>/api/v1/departments</code></td>
 <td>建立部門</td>
 <td>Admin Key</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td><code>GET</code></td>
 <td><code>/api/v1/departments/{dept_id}</code></td>
 <td>取得部門詳情</td>
 <td>Admin Key</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td><code>PUT</code></td>
 <td><code>/api/v1/departments/{dept_id}</code></td>
 <td>完整替換部門資料</td>
 <td>Admin Key</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td><code>PATCH</code></td>
 <td><code>/api/v1/departments/{dept_id}</code></td>
 <td>部分更新部門欄位</td>
 <td>Admin Key</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td><code>DELETE</code></td>
 <td><code>/api/v1/departments/{dept_id}</code></td>
 <td>刪除部門（需先清空成員）</td>
 <td>Admin Key</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td></td>
 <td></td>
 <td></td>
 <td></td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td><code>GET</code></td>
 <td><code>/api/v1/users</code></td>
 <td>列出使用者（可依部門或帳號類型篩選）</td>
 <td>Admin Key</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td><code>POST</code></td>
 <td><code>/api/v1/users</code></td>
 <td>建立服務帳號（human 帳號由 Keycloak 同步）</td>
 <td>Admin Key</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td><code>GET</code></td>
 <td><code>/api/v1/users/{user_id}</code></td>
 <td>取得使用者詳情</td>
 <td>Admin Key</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td><code>PUT</code></td>
 <td><code>/api/v1/users/{user_id}</code></td>
 <td>完整替換使用者資料</td>
 <td>Admin Key</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td><code>PATCH</code></td>
 <td><code>/api/v1/users/{user_id}</code></td>
 <td>部分更新使用者欄位</td>
 <td>Admin Key</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td><code>DELETE</code></td>
 <td><code>/api/v1/users/{user_id}</code></td>
 <td>永久刪除使用者</td>
 <td>Admin Key</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td><code>POST</code></td>
 <td><code>/api/v1/users/{user_id}/block</code></td>
 <td>封鎖使用者</td>
 <td>Admin Key</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td><code>POST</code></td>
 <td><code>/api/v1/users/{user_id}/unblock</code></td>
 <td>解除封鎖使用者</td>
 <td>Admin Key</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td><code>POST</code></td>
 <td><code>/api/v1/users/{user_id}/regenerate-key</code></td>
 <td>重新生成使用者 API Key</td>
 <td>Admin Key</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td></td>
 <td></td>
 <td></td>
 <td></td>
 </tr>
+<tr class="odd">
+<td><code>GET</code></td>
+<td><code>/api/v1/me</code></td>
+<td>查詢<strong>自己</strong>的 API Key
+與可用模型（JSON，給腳本用）</td>
+<td>Keycloak Token</td>
+</tr>
 <tr class="even">
+<td><code>POST</code></td>
+<td><code>/api/v1/me/regenerate-key</code></td>
+<td>重設<strong>自己</strong>的 API Key（JSON，給腳本用）</td>
+<td>Keycloak Token</td>
+</tr>
+<tr class="odd">
+<td><code>GET</code></td>
+<td><code>/api/v1/me/web/login</code></td>
+<td><strong>一般使用者請走這支</strong>：瀏覽器登入頁，導向
+Keycloak</td>
+<td>無（登入後才驗證）</td>
+</tr>
+<tr class="even">
+<td><code>GET</code></td>
+<td><code>/api/v1/me/web/callback</code></td>
+<td>登入完成後的回呼，網頁直接顯示 key</td>
+<td>Keycloak（登入流程內部使用）</td>
+</tr>
+<tr class="odd">
+<td><code>POST</code></td>
+<td><code>/api/v1/me/web/regenerate-key</code></td>
+<td>網頁上的「重設我的 Key」按鈕</td>
+<td>Session Cookie</td>
+</tr>
+<tr class="even">
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr class="odd">
 <td><code>POST</code></td>
 <td><code>/api/v1/sync/keycloak</code></td>
 <td>接收 Keycloak 使用者事件</td>
 <td>Webhook Secret</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td><code>POST</code></td>
 <td><code>/api/v1/sync/keycloak/bulk</code></td>
 <td>從 Keycloak 拉取全部使用者同步</td>
 <td>Admin Key</td>
 </tr>
+<tr class="odd">
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr class="even">
+<td><code>POST</code></td>
+<td><code>/api/v1/sync/openwebui/pull-models</code></td>
+<td>OpenWebUI 授權 → DB（主同步，CronJob 自動）</td>
+<td>Admin Key</td>
+</tr>
+<tr class="odd">
+<td><code>POST</code></td>
+<td><code>/api/v1/sync/openwebui/models</code></td>
+<td>DB → OpenWebUI 完整鏡像 push</td>
+<td>Admin Key</td>
+</tr>
 <tr class="even">
 <td></td>
 <td></td>
@@ -406,19 +486,20 @@ href="permission-sync.md">permission-sync.md</a>。本文件的部門/使用者�
 <td></td>
 </tr>
 <tr class="odd">
-<td><code>POST</code></td>
-<td><code>/api/v1/sync/openwebui/pull-models</code></td>
-<td>OpenWebUI 授權 → DB（主同步，CronJob 自動）</td>
-<td>Admin Key</td>
-</tr>
-<tr class="even">
-<td><code>POST</code></td>
-<td><code>/api/v1/sync/openwebui/models</code></td>
-<td>DB → OpenWebUI 完整鏡像 push</td>
-<td>Admin Key</td>
+<td><code>GET</code></td>
+<td><code>/api/v1/admin/web</code></td>
+<td><strong>部門管理入口</strong>：瀏覽器版，涵蓋上架/下架模型、部門
+provider key、觸發同步</td>
+<td>Keycloak Session（白名單）</td>
 </tr>
 </tbody>
 </table>
+<blockquote>
+<p>部門管理入口的完整畫面、環境變數與操作說明見 <a
+href="admin-web.md">admin-web.md</a>；規劃背景見 <a
+href="admin-web-plan.md">admin-web-plan.md</a>。本文件其餘端點（<code>ADMIN_API_KEY</code>）能力更廣、
+持續保留，不會被網頁版取代。</p>
+</blockquote>
 <blockquote>
 <p>模型權限同步的架構說明與 SOP 見 <a
 href="permission-sync.md">permission-sync.md</a>。
@@ -427,9 +508,58 @@ href="permission-sync.md">permission-sync.md</a>。
 </blockquote>
 <hr />
 <h2 id="認證">認證</h2>
-<p>除 <code>/health</code> 與 <code>/api/v1/sync/keycloak</code>
-外，所有接口需在 HTTP Header 帶入 Admin API Key：</p>
+<p>除 <code>/health</code>、<code>/api/v1/sync/keycloak</code>（Webhook
+Secret）與 <code>/api/v1/me</code>（Keycloak Token）外， 所有接口需在
+HTTP Header 帶入 Admin API Key：</p>
 <pre><code>Authorization: Bearer &lt;ADMIN_API_KEY&gt;</code></pre>
+<h3
+id="自助端點的認證apiv1me">自助端點的認證（<code>/api/v1/me*</code>）</h3>
+<p>給<strong>一般使用者</strong>用，不吃
+<code>ADMIN_API_KEY</code>。有兩組並存、認證方式不同：</p>
+<ul>
+<li><p><strong><code>/api/v1/me/web/*</code></strong>（瀏覽器登入頁，一般使用者的<strong>主要途徑</strong>）：不需要自己組
+HTTP 請求。使用者點 <code>/api/v1/me/web/login</code> → 導向 Keycloak
+熟悉的登入畫面（跟登 入 OpenWebUI 同一套帳號）→
+登入完自動導回、網頁直接顯示 key，並附一顆「重設我的
+Key」按鈕。伺服器端用短效 cookie（<code>me_session</code>，存的是
+Keycloak access token 本
+身、HttpOnly、<code>SameSite=Lax</code>）記住這次登入，按重設鈕時不用再登入一次；<code>SameSite=Lax</code>
+同時是唯一的 CSRF 防護——瀏覽器不會在跨站 POST 帶上這顆
+cookie，因此不需要另外 做 CSRF token。</p></li>
+<li><p><strong><code>/api/v1/me</code>（GET）/
+<code>/api/v1/me/regenerate-key</code>（POST）</strong>（JSON，給腳本/CI
+用）：帶使用者自己的 Keycloak access token：</p>
+<pre><code>Authorization: Bearer &lt;Keycloak access token&gt;</code></pre>
+<p><strong>注意</strong>：這支只負責驗證你交來的
+token，本身不提供「怎麼拿到 token」的手段——
+目前唯一驗證過可行的取得方式是走 <code>/api/v1/me/web/login</code>
+的瀏覽器登入流程（人工
+操作一次）。如果你的腳本需要在無瀏覽器環境下自動取得 token（例如
+CI），Keycloak client 是否開放對應的 grant（如 Direct Access
+Grants）尚未評估與設定，請先跟平台
+管理員確認，不要假設它已經可行。</p></li>
+</ul>
+<p>兩者共用同一套底層邏輯（<code>admin-api/routers/me.py</code> 的
+<code>resolve_db_user()</code> / <code>to_me_out()</code> /
+<code>regenerate_key_for()</code>）。無論哪個入口，驗證都是把 token 送去
+Keycloak 的 <code>userinfo</code>
+端點（<code>admin-api/keycloak.py</code> 的
+<code>fetch_userinfo()</code>），由 Keycloak
+自己判斷有效性——刻意不在本地驗 JWT
+簽章，這樣<strong>已登出／已撤銷但還沒過期</strong> 的 token
+也會被擋掉。取得的 <code>sub</code> 對應 DB 的
+<code>users.user_id</code>；沒命中時退回用 <code>email</code> 比對（涵蓋
+Keycloak 帳號重建導致 sub 換掉的情況）。</p>
+<p>回傳的 <code>MeOut</code>
+只含使用者自己該知道的欄位（<code>user_id</code> / <code>key_name</code>
+/ <code>user_email</code> / <code>dept_id</code> / <code>api_key</code>
+/ <code>allowed_models</code> / <code>blocked</code>），不含
+rpm/tpm、metadata、部門 OpenRouter key
+等管理面資訊，而且<strong>只會回傳 token 對應的那一個帳號</strong>。</p>
+<p><code>allowed_models</code> 是「部門 ∪
+個人」的聯集（<code>["*"]</code> 代表不限制），僅供顯示；真正的
+enforcement 在 <code>config/custom_auth.py</code> 的
+<code>_effective_models()</code>，兩邊邏輯要保持一致。</p>
 <p><code>/api/v1/sync/keycloak</code> 使用專屬的
 <code>X-Webhook-Secret</code> header 認證。</p>
 <hr />
@@ -477,24 +607,28 @@ href="permission-sync.md">permission-sync.md</a>。
 <h3 id="get-health"><code>GET /health</code></h3>
 <p>不需認證。回傳服務狀態，供 K8s liveness/readiness probe 使用。</p>
 <p><strong>回應範例</strong></p>
-<div class="sourceCode" id="cb2"><pre
-class="sourceCode json"><code class="sourceCode json"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span><span class="dt">&quot;status&quot;</span><span class="fu">:</span> <span class="st">&quot;ok&quot;</span><span class="fu">}</span></span></code></pre></div>
+<div class="sourceCode" id="cb3"><pre
+class="sourceCode json"><code class="sourceCode json"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span><span class="dt">&quot;status&quot;</span><span class="fu">:</span> <span class="st">&quot;ok&quot;</span><span class="fu">}</span></span></code></pre></div>
 <hr />
 <h2 id="部門departments">部門（Departments）</h2>
-<p>部門是模型權限的第一層控制單位，定義該部門所有成員共用的模型白名單與流量上限。</p>
+<p>部門是模型權限的第一層控制單位，定義該部門所有成員共用的模型白名單。</p>
 <h3 id="資料結構">資料結構</h3>
-<div class="sourceCode" id="cb3"><pre
-class="sourceCode json"><code class="sourceCode json"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
-<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;dept_id&quot;</span><span class="fu">:</span> <span class="st">&quot;engineering&quot;</span><span class="fu">,</span></span>
-<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;dept_name&quot;</span><span class="fu">:</span> <span class="st">&quot;工程部&quot;</span><span class="fu">,</span></span>
-<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;openrouter_api_key&quot;</span><span class="fu">:</span> <span class="st">&quot;sk-or-...&quot;</span><span class="fu">,</span></span>
-<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;allowed_models&quot;</span><span class="fu">:</span> <span class="ot">[</span><span class="st">&quot;gemma-4-31B-it&quot;</span><span class="ot">,</span> <span class="st">&quot;gemma-4-26B-A4B-it&quot;</span><span class="ot">]</span><span class="fu">,</span></span>
-<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;dept_rpm_limit&quot;</span><span class="fu">:</span> <span class="dv">300</span><span class="fu">,</span></span>
-<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;dept_tpm_limit&quot;</span><span class="fu">:</span> <span class="dv">1000000</span><span class="fu">,</span></span>
-<span id="cb3-8"><a href="#cb3-8" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;created_at&quot;</span><span class="fu">:</span> <span class="st">&quot;2025-01-01T00:00:00&quot;</span><span class="fu">,</span></span>
-<span id="cb3-9"><a href="#cb3-9" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;updated_at&quot;</span><span class="fu">:</span> <span class="st">&quot;2025-01-01T00:00:00&quot;</span></span>
-<span id="cb3-10"><a href="#cb3-10" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
+<div class="sourceCode" id="cb4"><pre
+class="sourceCode json"><code class="sourceCode json"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;dept_id&quot;</span><span class="fu">:</span> <span class="st">&quot;engineering&quot;</span><span class="fu">,</span></span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;dept_name&quot;</span><span class="fu">:</span> <span class="st">&quot;工程部&quot;</span><span class="fu">,</span></span>
+<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;openrouter_api_key&quot;</span><span class="fu">:</span> <span class="st">&quot;sk-or-...&quot;</span><span class="fu">,</span></span>
+<span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;allowed_models&quot;</span><span class="fu">:</span> <span class="ot">[</span><span class="st">&quot;gemma-4-31B-it&quot;</span><span class="ot">,</span> <span class="st">&quot;gemma-4-26B-A4B-it&quot;</span><span class="ot">]</span><span class="fu">,</span></span>
+<span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;provider_keys&quot;</span><span class="fu">:</span> <span class="fu">{</span><span class="dt">&quot;openrouter&quot;</span><span class="fu">:</span> <span class="st">&quot;sk-or-...&quot;</span><span class="fu">,</span> <span class="dt">&quot;openai&quot;</span><span class="fu">:</span> <span class="st">&quot;sk-...&quot;</span><span class="fu">},</span></span>
+<span id="cb4-7"><a href="#cb4-7" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;created_at&quot;</span><span class="fu">:</span> <span class="st">&quot;2025-01-01T00:00:00&quot;</span><span class="fu">,</span></span>
+<span id="cb4-8"><a href="#cb4-8" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;updated_at&quot;</span><span class="fu">:</span> <span class="st">&quot;2025-01-01T00:00:00&quot;</span></span>
+<span id="cb4-9"><a href="#cb4-9" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
 <table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
 <thead>
 <tr class="header">
 <th>欄位</th>
@@ -516,7 +650,8 @@ class="sourceCode json"><code class="sourceCode json"><span id="cb3-1"><a href="
 <tr class="odd">
 <td><code>openrouter_api_key</code></td>
 <td>string</td>
-<td>此部門存取雲端 OpenRouter 的 API Key</td>
+<td>此部門存取雲端 OpenRouter 的 API
+Key（<code>provider_keys.openrouter</code> 的同義寫法，見下）</td>
 </tr>
 <tr class="even">
 <td><code>allowed_models</code></td>
@@ -524,38 +659,39 @@ class="sourceCode json"><code class="sourceCode json"><span id="cb3-1"><a href="
 <td>部門白名單模型清單，<code>["*"]</code> 代表全部允許</td>
 </tr>
 <tr class="odd">
-<td><code>dept_rpm_limit</code></td>
-<td>int | null</td>
-<td>部門每分鐘請求數上限，<code>null</code> 為不限制</td>
-</tr>
-<tr class="even">
-<td><code>dept_tpm_limit</code></td>
-<td>int | null</td>
-<td>部門每分鐘 token 數上限，<code>null</code> 為不限制</td>
+<td><code>provider_keys</code></td>
+<td>object</td>
+<td>provider → key 的 dict（決策 E，見 <a
+href="admin-web.md">admin-web.md</a>）。<code>openrouter_api_key</code>
+與這裡的 <code>"openrouter"</code> 這一格由 admin-api
+自動同步，寫哪邊都可以；其他
+provider（<code>openai</code>/<code>anthropic</code>/<code>gemini</code>/<code>other</code>）只能透過這個欄位設定</td>
 </tr>
 </tbody>
 </table>
+<p>PATCH 時 <code>provider_keys</code>
+是<strong>淺層合併</strong>：只有出現在請求 body 裡的 provider 會被
+覆蓋，沒提到的維持原值（要清除某個 provider 的
+key，把它的值設成空字串一樣是 覆寫，不是特殊語法）。</p>
 <hr />
 <h3 id="get-apiv1departments"><code>GET /api/v1/departments</code></h3>
 <p>列出所有部門。</p>
 <p><strong>回應</strong>：<code>DepartmentOut[]</code>（200）</p>
-<div class="sourceCode" id="cb4"><pre
-class="sourceCode bash"><code class="sourceCode bash"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> http://<span class="op">&lt;</span>host<span class="op">&gt;</span>:30408/api/v1/departments <span class="dt">\</span></span>
-<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a>  <span class="at">-H</span> <span class="st">&quot;Authorization: Bearer &lt;key&gt;&quot;</span></span></code></pre></div>
+<div class="sourceCode" id="cb5"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> http://<span class="op">&lt;</span>host<span class="op">&gt;</span>:30408/api/v1/departments <span class="dt">\</span></span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a>  <span class="at">-H</span> <span class="st">&quot;Authorization: Bearer &lt;key&gt;&quot;</span></span></code></pre></div>
 <hr />
 <h3
 id="post-apiv1departments"><code>POST /api/v1/departments</code></h3>
 <p>建立新部門。</p>
 <p><strong>Request Body</strong></p>
-<div class="sourceCode" id="cb5"><pre
-class="sourceCode json"><code class="sourceCode json"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
-<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;dept_id&quot;</span><span class="fu">:</span> <span class="st">&quot;data-science&quot;</span><span class="fu">,</span></span>
-<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;dept_name&quot;</span><span class="fu">:</span> <span class="st">&quot;資料科學部&quot;</span><span class="fu">,</span></span>
-<span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;openrouter_api_key&quot;</span><span class="fu">:</span> <span class="st">&quot;sk-or-...&quot;</span><span class="fu">,</span></span>
-<span id="cb5-5"><a href="#cb5-5" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;allowed_models&quot;</span><span class="fu">:</span> <span class="ot">[</span><span class="st">&quot;gemma-4-31B-it&quot;</span><span class="ot">,</span> <span class="st">&quot;gemma-4-26B-A4B-it&quot;</span><span class="ot">,</span> <span class="st">&quot;embeddinggemma-300m&quot;</span><span class="ot">]</span><span class="fu">,</span></span>
-<span id="cb5-6"><a href="#cb5-6" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;dept_rpm_limit&quot;</span><span class="fu">:</span> <span class="dv">200</span><span class="fu">,</span></span>
-<span id="cb5-7"><a href="#cb5-7" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;dept_tpm_limit&quot;</span><span class="fu">:</span> <span class="dv">500000</span></span>
-<span id="cb5-8"><a href="#cb5-8" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
+<div class="sourceCode" id="cb6"><pre
+class="sourceCode json"><code class="sourceCode json"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
+<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;dept_id&quot;</span><span class="fu">:</span> <span class="st">&quot;data-science&quot;</span><span class="fu">,</span></span>
+<span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;dept_name&quot;</span><span class="fu">:</span> <span class="st">&quot;資料科學部&quot;</span><span class="fu">,</span></span>
+<span id="cb6-4"><a href="#cb6-4" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;openrouter_api_key&quot;</span><span class="fu">:</span> <span class="st">&quot;sk-or-...&quot;</span><span class="fu">,</span></span>
+<span id="cb6-5"><a href="#cb6-5" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;allowed_models&quot;</span><span class="fu">:</span> <span class="ot">[</span><span class="st">&quot;gemma-4-31B-it&quot;</span><span class="ot">,</span> <span class="st">&quot;gemma-4-26B-A4B-it&quot;</span><span class="ot">,</span> <span class="st">&quot;embeddinggemma-300m&quot;</span><span class="ot">]</span></span>
+<span id="cb6-6"><a href="#cb6-6" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
 <ul>
 <li><code>dept_id</code>、<code>dept_name</code>
 必填；其餘選填（預設空字串 / 空陣列 / null）</li>
@@ -579,11 +715,10 @@ id="put-apiv1departmentsdept_id"><code>PUT /api/v1/departments/{dept_id}</code><
 id="patch-apiv1departmentsdept_id"><code>PATCH /api/v1/departments/{dept_id}</code></h3>
 <p>部分更新部門。只需提供要修改的欄位，其餘保持不變。</p>
 <p><strong>Request Body</strong>（所有欄位選填）</p>
-<div class="sourceCode" id="cb6"><pre
-class="sourceCode json"><code class="sourceCode json"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
-<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;allowed_models&quot;</span><span class="fu">:</span> <span class="ot">[</span><span class="st">&quot;gemma-4-31B-it&quot;</span><span class="ot">]</span><span class="fu">,</span></span>
-<span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;dept_rpm_limit&quot;</span><span class="fu">:</span> <span class="dv">100</span></span>
-<span id="cb6-4"><a href="#cb6-4" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
+<div class="sourceCode" id="cb7"><pre
+class="sourceCode json"><code class="sourceCode json"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
+<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;allowed_models&quot;</span><span class="fu">:</span> <span class="ot">[</span><span class="st">&quot;gemma-4-31B-it&quot;</span><span class="ot">]</span></span>
+<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
 <blockquote>
 <p>⚠️ <strong>改 <code>allowed_models</code>
 是例外流程</strong>：權威來源是 OpenWebUI，直接 PATCH 的變更會被下次
@@ -607,23 +742,28 @@ id="delete-apiv1departmentsdept_id"><code>DELETE /api/v1/departments/{dept_id}</
 <strong>聯集</strong>構成實際可用清單（<code>部門 ∪ 個人</code>）。個人模型<strong>可以超出部門</strong>，不受部門子集限制。一般使用者
 <code>models</code> 留空即繼承部門。</p>
 <h3 id="資料結構-1">資料結構</h3>
-<div class="sourceCode" id="cb7"><pre
-class="sourceCode json"><code class="sourceCode json"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
-<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;api_key&quot;</span><span class="fu">:</span> <span class="st">&quot;sk-abc123...&quot;</span><span class="fu">,</span></span>
-<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;key_name&quot;</span><span class="fu">:</span> <span class="st">&quot;alice&quot;</span><span class="fu">,</span></span>
-<span id="cb7-4"><a href="#cb7-4" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;user_id&quot;</span><span class="fu">:</span> <span class="st">&quot;keycloak-uuid-...&quot;</span><span class="fu">,</span></span>
-<span id="cb7-5"><a href="#cb7-5" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;user_email&quot;</span><span class="fu">:</span> <span class="st">&quot;alice@company.com&quot;</span><span class="fu">,</span></span>
-<span id="cb7-6"><a href="#cb7-6" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;dept_id&quot;</span><span class="fu">:</span> <span class="st">&quot;engineering&quot;</span><span class="fu">,</span></span>
-<span id="cb7-7"><a href="#cb7-7" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;models&quot;</span><span class="fu">:</span> <span class="ot">[</span><span class="st">&quot;gemma-4-31B-it&quot;</span><span class="ot">,</span> <span class="st">&quot;gemma-4-26B-A4B-it&quot;</span><span class="ot">]</span><span class="fu">,</span></span>
-<span id="cb7-8"><a href="#cb7-8" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;rpm_limit&quot;</span><span class="fu">:</span> <span class="dv">60</span><span class="fu">,</span></span>
-<span id="cb7-9"><a href="#cb7-9" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;tpm_limit&quot;</span><span class="fu">:</span> <span class="dv">200000</span><span class="fu">,</span></span>
-<span id="cb7-10"><a href="#cb7-10" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;aliases&quot;</span><span class="fu">:</span> <span class="fu">{},</span></span>
-<span id="cb7-11"><a href="#cb7-11" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;metadata&quot;</span><span class="fu">:</span> <span class="fu">{},</span></span>
-<span id="cb7-12"><a href="#cb7-12" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;blocked&quot;</span><span class="fu">:</span> <span class="kw">false</span><span class="fu">,</span></span>
-<span id="cb7-13"><a href="#cb7-13" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;created_at&quot;</span><span class="fu">:</span> <span class="st">&quot;2025-01-01T00:00:00&quot;</span><span class="fu">,</span></span>
-<span id="cb7-14"><a href="#cb7-14" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;updated_at&quot;</span><span class="fu">:</span> <span class="st">&quot;2025-01-01T00:00:00&quot;</span></span>
-<span id="cb7-15"><a href="#cb7-15" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
+<div class="sourceCode" id="cb8"><pre
+class="sourceCode json"><code class="sourceCode json"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
+<span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;api_key&quot;</span><span class="fu">:</span> <span class="st">&quot;sk-abc123...&quot;</span><span class="fu">,</span></span>
+<span id="cb8-3"><a href="#cb8-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;key_name&quot;</span><span class="fu">:</span> <span class="st">&quot;alice&quot;</span><span class="fu">,</span></span>
+<span id="cb8-4"><a href="#cb8-4" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;user_id&quot;</span><span class="fu">:</span> <span class="st">&quot;keycloak-uuid-...&quot;</span><span class="fu">,</span></span>
+<span id="cb8-5"><a href="#cb8-5" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;user_email&quot;</span><span class="fu">:</span> <span class="st">&quot;alice@company.com&quot;</span><span class="fu">,</span></span>
+<span id="cb8-6"><a href="#cb8-6" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;dept_id&quot;</span><span class="fu">:</span> <span class="st">&quot;engineering&quot;</span><span class="fu">,</span></span>
+<span id="cb8-7"><a href="#cb8-7" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;models&quot;</span><span class="fu">:</span> <span class="ot">[</span><span class="st">&quot;gemma-4-31B-it&quot;</span><span class="ot">,</span> <span class="st">&quot;gemma-4-26B-A4B-it&quot;</span><span class="ot">]</span><span class="fu">,</span></span>
+<span id="cb8-8"><a href="#cb8-8" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;rpm_limit&quot;</span><span class="fu">:</span> <span class="dv">60</span><span class="fu">,</span></span>
+<span id="cb8-9"><a href="#cb8-9" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;tpm_limit&quot;</span><span class="fu">:</span> <span class="dv">200000</span><span class="fu">,</span></span>
+<span id="cb8-10"><a href="#cb8-10" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;aliases&quot;</span><span class="fu">:</span> <span class="fu">{},</span></span>
+<span id="cb8-11"><a href="#cb8-11" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;metadata&quot;</span><span class="fu">:</span> <span class="fu">{},</span></span>
+<span id="cb8-12"><a href="#cb8-12" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;blocked&quot;</span><span class="fu">:</span> <span class="kw">false</span><span class="fu">,</span></span>
+<span id="cb8-13"><a href="#cb8-13" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;created_at&quot;</span><span class="fu">:</span> <span class="st">&quot;2025-01-01T00:00:00&quot;</span><span class="fu">,</span></span>
+<span id="cb8-14"><a href="#cb8-14" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;updated_at&quot;</span><span class="fu">:</span> <span class="st">&quot;2025-01-01T00:00:00&quot;</span></span>
+<span id="cb8-15"><a href="#cb8-15" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
 <table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
 <thead>
 <tr class="header">
 <th>欄位</th>
@@ -718,18 +858,18 @@ class="sourceCode json"><code class="sourceCode json"><span id="cb7-1"><a href="
 </tbody>
 </table>
 <p><strong>回應</strong>：<code>UserOut[]</code>（200）</p>
-<div class="sourceCode" id="cb8"><pre
-class="sourceCode bash"><code class="sourceCode bash"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="co"># 列出所有使用者</span></span>
-<span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="st">&quot;http://&lt;host&gt;:30408/api/v1/users&quot;</span> <span class="dt">\</span></span>
-<span id="cb8-3"><a href="#cb8-3" aria-hidden="true" tabindex="-1"></a>  <span class="at">-H</span> <span class="st">&quot;Authorization: Bearer &lt;key&gt;&quot;</span></span>
-<span id="cb8-4"><a href="#cb8-4" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb8-5"><a href="#cb8-5" aria-hidden="true" tabindex="-1"></a><span class="co"># 只列出 engineering 部門的人類帳號</span></span>
-<span id="cb8-6"><a href="#cb8-6" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="st">&quot;http://&lt;host&gt;:30408/api/v1/users?dept_id=engineering&amp;account_type=human&quot;</span> <span class="dt">\</span></span>
-<span id="cb8-7"><a href="#cb8-7" aria-hidden="true" tabindex="-1"></a>  <span class="at">-H</span> <span class="st">&quot;Authorization: Bearer &lt;key&gt;&quot;</span></span>
-<span id="cb8-8"><a href="#cb8-8" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb8-9"><a href="#cb8-9" aria-hidden="true" tabindex="-1"></a><span class="co"># 列出所有服務帳號</span></span>
-<span id="cb8-10"><a href="#cb8-10" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="st">&quot;http://&lt;host&gt;:30408/api/v1/users?account_type=service&quot;</span> <span class="dt">\</span></span>
-<span id="cb8-11"><a href="#cb8-11" aria-hidden="true" tabindex="-1"></a>  <span class="at">-H</span> <span class="st">&quot;Authorization: Bearer &lt;key&gt;&quot;</span></span></code></pre></div>
+<div class="sourceCode" id="cb9"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="co"># 列出所有使用者</span></span>
+<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="st">&quot;http://&lt;host&gt;:30408/api/v1/users&quot;</span> <span class="dt">\</span></span>
+<span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a>  <span class="at">-H</span> <span class="st">&quot;Authorization: Bearer &lt;key&gt;&quot;</span></span>
+<span id="cb9-4"><a href="#cb9-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-5"><a href="#cb9-5" aria-hidden="true" tabindex="-1"></a><span class="co"># 只列出 engineering 部門的人類帳號</span></span>
+<span id="cb9-6"><a href="#cb9-6" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="st">&quot;http://&lt;host&gt;:30408/api/v1/users?dept_id=engineering&amp;account_type=human&quot;</span> <span class="dt">\</span></span>
+<span id="cb9-7"><a href="#cb9-7" aria-hidden="true" tabindex="-1"></a>  <span class="at">-H</span> <span class="st">&quot;Authorization: Bearer &lt;key&gt;&quot;</span></span>
+<span id="cb9-8"><a href="#cb9-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-9"><a href="#cb9-9" aria-hidden="true" tabindex="-1"></a><span class="co"># 列出所有服務帳號</span></span>
+<span id="cb9-10"><a href="#cb9-10" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="st">&quot;http://&lt;host&gt;:30408/api/v1/users?account_type=service&quot;</span> <span class="dt">\</span></span>
+<span id="cb9-11"><a href="#cb9-11" aria-hidden="true" tabindex="-1"></a>  <span class="at">-H</span> <span class="st">&quot;Authorization: Bearer &lt;key&gt;&quot;</span></span></code></pre></div>
 <hr />
 <h3 id="post-apiv1users"><code>POST /api/v1/users</code></h3>
 <p>建立服務帳號（<code>account_type: "service"</code>）。人類帳號由
@@ -737,21 +877,21 @@ Keycloak webhook
 自動建立，<strong>不應透過此接口建立</strong>，以確保身份資料以 Keycloak
 為唯一來源。</p>
 <p><strong>Request Body</strong></p>
-<div class="sourceCode" id="cb9"><pre
-class="sourceCode json"><code class="sourceCode json"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
-<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;api_key&quot;</span><span class="fu">:</span> <span class="st">&quot;sk-svc-rag-pipeline-001&quot;</span><span class="fu">,</span></span>
-<span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;key_name&quot;</span><span class="fu">:</span> <span class="st">&quot;rag-pipeline&quot;</span><span class="fu">,</span></span>
-<span id="cb9-4"><a href="#cb9-4" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;user_id&quot;</span><span class="fu">:</span> <span class="st">&quot;svc-rag-pipeline&quot;</span><span class="fu">,</span></span>
-<span id="cb9-5"><a href="#cb9-5" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;user_email&quot;</span><span class="fu">:</span> <span class="kw">null</span><span class="fu">,</span></span>
-<span id="cb9-6"><a href="#cb9-6" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;dept_id&quot;</span><span class="fu">:</span> <span class="st">&quot;engineering&quot;</span><span class="fu">,</span></span>
-<span id="cb9-7"><a href="#cb9-7" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;account_type&quot;</span><span class="fu">:</span> <span class="st">&quot;service&quot;</span><span class="fu">,</span></span>
-<span id="cb9-8"><a href="#cb9-8" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;models&quot;</span><span class="fu">:</span> <span class="ot">[</span><span class="st">&quot;gemma-4-26B-A4B-it&quot;</span><span class="ot">,</span> <span class="st">&quot;embeddinggemma-300m&quot;</span><span class="ot">]</span><span class="fu">,</span></span>
-<span id="cb9-9"><a href="#cb9-9" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;rpm_limit&quot;</span><span class="fu">:</span> <span class="dv">120</span><span class="fu">,</span></span>
-<span id="cb9-10"><a href="#cb9-10" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;tpm_limit&quot;</span><span class="fu">:</span> <span class="dv">500000</span><span class="fu">,</span></span>
-<span id="cb9-11"><a href="#cb9-11" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;aliases&quot;</span><span class="fu">:</span> <span class="fu">{},</span></span>
-<span id="cb9-12"><a href="#cb9-12" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;metadata&quot;</span><span class="fu">:</span> <span class="fu">{</span><span class="dt">&quot;description&quot;</span><span class="fu">:</span> <span class="st">&quot;RAG 文件摘要排程服務&quot;</span><span class="fu">},</span></span>
-<span id="cb9-13"><a href="#cb9-13" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;blocked&quot;</span><span class="fu">:</span> <span class="kw">false</span></span>
-<span id="cb9-14"><a href="#cb9-14" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
+<div class="sourceCode" id="cb10"><pre
+class="sourceCode json"><code class="sourceCode json"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
+<span id="cb10-2"><a href="#cb10-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;api_key&quot;</span><span class="fu">:</span> <span class="st">&quot;sk-svc-rag-pipeline-001&quot;</span><span class="fu">,</span></span>
+<span id="cb10-3"><a href="#cb10-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;key_name&quot;</span><span class="fu">:</span> <span class="st">&quot;rag-pipeline&quot;</span><span class="fu">,</span></span>
+<span id="cb10-4"><a href="#cb10-4" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;user_id&quot;</span><span class="fu">:</span> <span class="st">&quot;svc-rag-pipeline&quot;</span><span class="fu">,</span></span>
+<span id="cb10-5"><a href="#cb10-5" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;user_email&quot;</span><span class="fu">:</span> <span class="kw">null</span><span class="fu">,</span></span>
+<span id="cb10-6"><a href="#cb10-6" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;dept_id&quot;</span><span class="fu">:</span> <span class="st">&quot;engineering&quot;</span><span class="fu">,</span></span>
+<span id="cb10-7"><a href="#cb10-7" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;account_type&quot;</span><span class="fu">:</span> <span class="st">&quot;service&quot;</span><span class="fu">,</span></span>
+<span id="cb10-8"><a href="#cb10-8" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;models&quot;</span><span class="fu">:</span> <span class="ot">[</span><span class="st">&quot;gemma-4-26B-A4B-it&quot;</span><span class="ot">,</span> <span class="st">&quot;embeddinggemma-300m&quot;</span><span class="ot">]</span><span class="fu">,</span></span>
+<span id="cb10-9"><a href="#cb10-9" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;rpm_limit&quot;</span><span class="fu">:</span> <span class="dv">120</span><span class="fu">,</span></span>
+<span id="cb10-10"><a href="#cb10-10" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;tpm_limit&quot;</span><span class="fu">:</span> <span class="dv">500000</span><span class="fu">,</span></span>
+<span id="cb10-11"><a href="#cb10-11" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;aliases&quot;</span><span class="fu">:</span> <span class="fu">{},</span></span>
+<span id="cb10-12"><a href="#cb10-12" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;metadata&quot;</span><span class="fu">:</span> <span class="fu">{</span><span class="dt">&quot;description&quot;</span><span class="fu">:</span> <span class="st">&quot;RAG 文件摘要排程服務&quot;</span><span class="fu">},</span></span>
+<span id="cb10-13"><a href="#cb10-13" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;blocked&quot;</span><span class="fu">:</span> <span class="kw">false</span></span>
+<span id="cb10-14"><a href="#cb10-14" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
 <ul>
 <li><code>api_key</code>、<code>key_name</code>、<code>user_id</code>、<code>dept_id</code>
 必填</li>
@@ -792,18 +932,18 @@ user 授權；若真要從 DB 側改，須遵守 <code>pull → PATCH → push</
 等非權限欄位不受此限制，可直接 PATCH。</p>
 </blockquote>
 <p><strong>常見用法</strong></p>
-<div class="sourceCode" id="cb10"><pre
-class="sourceCode bash"><code class="sourceCode bash"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="co"># 調整個人 Rate Limit（非權限欄位，可直接改）</span></span>
-<span id="cb10-2"><a href="#cb10-2" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="at">-X</span> PATCH <span class="st">&quot;http://&lt;host&gt;:30408/api/v1/users/alice-unique-id&quot;</span> <span class="dt">\</span></span>
-<span id="cb10-3"><a href="#cb10-3" aria-hidden="true" tabindex="-1"></a>  <span class="at">-H</span> <span class="st">&quot;Authorization: Bearer &lt;key&gt;&quot;</span> <span class="dt">\</span></span>
-<span id="cb10-4"><a href="#cb10-4" aria-hidden="true" tabindex="-1"></a>  <span class="at">-H</span> <span class="st">&quot;Content-Type: application/json&quot;</span> <span class="dt">\</span></span>
-<span id="cb10-5"><a href="#cb10-5" aria-hidden="true" tabindex="-1"></a>  <span class="at">-d</span> <span class="st">&#39;{&quot;rpm_limit&quot;: 30, &quot;tpm_limit&quot;: 100000}&#39;</span></span>
-<span id="cb10-6"><a href="#cb10-6" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb10-7"><a href="#cb10-7" aria-hidden="true" tabindex="-1"></a><span class="co"># 移轉部門（dept_id 由 Keycloak 同步為主；手動改為例外）</span></span>
-<span id="cb10-8"><a href="#cb10-8" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="at">-X</span> PATCH <span class="st">&quot;http://&lt;host&gt;:30408/api/v1/users/alice-unique-id&quot;</span> <span class="dt">\</span></span>
-<span id="cb10-9"><a href="#cb10-9" aria-hidden="true" tabindex="-1"></a>  <span class="at">-H</span> <span class="st">&quot;Authorization: Bearer &lt;key&gt;&quot;</span> <span class="dt">\</span></span>
-<span id="cb10-10"><a href="#cb10-10" aria-hidden="true" tabindex="-1"></a>  <span class="at">-H</span> <span class="st">&quot;Content-Type: application/json&quot;</span> <span class="dt">\</span></span>
-<span id="cb10-11"><a href="#cb10-11" aria-hidden="true" tabindex="-1"></a>  <span class="at">-d</span> <span class="st">&#39;{&quot;dept_id&quot;: &quot;data-science&quot;}&#39;</span></span></code></pre></div>
+<div class="sourceCode" id="cb11"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="co"># 調整個人 Rate Limit（非權限欄位，可直接改）</span></span>
+<span id="cb11-2"><a href="#cb11-2" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="at">-X</span> PATCH <span class="st">&quot;http://&lt;host&gt;:30408/api/v1/users/alice-unique-id&quot;</span> <span class="dt">\</span></span>
+<span id="cb11-3"><a href="#cb11-3" aria-hidden="true" tabindex="-1"></a>  <span class="at">-H</span> <span class="st">&quot;Authorization: Bearer &lt;key&gt;&quot;</span> <span class="dt">\</span></span>
+<span id="cb11-4"><a href="#cb11-4" aria-hidden="true" tabindex="-1"></a>  <span class="at">-H</span> <span class="st">&quot;Content-Type: application/json&quot;</span> <span class="dt">\</span></span>
+<span id="cb11-5"><a href="#cb11-5" aria-hidden="true" tabindex="-1"></a>  <span class="at">-d</span> <span class="st">&#39;{&quot;rpm_limit&quot;: 30, &quot;tpm_limit&quot;: 100000}&#39;</span></span>
+<span id="cb11-6"><a href="#cb11-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-7"><a href="#cb11-7" aria-hidden="true" tabindex="-1"></a><span class="co"># 移轉部門（dept_id 由 Keycloak 同步為主；手動改為例外）</span></span>
+<span id="cb11-8"><a href="#cb11-8" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="at">-X</span> PATCH <span class="st">&quot;http://&lt;host&gt;:30408/api/v1/users/alice-unique-id&quot;</span> <span class="dt">\</span></span>
+<span id="cb11-9"><a href="#cb11-9" aria-hidden="true" tabindex="-1"></a>  <span class="at">-H</span> <span class="st">&quot;Authorization: Bearer &lt;key&gt;&quot;</span> <span class="dt">\</span></span>
+<span id="cb11-10"><a href="#cb11-10" aria-hidden="true" tabindex="-1"></a>  <span class="at">-H</span> <span class="st">&quot;Content-Type: application/json&quot;</span> <span class="dt">\</span></span>
+<span id="cb11-11"><a href="#cb11-11" aria-hidden="true" tabindex="-1"></a>  <span class="at">-d</span> <span class="st">&#39;{&quot;dept_id&quot;: &quot;data-science&quot;}&#39;</span></span></code></pre></div>
 <p><strong>回應</strong>：<code>UserOut</code>（200）／
 <code>404</code></p>
 <hr />
@@ -817,9 +957,9 @@ id="post-apiv1usersuser_idblock"><code>POST /api/v1/users/{user_id}/block</code>
 <p>封鎖使用者，後續所有 LiteLLM 請求將返回
 <code>401</code>。資料保留，可隨時解封。</p>
 <p><strong>回應</strong>：<code>UserOut</code>（blocked=true）（200）</p>
-<div class="sourceCode" id="cb11"><pre
-class="sourceCode bash"><code class="sourceCode bash"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="at">-X</span> POST <span class="st">&quot;http://&lt;host&gt;:30408/api/v1/users/alice-unique-id/block&quot;</span> <span class="dt">\</span></span>
-<span id="cb11-2"><a href="#cb11-2" aria-hidden="true" tabindex="-1"></a>  <span class="at">-H</span> <span class="st">&quot;Authorization: Bearer &lt;key&gt;&quot;</span></span></code></pre></div>
+<div class="sourceCode" id="cb12"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="at">-X</span> POST <span class="st">&quot;http://&lt;host&gt;:30408/api/v1/users/alice-unique-id/block&quot;</span> <span class="dt">\</span></span>
+<span id="cb12-2"><a href="#cb12-2" aria-hidden="true" tabindex="-1"></a>  <span class="at">-H</span> <span class="st">&quot;Authorization: Bearer &lt;key&gt;&quot;</span></span></code></pre></div>
 <hr />
 <h3
 id="post-apiv1usersuser_idunblock"><code>POST /api/v1/users/{user_id}/unblock</code></h3>
@@ -833,19 +973,101 @@ id="post-apiv1usersuser_idregenerate-key"><code>POST /api/v1/users/{user_id}/reg
 秒快取延遲）。</p>
 <p><strong>回應</strong>：<code>UserOut</code>（含新
 <code>api_key</code>）（200）</p>
-<div class="sourceCode" id="cb12"><pre
-class="sourceCode bash"><code class="sourceCode bash"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="at">-X</span> POST <span class="st">&quot;http://&lt;host&gt;:30408/api/v1/users/alice-unique-id/regenerate-key&quot;</span> <span class="dt">\</span></span>
-<span id="cb12-2"><a href="#cb12-2" aria-hidden="true" tabindex="-1"></a>  <span class="at">-H</span> <span class="st">&quot;Authorization: Bearer &lt;key&gt;&quot;</span></span></code></pre></div>
 <div class="sourceCode" id="cb13"><pre
-class="sourceCode json"><code class="sourceCode json"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
-<span id="cb13-2"><a href="#cb13-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;api_key&quot;</span><span class="fu">:</span> <span class="st">&quot;sk-a3f9c2e1b7d4...&quot;</span><span class="fu">,</span></span>
-<span id="cb13-3"><a href="#cb13-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;key_name&quot;</span><span class="fu">:</span> <span class="st">&quot;alice&quot;</span><span class="fu">,</span></span>
-<span id="cb13-4"><a href="#cb13-4" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;user_id&quot;</span><span class="fu">:</span> <span class="st">&quot;alice-unique-id&quot;</span><span class="fu">,</span></span>
-<span id="cb13-5"><a href="#cb13-5" aria-hidden="true" tabindex="-1"></a>  <span class="er">...</span></span>
-<span id="cb13-6"><a href="#cb13-6" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="at">-X</span> POST <span class="st">&quot;http://&lt;host&gt;:30408/api/v1/users/alice-unique-id/regenerate-key&quot;</span> <span class="dt">\</span></span>
+<span id="cb13-2"><a href="#cb13-2" aria-hidden="true" tabindex="-1"></a>  <span class="at">-H</span> <span class="st">&quot;Authorization: Bearer &lt;key&gt;&quot;</span></span></code></pre></div>
+<div class="sourceCode" id="cb14"><pre
+class="sourceCode json"><code class="sourceCode json"><span id="cb14-1"><a href="#cb14-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
+<span id="cb14-2"><a href="#cb14-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;api_key&quot;</span><span class="fu">:</span> <span class="st">&quot;sk-a3f9c2e1b7d4...&quot;</span><span class="fu">,</span></span>
+<span id="cb14-3"><a href="#cb14-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;key_name&quot;</span><span class="fu">:</span> <span class="st">&quot;alice&quot;</span><span class="fu">,</span></span>
+<span id="cb14-4"><a href="#cb14-4" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;user_id&quot;</span><span class="fu">:</span> <span class="st">&quot;alice-unique-id&quot;</span><span class="fu">,</span></span>
+<span id="cb14-5"><a href="#cb14-5" aria-hidden="true" tabindex="-1"></a>  <span class="er">...</span></span>
+<span id="cb14-6"><a href="#cb14-6" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
 <blockquote>
-<p>務必將新 <code>api_key</code> 通知使用者，並更新其應用程式設定。</p>
+<p>務必將新 <code>api_key</code> 通知使用者，並更新其應用程式設定。
+使用者也可以自己重設，不必透過這支，見下方「自助端點」。</p>
 </blockquote>
+<hr />
+<h2 id="自助端點me">自助端點（Me）</h2>
+<p>給一般使用者查詢／重設<strong>自己</strong>的 API Key，不需要 admin
+介入。認證方式與回傳欄位的 設計理由見上方「<a
+href="#自助端點的認證apiv1me">自助端點的認證</a>」。</p>
+<p>使用者端的完整操作說明見 <a href="api-access.md">api-access.md</a> 第
+1 節（<strong>一般使用者請看
+那一節的瀏覽器登入方式即可</strong>，不用理解下面這組 JSON 端點）。</p>
+<h3 id="get-apiv1meweblogin"><code>GET /api/v1/me/web/login</code></h3>
+<p><strong>主要途徑，給一般使用者。</strong> 瀏覽器直接打開：</p>
+<pre><code>http://&lt;admin-api 位址&gt;/api/v1/me/web/login</code></pre>
+<p>會 302 導向 Keycloak 登入畫面（跟登入 OpenWebUI
+同一套帳號），登入完自動導回
+<code>/api/v1/me/web/callback</code>，網頁直接顯示 <code>key_name</code>
+/ 部門 / email / 可用模型 / API Key，並附一顆「重設我的 Key」按鈕（POST
+到 <code>/api/v1/me/web/regenerate-key</code>， 靠登入時設好的 session
+cookie 驗證，不用重新登入）。</p>
+<p>未設定 <code>KEYCLOAK_SELFSERVICE_CLIENT_ID</code> /
+<code>KEYCLOAK_SELFSERVICE_CLIENT_SECRET</code> /
+<code>ADMIN_API_PUBLIC_URL</code> 時直接回
+<code>500</code>，並在錯誤訊息裡列出缺了哪些變數；設定方式見 <a
+href="../keycloak/SETUP.md">keycloak/SETUP.md</a>「一之二」。</p>
+<h3 id="get-apiv1me-json給腳本用"><code>GET /api/v1/me</code>
+（JSON，給腳本用）</h3>
+<p><strong>認證</strong>：<code>Authorization: Bearer &lt;Keycloak access token&gt;</code></p>
+<p><strong>回應</strong>：<code>MeOut</code>（200）</p>
+<div class="sourceCode" id="cb16"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb16-1"><a href="#cb16-1" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="st">&quot;http://&lt;host&gt;:30408/api/v1/me&quot;</span> <span class="at">-H</span> <span class="st">&quot;Authorization: Bearer </span><span class="va">$KEYCLOAK_TOKEN</span><span class="st">&quot;</span></span></code></pre></div>
+<div class="sourceCode" id="cb17"><pre
+class="sourceCode json"><code class="sourceCode json"><span id="cb17-1"><a href="#cb17-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
+<span id="cb17-2"><a href="#cb17-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;user_id&quot;</span><span class="fu">:</span> <span class="st">&quot;f47ac10b-58cc-4372-a567-0e02b2c3d479&quot;</span><span class="fu">,</span></span>
+<span id="cb17-3"><a href="#cb17-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;key_name&quot;</span><span class="fu">:</span> <span class="st">&quot;alice&quot;</span><span class="fu">,</span></span>
+<span id="cb17-4"><a href="#cb17-4" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;user_email&quot;</span><span class="fu">:</span> <span class="st">&quot;alice@example.com&quot;</span><span class="fu">,</span></span>
+<span id="cb17-5"><a href="#cb17-5" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;dept_id&quot;</span><span class="fu">:</span> <span class="st">&quot;RD&quot;</span><span class="fu">,</span></span>
+<span id="cb17-6"><a href="#cb17-6" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;api_key&quot;</span><span class="fu">:</span> <span class="st">&quot;sk-a3f9c2e1b7d4...&quot;</span><span class="fu">,</span></span>
+<span id="cb17-7"><a href="#cb17-7" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;allowed_models&quot;</span><span class="fu">:</span> <span class="ot">[</span><span class="st">&quot;gemma-4-26B-A4B-it&quot;</span><span class="ot">,</span> <span class="st">&quot;gemma-4-31B-it&quot;</span><span class="ot">]</span><span class="fu">,</span></span>
+<span id="cb17-8"><a href="#cb17-8" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;blocked&quot;</span><span class="fu">:</span> <span class="kw">false</span></span>
+<span id="cb17-9"><a href="#cb17-9" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
+<table>
+<thead>
+<tr class="header">
+<th>狀態碼</th>
+<th>情況</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>401</code></td>
+<td>token 無效、已過期或已撤銷</td>
+</tr>
+<tr class="even">
+<td><code>403</code></td>
+<td>帳號已被封鎖（<code>blocked=1</code>）</td>
+</tr>
+<tr class="odd">
+<td><code>404</code></td>
+<td>Keycloak 身分在平台上還沒有對應帳號（sub 與 email 都對不到）</td>
+</tr>
+<tr class="even">
+<td><code>500</code></td>
+<td>admin-api 沒設定 <code>KEYCLOAK_URL</code> /
+<code>KEYCLOAK_REALM</code></td>
+</tr>
+<tr class="odd">
+<td><code>502</code></td>
+<td>連不上 Keycloak</td>
+</tr>
+</tbody>
+</table>
+<h3
+id="post-apiv1meregenerate-key-json給腳本用"><code>POST /api/v1/me/regenerate-key</code>
+（JSON，給腳本用）</h3>
+<p>重設自己的 API Key，行為與
+<code>POST /api/v1/users/{user_id}/regenerate-key</code> 相同，只是限定
+在自己的帳號上。<strong>舊 Key 立即失效</strong>（最多 30
+秒快取延遲），所有填過舊 key 的工具都要更新。</p>
+<p><strong>回應</strong>：<code>MeOut</code>（含新
+<code>api_key</code>）（200）</p>
+<div class="sourceCode" id="cb18"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb18-1"><a href="#cb18-1" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="at">-X</span> POST <span class="st">&quot;http://&lt;host&gt;:30408/api/v1/me/regenerate-key&quot;</span> <span class="dt">\</span></span>
+<span id="cb18-2"><a href="#cb18-2" aria-hidden="true" tabindex="-1"></a>  <span class="at">-H</span> <span class="st">&quot;Authorization: Bearer </span><span class="va">$KEYCLOAK_TOKEN</span><span class="st">&quot;</span></span></code></pre></div>
 <hr />
 <h2 id="可用模型models">可用模型（Models）</h2>
 <h3 id="get-apiv1models"><code>GET /api/v1/models</code></h3>
@@ -854,37 +1076,270 @@ class="sourceCode json"><code class="sourceCode json"><span id="cb13-1"><a href=
 <p><strong>依賴環境變數</strong>：<code>LITELLM_URL</code>、<code>LITELLM_MASTER_KEY</code>（admin-api
 deployment 已設定）</p>
 <p><strong>回應</strong>（200）</p>
-<div class="sourceCode" id="cb14"><pre
-class="sourceCode json"><code class="sourceCode json"><span id="cb14-1"><a href="#cb14-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
-<span id="cb14-2"><a href="#cb14-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;models&quot;</span><span class="fu">:</span> <span class="ot">[</span></span>
-<span id="cb14-3"><a href="#cb14-3" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;embeddinggemma-300m&quot;</span><span class="ot">,</span></span>
-<span id="cb14-4"><a href="#cb14-4" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;gemma-4-26B-A4B-it&quot;</span><span class="ot">,</span></span>
-<span id="cb14-5"><a href="#cb14-5" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;gemma-4-31B-it&quot;</span></span>
-<span id="cb14-7"><a href="#cb14-7" aria-hidden="true" tabindex="-1"></a>  <span class="ot">]</span></span>
-<span id="cb14-8"><a href="#cb14-8" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
+<div class="sourceCode" id="cb19"><pre
+class="sourceCode json"><code class="sourceCode json"><span id="cb19-1"><a href="#cb19-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
+<span id="cb19-2"><a href="#cb19-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;models&quot;</span><span class="fu">:</span> <span class="ot">[</span></span>
+<span id="cb19-3"><a href="#cb19-3" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;embeddinggemma-300m&quot;</span><span class="ot">,</span></span>
+<span id="cb19-4"><a href="#cb19-4" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;gemma-4-26B-A4B-it&quot;</span><span class="ot">,</span></span>
+<span id="cb19-5"><a href="#cb19-5" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;gemma-4-31B-it&quot;</span></span>
+<span id="cb19-6"><a href="#cb19-6" aria-hidden="true" tabindex="-1"></a>  <span class="ot">]</span></span>
+<span id="cb19-7"><a href="#cb19-7" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
 <p>模型清單直接反映 <code>litellm_config.yaml</code> 的
 <code>model_list</code>，新增或移除模型後重啟 LiteLLM 即更新。</p>
-<div class="sourceCode" id="cb15"><pre
-class="sourceCode bash"><code class="sourceCode bash"><span id="cb15-1"><a href="#cb15-1" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="st">&quot;http://&lt;host&gt;:30408/api/v1/models&quot;</span> <span class="dt">\</span></span>
-<span id="cb15-2"><a href="#cb15-2" aria-hidden="true" tabindex="-1"></a>  <span class="at">-H</span> <span class="st">&quot;Authorization: Bearer &lt;key&gt;&quot;</span></span></code></pre></div>
+<div class="sourceCode" id="cb20"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb20-1"><a href="#cb20-1" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="st">&quot;http://&lt;host&gt;:30408/api/v1/models&quot;</span> <span class="dt">\</span></span>
+<span id="cb20-2"><a href="#cb20-2" aria-hidden="true" tabindex="-1"></a>  <span class="at">-H</span> <span class="st">&quot;Authorization: Bearer &lt;key&gt;&quot;</span></span></code></pre></div>
+<h3
+id="get-apiv1modelsexternal"><code>GET /api/v1/models/external</code></h3>
+<p>列出目前 DB-managed（<code>store_model_in_db</code>，見 <a
+href="external-models-ops.md">external-models-ops.md「路線
+C」</a>）的模型，不含 <code>litellm_config.yaml</code>
+<code>model_list</code> 定義的那些。</p>
+<p><strong>回應</strong>（200）</p>
+<div class="sourceCode" id="cb21"><pre
+class="sourceCode json"><code class="sourceCode json"><span id="cb21-1"><a href="#cb21-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
+<span id="cb21-2"><a href="#cb21-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;models&quot;</span><span class="fu">:</span> <span class="ot">[</span></span>
+<span id="cb21-3"><a href="#cb21-3" aria-hidden="true" tabindex="-1"></a>    <span class="fu">{</span></span>
+<span id="cb21-4"><a href="#cb21-4" aria-hidden="true" tabindex="-1"></a>      <span class="dt">&quot;id&quot;</span><span class="fu">:</span> <span class="st">&quot;112f74fa...&quot;</span><span class="fu">,</span></span>
+<span id="cb21-5"><a href="#cb21-5" aria-hidden="true" tabindex="-1"></a>      <span class="dt">&quot;model_name&quot;</span><span class="fu">:</span> <span class="st">&quot;openrouter/anthropic/claude-sonnet-4-5&quot;</span><span class="fu">,</span></span>
+<span id="cb21-6"><a href="#cb21-6" aria-hidden="true" tabindex="-1"></a>      <span class="dt">&quot;model&quot;</span><span class="fu">:</span> <span class="st">&quot;openai/anthropic/claude-sonnet-4-5&quot;</span><span class="fu">,</span></span>
+<span id="cb21-7"><a href="#cb21-7" aria-hidden="true" tabindex="-1"></a>      <span class="dt">&quot;api_base&quot;</span><span class="fu">:</span> <span class="st">&quot;https://openrouter.ai/api/v1&quot;</span><span class="fu">,</span></span>
+<span id="cb21-8"><a href="#cb21-8" aria-hidden="true" tabindex="-1"></a>      <span class="dt">&quot;key_policy&quot;</span><span class="fu">:</span> <span class="st">&quot;dept:openrouter&quot;</span><span class="fu">,</span></span>
+<span id="cb21-9"><a href="#cb21-9" aria-hidden="true" tabindex="-1"></a>      <span class="dt">&quot;registered&quot;</span><span class="fu">:</span> <span class="kw">true</span><span class="fu">,</span></span>
+<span id="cb21-10"><a href="#cb21-10" aria-hidden="true" tabindex="-1"></a>      <span class="dt">&quot;meta&quot;</span><span class="fu">:</span> <span class="fu">{</span></span>
+<span id="cb21-11"><a href="#cb21-11" aria-hidden="true" tabindex="-1"></a>        <span class="dt">&quot;display_name&quot;</span><span class="fu">:</span> <span class="st">&quot;Claude Sonnet 4.5&quot;</span><span class="fu">,</span></span>
+<span id="cb21-12"><a href="#cb21-12" aria-hidden="true" tabindex="-1"></a>        <span class="dt">&quot;model_type&quot;</span><span class="fu">:</span> <span class="st">&quot;chat&quot;</span><span class="fu">,</span></span>
+<span id="cb21-13"><a href="#cb21-13" aria-hidden="true" tabindex="-1"></a>        <span class="dt">&quot;status&quot;</span><span class="fu">:</span> <span class="st">&quot;published&quot;</span><span class="fu">,</span></span>
+<span id="cb21-14"><a href="#cb21-14" aria-hidden="true" tabindex="-1"></a>        <span class="dt">&quot;cost_center&quot;</span><span class="fu">:</span> <span class="st">&quot;RD&quot;</span><span class="fu">,</span></span>
+<span id="cb21-15"><a href="#cb21-15" aria-hidden="true" tabindex="-1"></a>        <span class="dt">&quot;budget_limit_usd&quot;</span><span class="fu">:</span> <span class="fl">200.0</span><span class="fu">,</span></span>
+<span id="cb21-16"><a href="#cb21-16" aria-hidden="true" tabindex="-1"></a>        <span class="dt">&quot;budget_enforce&quot;</span><span class="fu">:</span> <span class="dv">1</span><span class="fu">,</span></span>
+<span id="cb21-17"><a href="#cb21-17" aria-hidden="true" tabindex="-1"></a>        <span class="dt">&quot;budget_period&quot;</span><span class="fu">:</span> <span class="st">&quot;monthly&quot;</span><span class="fu">,</span></span>
+<span id="cb21-18"><a href="#cb21-18" aria-hidden="true" tabindex="-1"></a>        <span class="dt">&quot;points_per_1k_prompt&quot;</span><span class="fu">:</span> <span class="fl">3.0</span><span class="fu">,</span></span>
+<span id="cb21-19"><a href="#cb21-19" aria-hidden="true" tabindex="-1"></a>        <span class="dt">&quot;points_per_1k_completion&quot;</span><span class="fu">:</span> <span class="fl">15.0</span><span class="fu">,</span></span>
+<span id="cb21-20"><a href="#cb21-20" aria-hidden="true" tabindex="-1"></a>        <span class="dt">&quot;notes&quot;</span><span class="fu">:</span> <span class="st">&quot;&quot;</span><span class="fu">,</span></span>
+<span id="cb21-21"><a href="#cb21-21" aria-hidden="true" tabindex="-1"></a>        <span class="dt">&quot;last_test_ok&quot;</span><span class="fu">:</span> <span class="dv">1</span><span class="fu">,</span></span>
+<span id="cb21-22"><a href="#cb21-22" aria-hidden="true" tabindex="-1"></a>        <span class="dt">&quot;last_test_at&quot;</span><span class="fu">:</span> <span class="st">&quot;2026-08-27T02:11:00+00:00&quot;</span><span class="fu">,</span></span>
+<span id="cb21-23"><a href="#cb21-23" aria-hidden="true" tabindex="-1"></a>        <span class="dt">&quot;last_test_result&quot;</span><span class="fu">:</span> <span class="st">&quot;成功（chat 最小請求回 200）&quot;</span><span class="fu">,</span></span>
+<span id="cb21-24"><a href="#cb21-24" aria-hidden="true" tabindex="-1"></a>        <span class="dt">&quot;has_record&quot;</span><span class="fu">:</span> <span class="kw">true</span></span>
+<span id="cb21-25"><a href="#cb21-25" aria-hidden="true" tabindex="-1"></a>      <span class="fu">},</span></span>
+<span id="cb21-26"><a href="#cb21-26" aria-hidden="true" tabindex="-1"></a>      <span class="dt">&quot;spend&quot;</span><span class="fu">:</span> <span class="fu">{</span><span class="dt">&quot;period&quot;</span><span class="fu">:</span> <span class="st">&quot;2026-08&quot;</span><span class="fu">,</span> <span class="dt">&quot;monthly&quot;</span><span class="fu">:</span> <span class="fl">12.34</span><span class="fu">,</span> <span class="dt">&quot;calls&quot;</span><span class="fu">:</span> <span class="dv">421</span><span class="fu">,</span> <span class="dt">&quot;total&quot;</span><span class="fu">:</span> <span class="fl">58.9</span><span class="fu">}</span></span>
+<span id="cb21-27"><a href="#cb21-27" aria-hidden="true" tabindex="-1"></a>    <span class="fu">}</span></span>
+<span id="cb21-28"><a href="#cb21-28" aria-hidden="true" tabindex="-1"></a>  <span class="ot">]</span></span>
+<span id="cb21-29"><a href="#cb21-29" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
+<ul>
+<li><strong>這個端點刻意只列 DB-managed 模型</strong>，不含
+<code>litellm_config.yaml</code> <code>model_list</code> 定義
+的地端模型——這是既有契約。admin-web
+的模型清單頁則兩者都列（地端模型標「既有」、
+路由唯讀），因為管理者需要在同一個地方看到平台上所有的模型。</li>
+<li><code>meta</code> 是 admin-api 自己 Postgres（firdi_users
+database）<code>model_metadata</code> 表的內容（不在 LiteLLM 裡）。
+<code>has_record: false</code> 代表這個 model_name
+沒有管理紀錄——這個功能上線前就存在的
+模型都是這樣，欄位是合成的預設值（<code>status: "published"</code>），不受狀態機管理。</li>
+<li><code>registered: false</code> 代表這筆只存在於
+<code>model_metadata</code>，LiteLLM 那邊沒有——正常 情況就是
+<code>status: "disabled"</code>（停用＝真的從 LiteLLM
+刪掉、但保留設定）。這種 項目的 <code>id</code> 是
+<code>null</code>，不能拿去打
+<code>DELETE /api/v1/models/external/{id}</code>。</li>
+<li><code>spend</code> 是本專案自己累計的用量（<code>model_spend</code>
+表，由 <code>config/custom_logger.py</code> 寫入）。LiteLLM 內建的 spend
+tracking 在本專案是關掉的，見 <code>config/litellm_config.yaml</code> 的
+<code>disable_spend_logs</code>。</li>
+<li><code>meta.points_per_1k_prompt</code> /
+<code>meta.points_per_1k_completion</code> 是<strong>只存不算</strong>的
+點數費率（每 1K token 幾點，可填小數，<code>null</code> =
+還沒填）。這個平台不累計點數、
+不檢查點數上限、也不會因為點數用完而擋下呼叫——扣點與部門／人員的總點數上限
+由外部系統處理，<strong>這個端點就是那套系統讀費率的地方</strong>；token
+數從 <code>usage.jsonl</code> 每筆 <code>llm_call</code> 的
+<code>prompt_tokens</code> / <code>completion_tokens</code>（附
+<code>billing_model</code>、
+<code>user_id</code>、<code>dept_id</code>）讀。</li>
+</ul>
+<h3
+id="post-apiv1modelsexternal"><code>POST /api/v1/models/external</code></h3>
+<p>自助上架一個外部模型，直接寫進 Postgres，不改
+<code>litellm_config.yaml</code>、不重啟 litellm pod。</p>
+<p><strong>請求</strong></p>
+<div class="sourceCode" id="cb22"><pre
+class="sourceCode json"><code class="sourceCode json"><span id="cb22-1"><a href="#cb22-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
+<span id="cb22-2"><a href="#cb22-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;model_name&quot;</span><span class="fu">:</span> <span class="st">&quot;gpt-4o-mini&quot;</span><span class="fu">,</span></span>
+<span id="cb22-3"><a href="#cb22-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;model&quot;</span><span class="fu">:</span> <span class="st">&quot;openai/gpt-4o-mini&quot;</span><span class="fu">,</span></span>
+<span id="cb22-4"><a href="#cb22-4" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;api_key&quot;</span><span class="fu">:</span> <span class="st">&quot;sk-xxxxxxxx&quot;</span><span class="fu">,</span></span>
+<span id="cb22-5"><a href="#cb22-5" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;api_base&quot;</span><span class="fu">:</span> <span class="kw">null</span><span class="fu">,</span></span>
+<span id="cb22-6"><a href="#cb22-6" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;key_policy&quot;</span><span class="fu">:</span> <span class="st">&quot;model&quot;</span></span>
+<span id="cb22-7"><a href="#cb22-7" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
+<ul>
+<li><code>model_name</code>：使用者呼叫時填的名字。<code>openrouter/</code>
+前綴只是命名慣例（決策 E
+之後不再是功能開關），純粹方便人看得懂來源。</li>
+<li><code>model</code>：<code>litellm_params.model</code>，供應商前綴 +
+模型 id（<code>openai/gpt-4o-mini</code>、
+<code>anthropic/claude-...</code>……），OpenRouter 路線則是
+<code>openai/&lt;openrouter slug&gt;</code>。</li>
+<li><code>key_policy</code>：這個模型的 key 從哪來，跟
+<code>model_name</code>/<code>model</code>（上游是誰）解耦 （決策 E，見
+<a href="admin-web.md">admin-web.md</a>）。<code>"model"</code> =
+用這筆的 <code>api_key</code>； <code>"dept:&lt;provider&gt;"</code>（如
+<code>"dept:openai"</code>）= 執行期改用呼叫者部門
+<code>provider_keys</code> 裡對應 provider 的 key，此時
+<code>api_key</code> 可留空。<strong>留空</strong>這個
+欄位時後端會推導預設值：<code>openrouter/</code> 開頭 →
+<code>dept:openrouter</code>，其餘 → <code>"model"</code>（維持決策 E
+之前的唯一行為，既有呼叫者不受影響）。</li>
+<li><code>api_key</code>：<code>key_policy</code> 解析為
+<code>"model"</code> 時必填（直接存進 Postgres，LiteLLM
+會加密儲存）；<code>"dept:&lt;provider&gt;"</code>
+時可留空，會自動帶入共用 placeholder。</li>
+<li><strong><code>dept:&lt;provider&gt;</code>
+是舊制</strong>：admin-web 的上架表單已不再產生這種模型（新模型一律
+<code>"model"</code>，見 <a
+href="admin-web.md">admin-web.md</a>），要給某個部門專屬 key 的做法改成
+「同一個上游再上架一個加後綴的模型」。這個端點仍然接受
+<code>dept:&lt;provider&gt;</code>，既有 模型與腳本行為完全不變。</li>
+</ul>
+<p><strong>管理面欄位（全部選填，存進 admin-api 的
+<code>model_metadata</code> 表，不進 LiteLLM）</strong></p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>欄位</th>
+<th>預設</th>
+<th>說明</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>display_name</code></td>
+<td><code>""</code></td>
+<td>顯示名稱，可跟呼叫用的 <code>model_name</code> 不同</td>
+</tr>
+<tr class="even">
+<td><code>model_type</code></td>
+<td><code>"chat"</code></td>
+<td><code>chat</code> / <code>embedding</code> /
+<code>rerank</code>，決定測試呼叫送哪種請求</td>
+</tr>
+<tr class="odd">
+<td><code>cost_center</code></td>
+<td><code>""</code></td>
+<td>成本歸屬部門（<code>dept_id</code>），純標記、不影響權限也不切分額度</td>
+</tr>
+<tr class="even">
+<td><code>budget_limit_usd</code></td>
+<td><code>null</code></td>
+<td>額度上限（USD）；<code>null</code> = 不設額度</td>
+</tr>
+<tr class="odd">
+<td><code>budget_enforce</code></td>
+<td><code>false</code></td>
+<td><code>true</code> = 超額時 <code>config/custom_auth.py</code> 直接回
+429；<code>false</code> = 只累計</td>
+</tr>
+<tr class="even">
+<td><code>budget_period</code></td>
+<td><code>"monthly"</code></td>
+<td><code>monthly</code>（每月 UTC 歸零）或
+<code>total</code>（累計不歸零）</td>
+</tr>
+<tr class="odd">
+<td><code>points_per_1k_prompt</code></td>
+<td><code>null</code></td>
+<td>每 1K 輸入 token
+的點數（可填小數）。<strong>只存不算</strong>，見上方說明；<code>null</code>
+= 還沒填，跟 <code>0</code>（免費）不同</td>
+</tr>
+<tr class="even">
+<td><code>points_per_1k_completion</code></td>
+<td><code>null</code></td>
+<td>每 1K 輸出 token 的點數，同上</td>
+</tr>
+<tr class="odd">
+<td><code>notes</code></td>
+<td><code>""</code></td>
+<td>備註</td>
+</tr>
+<tr class="even">
+<td><code>upstream</code></td>
+<td><code>""</code></td>
+<td><code>admin-api/model_upstreams.py</code> 的
+key，供停用後重建時還原表單</td>
+</tr>
+<tr class="odd">
+<td><code>status</code></td>
+<td><code>"published"</code></td>
+<td><code>draft</code> 或 <code>published</code>。<strong>預設 published
+是為了讓既有的 curl 流程行為完全不變</strong>；網頁表單會明確帶
+<code>draft</code>，走「草稿 →（測試通過）→ 發布」那條路</td>
+</tr>
+</tbody>
+</table>
+<p><code>status: "draft"</code> 的模型雖然已經註冊到
+LiteLLM（不然測不起來），但 <code>config/custom_auth.py</code>
+會擋掉所有一般使用者的呼叫（403），要先通過測試呼叫、
+再發布才放得出去。狀態機的操作只有網頁介面有（見 <a
+href="admin-web.md">admin-web.md</a>）， curl
+這條路只負責建立與刪除。</p>
+<p><strong>回應</strong>：201 成功；409 表示 <code>model_name</code>
+已存在（回應會註明是 YAML 定義還是 DB-managed）；422 表示
+<code>key_policy="model"</code> 卻沒給 <code>api_key</code>，或
+<code>key_policy</code> 格式錯誤。</p>
+<div class="sourceCode" id="cb23"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb23-1"><a href="#cb23-1" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="at">-X</span> POST <span class="st">&quot;http://&lt;host&gt;:30408/api/v1/models/external&quot;</span> <span class="dt">\</span></span>
+<span id="cb23-2"><a href="#cb23-2" aria-hidden="true" tabindex="-1"></a>  <span class="at">-H</span> <span class="st">&quot;Authorization: Bearer &lt;key&gt;&quot;</span> <span class="dt">\</span></span>
+<span id="cb23-3"><a href="#cb23-3" aria-hidden="true" tabindex="-1"></a>  <span class="at">-H</span> <span class="st">&quot;Content-Type: application/json&quot;</span> <span class="dt">\</span></span>
+<span id="cb23-4"><a href="#cb23-4" aria-hidden="true" tabindex="-1"></a>  <span class="at">-d</span> <span class="st">&#39;{&quot;model_name&quot;: &quot;gpt-4o-mini&quot;, &quot;model&quot;: &quot;openai/gpt-4o-mini&quot;, &quot;api_key&quot;: &quot;sk-xxxxxxxx&quot;}&#39;</span></span></code></pre></div>
+<h3
+id="delete-apiv1modelsexternalmodel_id"><code>DELETE /api/v1/models/external/{model_id}</code></h3>
+<p>刪除一個 DB-managed 模型。<code>model_id</code> 是
+<code>GET /api/v1/models/external</code> 回傳的 <code>id</code> （不是
+<code>model_name</code>）。成功回 204，同時清掉這個 model_name 的
+<code>model_metadata</code> 與 key policy 紀錄（用量累計
+<code>model_spend</code> 刻意保留，避免同名模型重新上架時歷史
+花費被歸零）。</p>
+<p><strong>這是硬刪除，沒有影響範圍確認。</strong>
+想暫停一個模型但保留設定、之後一鍵復原，請用 網頁介面的「停用」（見 <a
+href="admin-web.md">admin-web.md</a>），那邊會先算出影響幾個部門、
+幾個人再讓你確認。</p>
+<div class="sourceCode" id="cb24"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb24-1"><a href="#cb24-1" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="at">-X</span> DELETE <span class="st">&quot;http://&lt;host&gt;:30408/api/v1/models/external/&lt;id&gt;&quot;</span> <span class="dt">\</span></span>
+<span id="cb24-2"><a href="#cb24-2" aria-hidden="true" tabindex="-1"></a>  <span class="at">-H</span> <span class="st">&quot;Authorization: Bearer &lt;key&gt;&quot;</span></span></code></pre></div>
+<blockquote>
+<p>新增模型後別忘了到 OpenWebUI
+開放使用權限，否則沒有人能實際呼叫，細節見 <a
+href="external-models.md">external-models.md</a> 與 <a
+href="permission-sync.md">permission-sync.md</a>。</p>
+</blockquote>
 <hr />
 <h2 id="keycloak-同步sync">Keycloak 同步（Sync）</h2>
 <h3
 id="post-apiv1synckeycloak"><code>POST /api/v1/sync/keycloak</code></h3>
-<p>接收 Keycloak 使用者事件，自動同步使用者資料至 SQLite。</p>
+<p>接收 Keycloak 使用者事件，自動同步使用者資料至 Postgres（firdi_users
+database）。</p>
 <p><strong>不需要 Admin API Key</strong>，改用
 <code>X-Webhook-Secret</code> header 認證。</p>
 <p><strong>Request Headers</strong></p>
 <pre><code>X-Webhook-Secret: &lt;WEBHOOK_SECRET&gt;
 Content-Type: application/json</code></pre>
 <p><strong>Request Body</strong></p>
-<div class="sourceCode" id="cb17"><pre
-class="sourceCode json"><code class="sourceCode json"><span id="cb17-1"><a href="#cb17-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
-<span id="cb17-2"><a href="#cb17-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;user_id&quot;</span><span class="fu">:</span> <span class="st">&quot;&lt;keycloak-user-uuid&gt;&quot;</span><span class="fu">,</span></span>
-<span id="cb17-3"><a href="#cb17-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;event_type&quot;</span><span class="fu">:</span> <span class="st">&quot;CREATE&quot;</span><span class="fu">,</span></span>
-<span id="cb17-4"><a href="#cb17-4" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;source&quot;</span><span class="fu">:</span> <span class="st">&quot;admin_event&quot;</span></span>
-<span id="cb17-5"><a href="#cb17-5" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
+<div class="sourceCode" id="cb26"><pre
+class="sourceCode json"><code class="sourceCode json"><span id="cb26-1"><a href="#cb26-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
+<span id="cb26-2"><a href="#cb26-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;user_id&quot;</span><span class="fu">:</span> <span class="st">&quot;&lt;keycloak-user-uuid&gt;&quot;</span><span class="fu">,</span></span>
+<span id="cb26-3"><a href="#cb26-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;event_type&quot;</span><span class="fu">:</span> <span class="st">&quot;CREATE&quot;</span><span class="fu">,</span></span>
+<span id="cb26-4"><a href="#cb26-4" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;source&quot;</span><span class="fu">:</span> <span class="st">&quot;admin_event&quot;</span></span>
+<span id="cb26-5"><a href="#cb26-5" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
 <table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
 <thead>
 <tr class="header">
 <th>欄位</th>
@@ -911,6 +1366,10 @@ class="sourceCode json"><code class="sourceCode json"><span id="cb17-1"><a href=
 </table>
 <p><strong>處理邏輯</strong></p>
 <table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
 <thead>
 <tr class="header">
 <th>情況</th>
@@ -942,11 +1401,11 @@ class="sourceCode json"><code class="sourceCode json"><span id="cb17-1"><a href=
 </tbody>
 </table>
 <p><strong>回應範例</strong></p>
-<div class="sourceCode" id="cb18"><pre
-class="sourceCode json"><code class="sourceCode json"><span id="cb18-1"><a href="#cb18-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span><span class="dt">&quot;status&quot;</span><span class="fu">:</span> <span class="st">&quot;created&quot;</span><span class="fu">,</span> <span class="dt">&quot;user_id&quot;</span><span class="fu">:</span> <span class="st">&quot;uuid-...&quot;</span><span class="fu">,</span> <span class="dt">&quot;api_key&quot;</span><span class="fu">:</span> <span class="st">&quot;sk-abc123...&quot;</span><span class="fu">}</span></span>
-<span id="cb18-2"><a href="#cb18-2" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span><span class="dt">&quot;status&quot;</span><span class="fu">:</span> <span class="st">&quot;updated&quot;</span><span class="fu">,</span> <span class="dt">&quot;user_id&quot;</span><span class="fu">:</span> <span class="st">&quot;uuid-...&quot;</span><span class="fu">}</span></span>
-<span id="cb18-3"><a href="#cb18-3" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span><span class="dt">&quot;status&quot;</span><span class="fu">:</span> <span class="st">&quot;blocked&quot;</span><span class="fu">,</span> <span class="dt">&quot;user_id&quot;</span><span class="fu">:</span> <span class="st">&quot;uuid-...&quot;</span><span class="fu">}</span></span>
-<span id="cb18-4"><a href="#cb18-4" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span><span class="dt">&quot;status&quot;</span><span class="fu">:</span> <span class="st">&quot;skipped&quot;</span><span class="fu">,</span> <span class="dt">&quot;user_id&quot;</span><span class="fu">:</span> <span class="st">&quot;uuid-...&quot;</span><span class="fu">,</span> <span class="dt">&quot;reason&quot;</span><span class="fu">:</span> <span class="st">&quot;user not found in Keycloak&quot;</span><span class="fu">}</span></span></code></pre></div>
+<div class="sourceCode" id="cb27"><pre
+class="sourceCode json"><code class="sourceCode json"><span id="cb27-1"><a href="#cb27-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span><span class="dt">&quot;status&quot;</span><span class="fu">:</span> <span class="st">&quot;created&quot;</span><span class="fu">,</span> <span class="dt">&quot;user_id&quot;</span><span class="fu">:</span> <span class="st">&quot;uuid-...&quot;</span><span class="fu">,</span> <span class="dt">&quot;api_key&quot;</span><span class="fu">:</span> <span class="st">&quot;sk-abc123...&quot;</span><span class="fu">}</span></span>
+<span id="cb27-2"><a href="#cb27-2" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span><span class="dt">&quot;status&quot;</span><span class="fu">:</span> <span class="st">&quot;updated&quot;</span><span class="fu">,</span> <span class="dt">&quot;user_id&quot;</span><span class="fu">:</span> <span class="st">&quot;uuid-...&quot;</span><span class="fu">}</span></span>
+<span id="cb27-3"><a href="#cb27-3" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span><span class="dt">&quot;status&quot;</span><span class="fu">:</span> <span class="st">&quot;blocked&quot;</span><span class="fu">,</span> <span class="dt">&quot;user_id&quot;</span><span class="fu">:</span> <span class="st">&quot;uuid-...&quot;</span><span class="fu">}</span></span>
+<span id="cb27-4"><a href="#cb27-4" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span><span class="dt">&quot;status&quot;</span><span class="fu">:</span> <span class="st">&quot;skipped&quot;</span><span class="fu">,</span> <span class="dt">&quot;user_id&quot;</span><span class="fu">:</span> <span class="st">&quot;uuid-...&quot;</span><span class="fu">,</span> <span class="dt">&quot;reason&quot;</span><span class="fu">:</span> <span class="st">&quot;user not found in Keycloak&quot;</span><span class="fu">}</span></span></code></pre></div>
 <blockquote>
 <p><strong>注意</strong>：同步只更新使用者基本資料（identity），不會覆蓋管理員手動設定的個人模型白名單（<code>models</code>）及
 Rate Limit。</p>
@@ -965,9 +1424,9 @@ id="場景為部門開放某個模型含新部門">場景：為部門開放某�
 OpenWebUI group 名稱 = <code>dept_id</code>；部門本身由 Keycloak
 同步建立。</p>
 <p>設定後等 CronJob（≤2 分鐘）或手動觸發同步：</p>
-<div class="sourceCode" id="cb19"><pre
-class="sourceCode bash"><code class="sourceCode bash"><span id="cb19-1"><a href="#cb19-1" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="at">-X</span> POST http://<span class="op">&lt;</span>host<span class="op">&gt;</span>:30408/api/v1/sync/openwebui/pull-models <span class="dt">\</span></span>
-<span id="cb19-2"><a href="#cb19-2" aria-hidden="true" tabindex="-1"></a>  <span class="at">-H</span> <span class="st">&quot;Authorization: Bearer &lt;key&gt;&quot;</span></span></code></pre></div>
+<div class="sourceCode" id="cb28"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb28-1"><a href="#cb28-1" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="at">-X</span> POST http://<span class="op">&lt;</span>host<span class="op">&gt;</span>:30408/api/v1/sync/openwebui/pull-models <span class="dt">\</span></span>
+<span id="cb28-2"><a href="#cb28-2" aria-hidden="true" tabindex="-1"></a>  <span class="at">-H</span> <span class="st">&quot;Authorization: Bearer &lt;key&gt;&quot;</span></span></code></pre></div>
 <p>同步後 <code>dept.allowed_models</code> 會反映 OpenWebUI
 的授權，該部門所有成員即可使用。</p>
 <h3
@@ -980,14 +1439,14 @@ id="場景為特定使用者額外開放模型">場景：為特定使用者額�
 身分（<code>oidc.sub</code>），pull 才對映得到 DB 使用者。</p>
 </blockquote>
 <h3 id="場景緊急封鎖某位使用者">場景：緊急封鎖某位使用者</h3>
-<div class="sourceCode" id="cb20"><pre
-class="sourceCode bash"><code class="sourceCode bash"><span id="cb20-1"><a href="#cb20-1" aria-hidden="true" tabindex="-1"></a><span class="co"># 封鎖</span></span>
-<span id="cb20-2"><a href="#cb20-2" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="at">-X</span> POST http://<span class="op">&lt;</span>host<span class="op">&gt;</span>:30408/api/v1/users/<span class="op">&lt;</span>user_id<span class="op">&gt;</span>/block <span class="dt">\</span></span>
-<span id="cb20-3"><a href="#cb20-3" aria-hidden="true" tabindex="-1"></a>  <span class="at">-H</span> <span class="st">&quot;Authorization: Bearer &lt;key&gt;&quot;</span></span>
-<span id="cb20-4"><a href="#cb20-4" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb20-5"><a href="#cb20-5" aria-hidden="true" tabindex="-1"></a><span class="co"># 同時重新生成 API Key（防止 key 被持有者繼續使用）</span></span>
-<span id="cb20-6"><a href="#cb20-6" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="at">-X</span> POST http://<span class="op">&lt;</span>host<span class="op">&gt;</span>:30408/api/v1/users/<span class="op">&lt;</span>user_id<span class="op">&gt;</span>/regenerate-key <span class="dt">\</span></span>
-<span id="cb20-7"><a href="#cb20-7" aria-hidden="true" tabindex="-1"></a>  <span class="at">-H</span> <span class="st">&quot;Authorization: Bearer &lt;key&gt;&quot;</span></span></code></pre></div>
+<div class="sourceCode" id="cb29"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb29-1"><a href="#cb29-1" aria-hidden="true" tabindex="-1"></a><span class="co"># 封鎖</span></span>
+<span id="cb29-2"><a href="#cb29-2" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="at">-X</span> POST http://<span class="op">&lt;</span>host<span class="op">&gt;</span>:30408/api/v1/users/<span class="op">&lt;</span>user_id<span class="op">&gt;</span>/block <span class="dt">\</span></span>
+<span id="cb29-3"><a href="#cb29-3" aria-hidden="true" tabindex="-1"></a>  <span class="at">-H</span> <span class="st">&quot;Authorization: Bearer &lt;key&gt;&quot;</span></span>
+<span id="cb29-4"><a href="#cb29-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb29-5"><a href="#cb29-5" aria-hidden="true" tabindex="-1"></a><span class="co"># 同時重新生成 API Key（防止 key 被持有者繼續使用）</span></span>
+<span id="cb29-6"><a href="#cb29-6" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="at">-X</span> POST http://<span class="op">&lt;</span>host<span class="op">&gt;</span>:30408/api/v1/users/<span class="op">&lt;</span>user_id<span class="op">&gt;</span>/regenerate-key <span class="dt">\</span></span>
+<span id="cb29-7"><a href="#cb29-7" aria-hidden="true" tabindex="-1"></a>  <span class="at">-H</span> <span class="st">&quot;Authorization: Bearer &lt;key&gt;&quot;</span></span></code></pre></div>
 <hr />
 <h3 id="場景使用者換部門人事異動">場景：使用者換部門（人事異動）</h3>
 <p>換部門由 <strong>Keycloak</strong> 主導：在 Keycloak
@@ -1001,27 +1460,27 @@ class="sourceCode bash"><code class="sourceCode bash"><span id="cb20-1"><a href=
 <li>enforcement 用的 <code>dept_id</code> 由 webhook
 即時同步，換部門後舊部門模型立即失效</li>
 </ul>
-<div class="sourceCode" id="cb21"><pre
-class="sourceCode bash"><code class="sourceCode bash"><span id="cb21-1"><a href="#cb21-1" aria-hidden="true" tabindex="-1"></a><span class="co"># 確認 DB 的 dept_id 已更新（webhook 可能有數秒延遲）</span></span>
-<span id="cb21-2"><a href="#cb21-2" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> http://<span class="op">&lt;</span>host<span class="op">&gt;</span>:30408/api/v1/users/<span class="op">&lt;</span>user_id<span class="op">&gt;</span> <span class="dt">\</span></span>
-<span id="cb21-3"><a href="#cb21-3" aria-hidden="true" tabindex="-1"></a>  <span class="at">-H</span> <span class="st">&quot;Authorization: Bearer &lt;key&gt;&quot;</span></span></code></pre></div>
+<div class="sourceCode" id="cb30"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb30-1"><a href="#cb30-1" aria-hidden="true" tabindex="-1"></a><span class="co"># 確認 DB 的 dept_id 已更新（webhook 可能有數秒延遲）</span></span>
+<span id="cb30-2"><a href="#cb30-2" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> http://<span class="op">&lt;</span>host<span class="op">&gt;</span>:30408/api/v1/users/<span class="op">&lt;</span>user_id<span class="op">&gt;</span> <span class="dt">\</span></span>
+<span id="cb30-3"><a href="#cb30-3" aria-hidden="true" tabindex="-1"></a>  <span class="at">-H</span> <span class="st">&quot;Authorization: Bearer &lt;key&gt;&quot;</span></span></code></pre></div>
 <hr />
 <h3 id="場景部門縮減模型">場景：部門縮減模型</h3>
 <p>在 <strong>OpenWebUI</strong> 該模型的授權裡移除對應部門的 group，再
 pull。同步後 <code>dept.allowed_models</code>
 不再含該模型，該部門成員即刻失去存取（enforcement 讀 DB）。</p>
-<div class="sourceCode" id="cb22"><pre
-class="sourceCode bash"><code class="sourceCode bash"><span id="cb22-1"><a href="#cb22-1" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="at">-X</span> POST http://<span class="op">&lt;</span>host<span class="op">&gt;</span>:30408/api/v1/sync/openwebui/pull-models <span class="dt">\</span></span>
-<span id="cb22-2"><a href="#cb22-2" aria-hidden="true" tabindex="-1"></a>  <span class="at">-H</span> <span class="st">&quot;Authorization: Bearer &lt;key&gt;&quot;</span></span></code></pre></div>
+<div class="sourceCode" id="cb31"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb31-1"><a href="#cb31-1" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="at">-X</span> POST http://<span class="op">&lt;</span>host<span class="op">&gt;</span>:30408/api/v1/sync/openwebui/pull-models <span class="dt">\</span></span>
+<span id="cb31-2"><a href="#cb31-2" aria-hidden="true" tabindex="-1"></a>  <span class="at">-H</span> <span class="st">&quot;Authorization: Bearer &lt;key&gt;&quot;</span></span></code></pre></div>
 <hr />
 <h3 id="場景新員工上線">場景：新員工上線</h3>
 <p>Keycloak 建立帳號 → webhook 自動建立 DB 使用者（<code>models</code>
 留空、<code>dept_id</code> 依群組）。模型權限來自其部門的 OpenWebUI
 group 授權，<strong>不需針對個人操作</strong>。</p>
-<div class="sourceCode" id="cb23"><pre
-class="sourceCode bash"><code class="sourceCode bash"><span id="cb23-1"><a href="#cb23-1" aria-hidden="true" tabindex="-1"></a><span class="co"># 確認使用者已同步（Keycloak 事件可能有數秒延遲）</span></span>
-<span id="cb23-2"><a href="#cb23-2" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> http://<span class="op">&lt;</span>host<span class="op">&gt;</span>:30408/api/v1/users/<span class="op">&lt;</span>keycloak-user-uuid<span class="op">&gt;</span> <span class="dt">\</span></span>
-<span id="cb23-3"><a href="#cb23-3" aria-hidden="true" tabindex="-1"></a>  <span class="at">-H</span> <span class="st">&quot;Authorization: Bearer &lt;key&gt;&quot;</span></span></code></pre></div>
+<div class="sourceCode" id="cb32"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb32-1"><a href="#cb32-1" aria-hidden="true" tabindex="-1"></a><span class="co"># 確認使用者已同步（Keycloak 事件可能有數秒延遲）</span></span>
+<span id="cb32-2"><a href="#cb32-2" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> http://<span class="op">&lt;</span>host<span class="op">&gt;</span>:30408/api/v1/users/<span class="op">&lt;</span>keycloak-user-uuid<span class="op">&gt;</span> <span class="dt">\</span></span>
+<span id="cb32-3"><a href="#cb32-3" aria-hidden="true" tabindex="-1"></a>  <span class="at">-H</span> <span class="st">&quot;Authorization: Bearer &lt;key&gt;&quot;</span></span></code></pre></div>
 <blockquote>
 <p>若該部門是第一次有人加入、OpenWebUI 尚無此 group：使用者登入
 OpenWebUI 後 group 會自動建立，管理員再到該部門要用的模型上加 group
@@ -1032,73 +1491,115 @@ OpenWebUI 後 group 會自動建立，管理員再到該部門要用的模型上
 <p>Keycloak 停用或刪除帳號會自動觸發 webhook，將使用者設為
 <code>blocked=true</code>，無需手動操作。但建議確認狀態並同時重置 API
 Key，防止 Key 在離職前已被帶走使用。</p>
-<div class="sourceCode" id="cb24"><pre
-class="sourceCode bash"><code class="sourceCode bash"><span id="cb24-1"><a href="#cb24-1" aria-hidden="true" tabindex="-1"></a><span class="co"># 確認封鎖狀態（Keycloak 事件可能有數秒延遲）</span></span>
-<span id="cb24-2"><a href="#cb24-2" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> http://<span class="op">&lt;</span>host<span class="op">&gt;</span>:30408/api/v1/users/<span class="op">&lt;</span>user_id<span class="op">&gt;</span> <span class="dt">\</span></span>
-<span id="cb24-3"><a href="#cb24-3" aria-hidden="true" tabindex="-1"></a>  <span class="at">-H</span> <span class="st">&quot;Authorization: Bearer &lt;key&gt;&quot;</span></span>
-<span id="cb24-4"><a href="#cb24-4" aria-hidden="true" tabindex="-1"></a><span class="co"># 確認 &quot;blocked&quot;: true</span></span>
-<span id="cb24-5"><a href="#cb24-5" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb24-6"><a href="#cb24-6" aria-hidden="true" tabindex="-1"></a><span class="co"># 重置 API Key（即使已封鎖，仍建議輪換以防 Key 外流）</span></span>
-<span id="cb24-7"><a href="#cb24-7" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="at">-X</span> POST http://<span class="op">&lt;</span>host<span class="op">&gt;</span>:30408/api/v1/users/<span class="op">&lt;</span>user_id<span class="op">&gt;</span>/regenerate-key <span class="dt">\</span></span>
-<span id="cb24-8"><a href="#cb24-8" aria-hidden="true" tabindex="-1"></a>  <span class="at">-H</span> <span class="st">&quot;Authorization: Bearer &lt;key&gt;&quot;</span></span></code></pre></div>
+<div class="sourceCode" id="cb33"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb33-1"><a href="#cb33-1" aria-hidden="true" tabindex="-1"></a><span class="co"># 確認封鎖狀態（Keycloak 事件可能有數秒延遲）</span></span>
+<span id="cb33-2"><a href="#cb33-2" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> http://<span class="op">&lt;</span>host<span class="op">&gt;</span>:30408/api/v1/users/<span class="op">&lt;</span>user_id<span class="op">&gt;</span> <span class="dt">\</span></span>
+<span id="cb33-3"><a href="#cb33-3" aria-hidden="true" tabindex="-1"></a>  <span class="at">-H</span> <span class="st">&quot;Authorization: Bearer &lt;key&gt;&quot;</span></span>
+<span id="cb33-4"><a href="#cb33-4" aria-hidden="true" tabindex="-1"></a><span class="co"># 確認 &quot;blocked&quot;: true</span></span>
+<span id="cb33-5"><a href="#cb33-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb33-6"><a href="#cb33-6" aria-hidden="true" tabindex="-1"></a><span class="co"># 重置 API Key（即使已封鎖，仍建議輪換以防 Key 外流）</span></span>
+<span id="cb33-7"><a href="#cb33-7" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="at">-X</span> POST http://<span class="op">&lt;</span>host<span class="op">&gt;</span>:30408/api/v1/users/<span class="op">&lt;</span>user_id<span class="op">&gt;</span>/regenerate-key <span class="dt">\</span></span>
+<span id="cb33-8"><a href="#cb33-8" aria-hidden="true" tabindex="-1"></a>  <span class="at">-H</span> <span class="st">&quot;Authorization: Bearer &lt;key&gt;&quot;</span></span></code></pre></div>
 <hr />
 <h3 id="場景建立服務帳號">場景：建立服務帳號</h3>
 <p>服務帳號供程式直接呼叫 LiteLLM
 使用（CI/CD、排程腳本、後端服務等），不透過 Keycloak
 建立，需手動管理生命週期。</p>
-<p><strong>建議命名慣例</strong></p>
-<ul>
-<li><code>user_id</code>：<code>svc-&lt;服務名稱&gt;</code>，例如
-<code>svc-rag-pipeline</code></li>
-<li><code>key_name</code>：與 <code>user_id</code>
-相同或加上環境後綴，例如 <code>svc-rag-pipeline-prod</code></li>
-<li><code>api_key</code>：自訂有意義的前綴或讓系統產生，例如
-<code>sk-svc-rag-prod-&lt;隨機碼&gt;</code></li>
-</ul>
-<div class="sourceCode" id="cb25"><pre
-class="sourceCode bash"><code class="sourceCode bash"><span id="cb25-1"><a href="#cb25-1" aria-hidden="true" tabindex="-1"></a><span class="co"># 步驟 1：確認服務帳號要掛在哪個部門，查詢該部門允許的模型</span></span>
-<span id="cb25-2"><a href="#cb25-2" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> http://<span class="op">&lt;</span>host<span class="op">&gt;</span>:30408/api/v1/departments/engineering <span class="dt">\</span></span>
-<span id="cb25-3"><a href="#cb25-3" aria-hidden="true" tabindex="-1"></a>  <span class="at">-H</span> <span class="st">&quot;Authorization: Bearer &lt;key&gt;&quot;</span></span>
-<span id="cb25-4"><a href="#cb25-4" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb25-5"><a href="#cb25-5" aria-hidden="true" tabindex="-1"></a><span class="co"># 步驟 2：建立服務帳號（models 為此帳號可用的模型；service 帳號的 models 由 admin-api 直接管理，OpenWebUI pull 不會覆寫）</span></span>
-<span id="cb25-6"><a href="#cb25-6" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="at">-X</span> POST http://<span class="op">&lt;</span>host<span class="op">&gt;</span>:30408/api/v1/users <span class="dt">\</span></span>
-<span id="cb25-7"><a href="#cb25-7" aria-hidden="true" tabindex="-1"></a>  <span class="at">-H</span> <span class="st">&quot;Authorization: Bearer &lt;key&gt;&quot;</span> <span class="dt">\</span></span>
-<span id="cb25-8"><a href="#cb25-8" aria-hidden="true" tabindex="-1"></a>  <span class="at">-H</span> <span class="st">&quot;Content-Type: application/json&quot;</span> <span class="dt">\</span></span>
-<span id="cb25-9"><a href="#cb25-9" aria-hidden="true" tabindex="-1"></a>  <span class="at">-d</span> <span class="st">&#39;{</span></span>
-<span id="cb25-10"><a href="#cb25-10" aria-hidden="true" tabindex="-1"></a><span class="st">    &quot;api_key&quot;: &quot;sk-svc-rag-prod-a1b2c3d4&quot;,</span></span>
-<span id="cb25-11"><a href="#cb25-11" aria-hidden="true" tabindex="-1"></a><span class="st">    &quot;key_name&quot;: &quot;svc-rag-pipeline-prod&quot;,</span></span>
-<span id="cb25-12"><a href="#cb25-12" aria-hidden="true" tabindex="-1"></a><span class="st">    &quot;user_id&quot;: &quot;svc-rag-pipeline&quot;,</span></span>
-<span id="cb25-13"><a href="#cb25-13" aria-hidden="true" tabindex="-1"></a><span class="st">    &quot;user_email&quot;: null,</span></span>
-<span id="cb25-14"><a href="#cb25-14" aria-hidden="true" tabindex="-1"></a><span class="st">    &quot;dept_id&quot;: &quot;engineering&quot;,</span></span>
-<span id="cb25-15"><a href="#cb25-15" aria-hidden="true" tabindex="-1"></a><span class="st">    &quot;account_type&quot;: &quot;service&quot;,</span></span>
-<span id="cb25-16"><a href="#cb25-16" aria-hidden="true" tabindex="-1"></a><span class="st">    &quot;models&quot;: [&quot;gemma-4-26B-A4B-it&quot;, &quot;embeddinggemma-300m&quot;],</span></span>
-<span id="cb25-17"><a href="#cb25-17" aria-hidden="true" tabindex="-1"></a><span class="st">    &quot;rpm_limit&quot;: 120,</span></span>
-<span id="cb25-18"><a href="#cb25-18" aria-hidden="true" tabindex="-1"></a><span class="st">    &quot;tpm_limit&quot;: 500000,</span></span>
-<span id="cb25-19"><a href="#cb25-19" aria-hidden="true" tabindex="-1"></a><span class="st">    &quot;metadata&quot;: {&quot;description&quot;: &quot;RAG 文件摘要排程服務&quot;, &quot;owner&quot;: &quot;backend-team&quot;}</span></span>
-<span id="cb25-20"><a href="#cb25-20" aria-hidden="true" tabindex="-1"></a><span class="st">  }&#39;</span></span></code></pre></div>
+<blockquote>
+<p><strong>這個平台固定需要的服務帳號，請走
+<code>config/service_accounts.json</code> +
+<code>scripts/seed_service_accounts.py</code></strong>（見下方獨立章節），不要只用下面的
+curl 建一次就結束——那樣這個帳號只活在 firdi_users（Postgres）裡，git
+完全沒有紀錄，換環境或重建 database 會整個消失且無感。下面的 curl
+流程適用於<strong>臨時測試</strong>或<strong>還沒決定要不要固定下來</strong>的一次性帳號。</p>
+</blockquote>
+<p><strong>建議命名慣例</strong> -
+<code>user_id</code>：<code>svc-&lt;服務名稱&gt;</code>，例如
+<code>svc-rag-pipeline</code> - <code>key_name</code>：與
+<code>user_id</code> 相同或加上環境後綴，例如
+<code>svc-rag-pipeline-prod</code> -
+<code>api_key</code>：自訂有意義的前綴或讓系統產生，例如
+<code>sk-svc-rag-prod-&lt;隨機碼&gt;</code></p>
+<div class="sourceCode" id="cb34"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb34-1"><a href="#cb34-1" aria-hidden="true" tabindex="-1"></a><span class="co"># 步驟 1：確認服務帳號要掛在哪個部門，查詢該部門允許的模型</span></span>
+<span id="cb34-2"><a href="#cb34-2" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> http://<span class="op">&lt;</span>host<span class="op">&gt;</span>:30408/api/v1/departments/engineering <span class="dt">\</span></span>
+<span id="cb34-3"><a href="#cb34-3" aria-hidden="true" tabindex="-1"></a>  <span class="at">-H</span> <span class="st">&quot;Authorization: Bearer &lt;key&gt;&quot;</span></span>
+<span id="cb34-4"><a href="#cb34-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb34-5"><a href="#cb34-5" aria-hidden="true" tabindex="-1"></a><span class="co"># 步驟 2：建立服務帳號（models 為此帳號可用的模型；service 帳號的 models 由 admin-api 直接管理，OpenWebUI pull 不會覆寫）</span></span>
+<span id="cb34-6"><a href="#cb34-6" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="at">-X</span> POST http://<span class="op">&lt;</span>host<span class="op">&gt;</span>:30408/api/v1/users <span class="dt">\</span></span>
+<span id="cb34-7"><a href="#cb34-7" aria-hidden="true" tabindex="-1"></a>  <span class="at">-H</span> <span class="st">&quot;Authorization: Bearer &lt;key&gt;&quot;</span> <span class="dt">\</span></span>
+<span id="cb34-8"><a href="#cb34-8" aria-hidden="true" tabindex="-1"></a>  <span class="at">-H</span> <span class="st">&quot;Content-Type: application/json&quot;</span> <span class="dt">\</span></span>
+<span id="cb34-9"><a href="#cb34-9" aria-hidden="true" tabindex="-1"></a>  <span class="at">-d</span> <span class="st">&#39;{</span></span>
+<span id="cb34-10"><a href="#cb34-10" aria-hidden="true" tabindex="-1"></a><span class="st">    &quot;api_key&quot;: &quot;sk-svc-rag-prod-a1b2c3d4&quot;,</span></span>
+<span id="cb34-11"><a href="#cb34-11" aria-hidden="true" tabindex="-1"></a><span class="st">    &quot;key_name&quot;: &quot;svc-rag-pipeline-prod&quot;,</span></span>
+<span id="cb34-12"><a href="#cb34-12" aria-hidden="true" tabindex="-1"></a><span class="st">    &quot;user_id&quot;: &quot;svc-rag-pipeline&quot;,</span></span>
+<span id="cb34-13"><a href="#cb34-13" aria-hidden="true" tabindex="-1"></a><span class="st">    &quot;user_email&quot;: null,</span></span>
+<span id="cb34-14"><a href="#cb34-14" aria-hidden="true" tabindex="-1"></a><span class="st">    &quot;dept_id&quot;: &quot;engineering&quot;,</span></span>
+<span id="cb34-15"><a href="#cb34-15" aria-hidden="true" tabindex="-1"></a><span class="st">    &quot;account_type&quot;: &quot;service&quot;,</span></span>
+<span id="cb34-16"><a href="#cb34-16" aria-hidden="true" tabindex="-1"></a><span class="st">    &quot;models&quot;: [&quot;gemma-4-26B-A4B-it&quot;, &quot;embeddinggemma-300m&quot;],</span></span>
+<span id="cb34-17"><a href="#cb34-17" aria-hidden="true" tabindex="-1"></a><span class="st">    &quot;rpm_limit&quot;: 120,</span></span>
+<span id="cb34-18"><a href="#cb34-18" aria-hidden="true" tabindex="-1"></a><span class="st">    &quot;tpm_limit&quot;: 500000,</span></span>
+<span id="cb34-19"><a href="#cb34-19" aria-hidden="true" tabindex="-1"></a><span class="st">    &quot;metadata&quot;: {&quot;description&quot;: &quot;RAG 文件摘要排程服務&quot;, &quot;owner&quot;: &quot;backend-team&quot;}</span></span>
+<span id="cb34-20"><a href="#cb34-20" aria-hidden="true" tabindex="-1"></a><span class="st">  }&#39;</span></span></code></pre></div>
 <blockquote>
 <p>建立後請將 <code>api_key</code> 安全地存入服務的 Secret
 管理系統（Vault、K8s Secret 等），Admin API 之後不再能查詢明文
 key，只能重置。</p>
 </blockquote>
 <p><strong>定期輪換 Key</strong></p>
-<div class="sourceCode" id="cb26"><pre
-class="sourceCode bash"><code class="sourceCode bash"><span id="cb26-1"><a href="#cb26-1" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="at">-X</span> POST http://<span class="op">&lt;</span>host<span class="op">&gt;</span>:30408/api/v1/users/svc-rag-pipeline/regenerate-key <span class="dt">\</span></span>
-<span id="cb26-2"><a href="#cb26-2" aria-hidden="true" tabindex="-1"></a>  <span class="at">-H</span> <span class="st">&quot;Authorization: Bearer &lt;key&gt;&quot;</span></span>
-<span id="cb26-3"><a href="#cb26-3" aria-hidden="true" tabindex="-1"></a><span class="co"># 回傳新 api_key，需同步更新服務的 Secret 設定</span></span></code></pre></div>
+<div class="sourceCode" id="cb35"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb35-1"><a href="#cb35-1" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="at">-X</span> POST http://<span class="op">&lt;</span>host<span class="op">&gt;</span>:30408/api/v1/users/svc-rag-pipeline/regenerate-key <span class="dt">\</span></span>
+<span id="cb35-2"><a href="#cb35-2" aria-hidden="true" tabindex="-1"></a>  <span class="at">-H</span> <span class="st">&quot;Authorization: Bearer &lt;key&gt;&quot;</span></span>
+<span id="cb35-3"><a href="#cb35-3" aria-hidden="true" tabindex="-1"></a><span class="co"># 回傳新 api_key，需同步更新服務的 Secret 設定</span></span></code></pre></div>
 <p><strong>服務下線</strong></p>
-<div class="sourceCode" id="cb27"><pre
-class="sourceCode bash"><code class="sourceCode bash"><span id="cb27-1"><a href="#cb27-1" aria-hidden="true" tabindex="-1"></a><span class="co"># 停用（保留資料）</span></span>
-<span id="cb27-2"><a href="#cb27-2" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="at">-X</span> POST http://<span class="op">&lt;</span>host<span class="op">&gt;</span>:30408/api/v1/users/svc-rag-pipeline/block <span class="dt">\</span></span>
-<span id="cb27-3"><a href="#cb27-3" aria-hidden="true" tabindex="-1"></a>  <span class="at">-H</span> <span class="st">&quot;Authorization: Bearer &lt;key&gt;&quot;</span></span>
-<span id="cb27-4"><a href="#cb27-4" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb27-5"><a href="#cb27-5" aria-hidden="true" tabindex="-1"></a><span class="co"># 或完全移除</span></span>
-<span id="cb27-6"><a href="#cb27-6" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="at">-X</span> DELETE http://<span class="op">&lt;</span>host<span class="op">&gt;</span>:30408/api/v1/users/svc-rag-pipeline <span class="dt">\</span></span>
-<span id="cb27-7"><a href="#cb27-7" aria-hidden="true" tabindex="-1"></a>  <span class="at">-H</span> <span class="st">&quot;Authorization: Bearer &lt;key&gt;&quot;</span></span></code></pre></div>
+<div class="sourceCode" id="cb36"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb36-1"><a href="#cb36-1" aria-hidden="true" tabindex="-1"></a><span class="co"># 停用（保留資料）</span></span>
+<span id="cb36-2"><a href="#cb36-2" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="at">-X</span> POST http://<span class="op">&lt;</span>host<span class="op">&gt;</span>:30408/api/v1/users/svc-rag-pipeline/block <span class="dt">\</span></span>
+<span id="cb36-3"><a href="#cb36-3" aria-hidden="true" tabindex="-1"></a>  <span class="at">-H</span> <span class="st">&quot;Authorization: Bearer &lt;key&gt;&quot;</span></span>
+<span id="cb36-4"><a href="#cb36-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb36-5"><a href="#cb36-5" aria-hidden="true" tabindex="-1"></a><span class="co"># 或完全移除</span></span>
+<span id="cb36-6"><a href="#cb36-6" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="at">-X</span> DELETE http://<span class="op">&lt;</span>host<span class="op">&gt;</span>:30408/api/v1/users/svc-rag-pipeline <span class="dt">\</span></span>
+<span id="cb36-7"><a href="#cb36-7" aria-hidden="true" tabindex="-1"></a>  <span class="at">-H</span> <span class="st">&quot;Authorization: Bearer &lt;key&gt;&quot;</span></span></code></pre></div>
+<hr />
+<h2 id="固定服務帳號新機器-重灌環境必須帶的帳號">固定服務帳號（新機器 /
+重灌環境必須帶的帳號）</h2>
+<p><code>config/service_accounts.json</code> 是 git
+追蹤的宣告式清單，列出這個平台<strong>必須存在</strong>的服務帳號（<code>user_id</code>/<code>dept_id</code>/<code>models</code>/<code>rpm_limit</code>/<code>tpm_limit</code>/<code>metadata</code>，<strong>不含
+<code>api_key</code></strong>）。<code>scripts/seed_service_accounts.py</code>
+把目前 admin-api
+的實際狀態收斂到這份清單，新機器部署或既有機器補帳號都跑同一支：</p>
+<div class="sourceCode" id="cb37"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb37-1"><a href="#cb37-1" aria-hidden="true" tabindex="-1"></a><span class="co"># 預覽會有什麼變更，不實際送出</span></span>
+<span id="cb37-2"><a href="#cb37-2" aria-hidden="true" tabindex="-1"></a><span class="va">ADMIN_API_KEY</span><span class="op">=</span>xxx <span class="ex">./scripts/seed_service_accounts.py</span> <span class="at">--dry-run</span></span>
+<span id="cb37-3"><a href="#cb37-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb37-4"><a href="#cb37-4" aria-hidden="true" tabindex="-1"></a><span class="co"># 實際套用</span></span>
+<span id="cb37-5"><a href="#cb37-5" aria-hidden="true" tabindex="-1"></a><span class="va">ADMIN_API_KEY</span><span class="op">=</span>xxx <span class="ex">./scripts/seed_service_accounts.py</span></span>
+<span id="cb37-6"><a href="#cb37-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb37-7"><a href="#cb37-7" aria-hidden="true" tabindex="-1"></a><span class="co"># 只處理清單裡的其中幾個</span></span>
+<span id="cb37-8"><a href="#cb37-8" aria-hidden="true" tabindex="-1"></a><span class="va">ADMIN_API_KEY</span><span class="op">=</span>xxx <span class="ex">./scripts/seed_service_accounts.py</span> <span class="at">--only</span> svc-chat-summarizer</span></code></pre></div>
+<p>冪等規則： - <strong>帳號不存在</strong> → 建立，隨機產生新
+<code>api_key</code>（<code>sk-&lt;user_id&gt;-&lt;32位隨機hex&gt;</code>），<strong>只印一次</strong>，需立刻存進該服務的
+Secret 管理系統 - <strong>帳號已存在</strong> → 只 <code>PATCH</code>
+<code>key_name</code>/<code>user_email</code>/<code>dept_id</code>/<code>models</code>/<code>rpm_limit</code>/<code>tpm_limit</code>/<code>metadata</code>
+對齊清單，<strong>絕不覆蓋既有
+<code>api_key</code></strong>（避免重跑就讓所有消費端的 key
+一起失效），也不動
+<code>blocked</code>（封鎖/解封是操作動作，不是宣告式設定） - 引用到的
+<code>dept_id</code>
+若不存在會自動建立一個空部門（<code>allowed_models=[]</code>）</p>
+<p><code>./scripts/deploy.sh service-accounts</code> 是這支腳本的
+wrapper，會先等 admin-api Pod Ready
+再執行；<code>./scripts/deploy.sh all</code>（即
+<code>deploy_all()</code>）跑完整部署時已經自動包含這一步，新機器一鍵部署就會把清單裡的服務帳號一併補齊。</p>
+<p><strong>要新增一個「固定下來」的服務帳號</strong>：把定義加進
+<code>config/service_accounts.json</code>（比照 <a
+href="#post-apiv1users">POST /api/v1/users</a>
+的欄位，<code>account_type</code> 由腳本固定填
+<code>service</code>，不用寫），跑一次腳本即可；不需要再手動 curl。</p>
 <hr />
 <h2 id="權限生效時間">權限生效時間</h2>
-<p>Admin API 的所有寫入操作會同時遞增 SQLite <code>db_version</code>
-計數器。<br />
+<p>Admin API 的所有寫入操作會同時遞增 firdi_users（Postgres）的
+<code>db_version</code> 計數器。<br />
 LiteLLM 的 <code>custom_auth.py</code> 每次驗證請求時檢查
 <code>db_version</code>，版本變化時立即重載快取。在版本未變且快取未過期（TTL=30s）的情況下使用舊快取，因此<strong>最多
 30 秒生效</strong>。</p>

@@ -93,7 +93,7 @@ Keycloak 那一關，根本進不到白名單檢查）。
   「草稿」——不然「停用一個草稿再啟用」就變成繞過發布閘門的後門。
 - **停用要能一鍵復原，就得自己留住上游設定**（含共用的 `api_key`）。LiteLLM 的
   `/model/info` 會遮罩 key，撈不回來。這些值存在 `model_metadata` 表，跟
-  `departments.provider_keys`、`users.api_key` 同一顆 SQLite、同樣是明文欄位；
+  `departments.provider_keys`、`users.api_key` 同一顆 Postgres（firdi_users database）、同樣是明文欄位；
   UI 與稽核紀錄一律只顯示末四碼。
 - **永久刪除前會先算出影響範圍**（哪些部門、幾個人、哪些人是個別授權），要勾選
   確認才送得出去。`ADMIN_API_KEY` 的 curl `DELETE` 沒有這道確認。
