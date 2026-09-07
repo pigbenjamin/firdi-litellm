@@ -87,8 +87,11 @@ spec:
               port: 8000
             initialDelaySeconds: 60
             periodSeconds: 30
-            # Gemma4 冷啟動（權重載入 + torch.compile + CUDA graph）實測可超過 11 分鐘
-            failureThreshold: 40
+            # Gemma4 冷啟動（權重載入 + torch.compile + CUDA graph）實測可超過 11 分鐘；
+            # 全新機器第一次還要外加從 HuggingFace 下載模型的時間（README/deploy.md
+            # 記載約 15~25 分鐘），40（21分鐘預算）在 2026-09-07 nex-k8s01 首次部署時
+            # 不夠，冷啟動還沒跑完就被 startupProbe 判定逾時殺掉重啟，形成無限重試迴圈
+            failureThreshold: 80
           livenessProbe:
             httpGet:
               path: /health
