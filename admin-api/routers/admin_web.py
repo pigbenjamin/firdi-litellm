@@ -98,26 +98,59 @@ def _page(body: str, status_code: int = 200) -> HTMLResponse:
 <html lang="zh-Hant"><head><meta charset="utf-8">
 <title>部門管理入口</title>
 <style>
-  body {{ font-family: system-ui, sans-serif; max-width: 1100px; margin: 3rem auto; padding: 0 1rem; color: #1a1a1a; }}
+  * {{ box-sizing: border-box; }}
+  body {{
+    font-family: system-ui, sans-serif; margin: 0; padding: 0 0 3rem; color: #1a1a1a;
+    background: #f3f5f8;
+  }}
+  main {{ max-width: 1200px; margin: 0 auto; padding: 0 1.2rem; }}
+  h2 {{ font-size: 1.5rem; font-weight: 700; margin: 1.4rem 0 1rem; }}
+  h3 {{ font-size: 1.05rem; font-weight: 700; margin: 0 0 0.8rem; }}
   .err {{ color: #b00020; }}
   .hint {{ color: #555; }}
-  table {{ border-collapse: collapse; margin: 1rem 0; width: 100%; }}
+  table {{ border-collapse: collapse; margin: 0.2rem 0; width: 100%; }}
   td, th {{ padding: 0.3em 0.8em 0.3em 0; vertical-align: top; text-align: left; border-bottom: 1px solid #eee; }}
   th {{ color: #555; font-weight: 600; }}
-  a.btn {{ display: inline-block; margin-top: 1rem; }}
-  .nav {{ color: #555; }}
-  .nav b {{ color: #1a1a1a; }}
-  /* 授權矩陣、稽核紀錄這類寬表格自己橫向捲動，不讓整頁被撐開 */
-  .wide {{ overflow-x: auto; }}
-  .badge {{ display: inline-block; padding: 0.1em 0.5em; border-radius: 0.8em; font-size: 0.85em; white-space: nowrap; }}
-  .badge-draft {{ background: #fff3cd; color: #7a5b00; }}
-  .badge-published {{ background: #d7f0dd; color: #14622c; }}
-  .badge-disabled {{ background: #eee; color: #555; }}
-  .badge-legacy {{ background: #e7edff; color: #2a3f77; }}
-  .ok {{ color: #14622c; }}
-  .warn {{ color: #7a5b00; }}
-  fieldset {{ border: 1px solid #ddd; border-radius: 4px; margin: 1.2rem 0; padding: 0.6rem 1rem 1rem; }}
-  legend {{ color: #555; font-weight: 600; padding: 0 0.4em; }}
+  a.btn, button, input[type=submit] {{
+    display: inline-block; margin-top: 1rem; padding: 0.45em 1em; border-radius: 6px;
+    border: 1px solid #ccc; background: #fff; color: #1a1a1a; font-size: 0.95em;
+    cursor: pointer; text-decoration: none; line-height: 1.4;
+  }}
+  a.btn:hover, button:hover {{ background: #f0f1f3; }}
+  button[disabled] {{ cursor: not-allowed; opacity: 0.55; }}
+  .btn-primary, button.btn-primary {{ background: #1a56db; border-color: #1a56db; color: #fff; }}
+  .btn-primary:hover, button.btn-primary:hover {{ background: #1746b3; }}
+  .btn-danger, button.btn-danger {{ background: #fff; border-color: #d9534f; color: #b00020; }}
+  .btn-danger:hover, button.btn-danger:hover {{ background: #fdecef; }}
+
+  /* 品牌頁首：整站固定不變，跟下面的頁籤列分成兩層 */
+  header.topbar {{
+    background: #101828; color: #fff; padding: 0.9rem 1.2rem;
+  }}
+  header.topbar .brand {{ max-width: 1200px; margin: 0 auto; font-weight: 700; letter-spacing: 0.02em; }}
+
+  /* 頁籤式導覽：功能頁籤在左，登出用 flex 推到最右邊，視覺上跟頁籤分開 */
+  .nav {{
+    display: flex; align-items: center; gap: 0.2rem; flex-wrap: wrap;
+    background: #fff; border-bottom: 1px solid #e2e5ea; padding: 0 0.6rem;
+    max-width: 1200px; margin: 0 auto;
+  }}
+  .nav a, .nav b {{
+    display: inline-block; padding: 0.8rem 0.9rem; font-size: 0.92em; font-weight: 600;
+    text-decoration: none; color: #555; border-bottom: 2px solid transparent;
+  }}
+  .nav a:hover {{ color: #1a1a1a; }}
+  .nav b {{ color: #1a56db; border-bottom-color: #1a56db; }}
+  .nav .logout {{ margin-left: auto; font-weight: 500; color: #888; }}
+  .nav .logout:hover {{ color: #b00020; }}
+
+  /* 卡片：所有區塊分隔的基本單位，fieldset 與 <section class="card"> 共用同一套外觀 */
+  fieldset, section.card {{
+    display: block; border: 1px solid #e2e5ea; border-radius: 10px; margin: 1.2rem 0;
+    padding: 1rem 1.2rem 1.2rem; background: #fff; box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
+  }}
+  legend {{ color: #1a1a1a; font-weight: 700; font-size: 1.05rem; padding: 0 0.4em; }}
+  section.card > h3:first-child {{ margin-top: 0; }}
   label {{ display: inline-block; }}
   input[type=text], input[type=number], input[type=password], textarea, select {{ min-width: 22rem; max-width: 100%; }}
   textarea {{ height: 4rem; }}
@@ -155,19 +188,41 @@ def _page(body: str, status_code: int = 200) -> HTMLResponse:
     padding: 0.5em 0.7em; background: #f6f7f9; border-radius: 4px;
     font-size: 0.85em; color: #1a1a1a;
   }}
+  /* 說明收合：預設收起，畫面保持乾淨，需要時再展開 */
+  details.help {{
+    display: inline-block; margin: 0 0 0.8rem; font-size: 0.9em; color: #555;
+  }}
+  details.help > summary {{
+    color: #1a56db; font-weight: 600; cursor: pointer; list-style: none;
+  }}
+  details.help > summary::-webkit-details-marker {{ display: none; }}
+  details.help > summary::before {{ content: "▸ "; }}
+  details.help[open] > summary::before {{ content: "▾ "; }}
+  details.help[open] > summary {{ margin-bottom: 0.4em; }}
+  details.help p, details.help ul {{ margin: 0.3em 0; }}
 </style></head>
-<body>{body}</body></html>"""
+<body>
+<header class="topbar"><div class="brand">部門管理入口</div></header>
+<main>{body}</main>
+</body></html>"""
     resp = HTMLResponse(html_doc, status_code=status_code)
     resp.headers["Cache-Control"] = "no-store"
     return resp
 
 
 def _nav(active: str) -> str:
-    links = " · ".join(
-        f"<b>{label}</b>" if key == active else f'<a href="{PREFIX}{path}">{label}</a>'
+    links = "".join(
+        f'<b>{label}</b>' if key == active else f'<a href="{PREFIX}{path}">{label}</a>'
         for key, path, label in _NAV_ITEMS
     )
-    return f'<p class="nav">{links} · <a href="{PREFIX}/logout">登出</a></p>'
+    return f'<nav class="nav">{links}<a class="logout" href="{PREFIX}/logout">登出</a></nav>'
+
+
+def _help(html_body: str) -> str:
+    """把「使用引導型」的說明文字收進預設收合的區塊，需要時才展開（規則性／操作後果
+    警語不要用這個——那些要一直看得到，見 admin-web-plan.md 的說明文字分類）。
+    """
+    return f'<details class="help"><summary>說明</summary>{html_body}</details>'
 
 
 def _mask_key(key: str) -> str:
@@ -297,15 +352,19 @@ def overview(admin: dict = Depends(require_admin)):
     return _page(f"""
 {_nav('overview')}
 <h2>你好，{html.escape(admin['preferred_username'])}</h2>
+<section class="card">
 <table>
   <tr><td>Email</td><td>{html.escape(admin.get('email') or '')}</td></tr>
   <tr><td>可管理範圍</td><td>全部部門（共 {len(depts)} 個）</td></tr>
 </table>
+</section>
+<section class="card">
 <h3>部門總覽</h3>
 <table>
   <tr><th>部門</th><th>名稱</th><th>已授權模型</th></tr>
   {rows or '<tr><td colspan="3">目前沒有部門。</td></tr>'}
 </table>
+</section>
 """)
 
 
@@ -461,19 +520,21 @@ async def model_list(admin: dict = Depends(require_admin)):
     return _page(f"""
 {_nav('models')}
 <h2>模型清單</h2>
-<p class="hint">點模型名稱進去可以測試呼叫、發布、停用、修改欄位與刪除。
+{_help(f'''<p>點模型名稱進去可以測試呼叫、發布、停用、修改欄位與刪除。
 「已授權部門」那一欄的<b>改授權</b>可以把該模型一次開給多個部門；
 以部門為主的檢視在 <a href="{PREFIX}/access">模型授權</a>。
 標<span class="badge badge-legacy">既有</span>的是 YAML <code>model_list</code> 定義的地端模型，
 上游設定在 <code>config/litellm_config.yaml</code>、改了要重啟 litellm pod，所以這裡不提供
-停用／刪除／編輯上游，但顯示名稱、類型、備註仍可設定。
-<a href="{PREFIX}/models/new">上架新模型 »</a></p>
+停用／刪除／編輯上游，但顯示名稱、類型、備註仍可設定。</p>''')}
+<p><a class="btn btn-primary" href="{PREFIX}/models/new">上架新模型 »</a></p>
 {draft_hint}
+<section class="card">
 <div class="wide"><table>
   <tr><th>名稱</th><th>狀態</th><th>類型</th><th>上游</th>
       <th>本期用量／額度</th><th>點數費率</th><th>測試</th><th>已授權部門</th></tr>
   {''.join(rows) if rows else '<tr><td colspan="8">目前沒有 DB-managed 模型。</td></tr>'}
 </table></div>
+</section>
 """)
 
 
@@ -567,11 +628,11 @@ async def model_detail(
         gate = "" if meta.get("last_test_ok") == 1 else " disabled title='要先通過測試呼叫才能發布'"
         actions.append(f"""<form method="post" action="{PREFIX}/models/publish" style="display:inline"
   onsubmit="return confirm('確定發布？發布後使用者就打得到，且上游設定會鎖定。');">
-  {hidden}<button type="submit"{gate}>發布</button></form>""")
+  {hidden}<button type="submit" class="btn-primary"{gate}>發布</button></form>""")
     if not yaml_managed and status in ("draft", "published"):
         actions.append(f"""<form method="post" action="{PREFIX}/models/disable" style="display:inline"
   onsubmit="return confirm('確定停用？使用者會立刻打不通，但設定完整保留、可隨時重新啟用。');">
-  {hidden}<button type="submit">停用</button></form>""")
+  {hidden}<button type="submit" class="btn-danger">停用</button></form>""")
     if not yaml_managed and status == "disabled":
         actions.append(f"""<form method="post" action="{PREFIX}/models/enable" style="display:inline">
   {hidden}<button type="submit">重新啟用</button></form>""")
@@ -609,7 +670,7 @@ async def model_detail(
      超過額度就擋下來（不勾＝只累計用量、不影響呼叫）</label></p>
   {points_fields(meta)}
   <p><label>備註<br><textarea name="notes">{html.escape(meta.get('notes') or '')}</textarea></label></p>
-  <button type="submit">儲存</button>
+  <button type="submit" class="btn-primary">儲存</button>
 </form>"""
 
     # 反斜線不能出現在 f-string 的 {} 表達式裡（Python 3.11 限制，容器跑的就是
@@ -619,7 +680,7 @@ async def model_detail(
   {hidden}
   <p><label><input type="checkbox" name="confirm" required>
      我確認要永久刪除，且知道這會影響上面列出的 {impact['total_headcount']} 個人</label></p>
-  <button type="submit">永久刪除</button>
+  <button type="submit" class="btn-danger">永久刪除</button>
 </form>"""
     yaml_delete_note = (
         '<p class="hint">地端模型不提供刪除——要下架請改 <code>config/litellm_config.yaml</code> '
@@ -665,7 +726,7 @@ async def model_detail(
 {routing_block}
 
 <fieldset><legend>各部門實際花費</legend>
-<p class="hint">依真實用量算出，不是手填的標籤——一個模型可能被多個部門共用，這裡看得出各自花了多少。</p>
+{_help('<p>依真實用量算出，不是手填的標籤——一個模型可能被多個部門共用，這裡看得出各自花了多少。</p>')}
 <table>
   <tr><th>部門</th><th>本月花費</th><th>累計花費</th><th>本月呼叫次數</th></tr>
   {dept_spend_rows or '<tr><td colspan="4">目前沒有用量紀錄。</td></tr>'}
@@ -673,7 +734,7 @@ async def model_detail(
 </fieldset>
 
 <fieldset><legend>可修改的欄位</legend>
-<p class="hint">這幾個欄位在任何狀態都能改——它們不影響請求打到哪裡去。</p>
+{_help('<p>這幾個欄位在任何狀態都能改——它們不影響請求打到哪裡去。</p>')}
 {descriptive_form}
 </fieldset>
 
@@ -739,20 +800,26 @@ def render_sync_result(result: dict) -> str:
     issues_html = f"<ul>{''.join(issues)}</ul>" if issues else "<p>沒有發現異常。</p>"
 
     return f"""
+<section class="card">
 <h3>異常診斷</h3>
 {issues_html}
+</section>
 
+<section class="card">
 <h3>部門權限的變化</h3>
 <table>
   <tr><th>部門</th><th>之前</th><th>之後</th></tr>
   {dept_changes or '<tr><td colspan="3">沒有變化。</td></tr>'}
 </table>
+</section>
 
+<section class="card">
 <h3>個人權限的變化</h3>
 <table>
   <tr><th>使用者</th><th>之前</th><th>之後</th></tr>
   {user_changes or '<tr><td colspan="3">沒有變化。</td></tr>'}
 </table>
+</section>
 """
 
 
@@ -768,17 +835,20 @@ async def sync_diagnostics(admin: dict = Depends(require_admin)):
         if remaining > 0 else
         f"""<form method="post" action="{PREFIX}/sync"
       onsubmit="return confirm('確定要立即同步嗎？這會依 OpenWebUI 現況重算「全平台」所有部門的模型權限。');">
-  <button type="submit">立即同步</button>
+  <button type="submit" class="btn-primary">立即同步</button>
 </form>"""
     )
 
     return _page(f"""
 {_nav('sync')}
 <h2>同步與診斷</h2>
-<p class="hint">「立即同步」是 pull：依 OpenWebUI 現況重算全平台所有部門／使用者的模型權限
+<section class="card">
+{_help(f'''<p>「立即同步」是 pull：依 OpenWebUI 現況重算全平台所有部門／使用者的模型權限
 （第一期方向；OpenWebUI 目前仍是權威來源）。CronJob 已經每 2 分鐘自動跑一次，這顆按鈕只是
-不想等的時候手動觸發，30 秒內只能按一次。上次同步時間：{html.escape(last_sync_display(admin['preferred_username']))}。</p>
+不想等的時候手動觸發，30 秒內只能按一次。</p>''')}
+<p class="hint">上次同步時間：{html.escape(last_sync_display(admin['preferred_username']))}</p>
 {sync_button}
+</section>
 
 <p class="hint">以下是 dry-run 預覽：如果現在按下去會變成怎樣，<b>本頁載入過程沒有寫入任何資料</b>。</p>
 {render_sync_result(result)}
@@ -826,7 +896,7 @@ def _audit_filters(start: str, end: str, actor: str, action: str, target: str) -
   </p>
   <p><label>動作<select name="action" style="min-width:16rem">
      <option value="">（全部）</option>{action_options}</select></label></p>
-  <button type="submit">查詢</button>
+  <button type="submit" class="btn-primary">查詢</button>
 </form>"""
 
 
@@ -869,15 +939,19 @@ def audit_page(
     return _page(f"""
 {_nav('audit')}
 <h2>稽核紀錄</h2>
-<p class="hint">每一次寫入操作都會留一筆，含操作者的 Keycloak 帳號與變更前／後的值。
-Key 內容一律只記末四碼。紀錄檔在 <code>ADMIN_AUDIT_LOG_PATH</code>（掛在 PVC 上，pod 重啟不會遺失）。</p>
+{_help('''<p>每一次寫入操作都會留一筆，含操作者的 Keycloak 帳號與變更前／後的值。
+Key 內容一律只記末四碼。紀錄檔在 <code>ADMIN_AUDIT_LOG_PATH</code>（掛在 PVC 上，pod 重啟不會遺失）。</p>''')}
+<section class="card">
 {_audit_filters(start, end, actor, action, target)}
+</section>
 {truncated}
+<section class="card">
 <p>共 {total} 筆　<a href="{PREFIX}/audit/export?{export_qs}">下載 CSV（Excel 可直接開）</a></p>
 <div class="wide"><table>
   <tr><th>時間（UTC）</th><th>操作者</th><th>動作</th><th>目標</th><th>結果</th><th>變更前／後</th></tr>
   {''.join(rows) if rows else '<tr><td colspan="6">沒有符合條件的紀錄。</td></tr>'}
 </table></div>
+</section>
 """)
 
 

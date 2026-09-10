@@ -22,6 +22,7 @@ from models import ExternalModelIn
 from routers.admin_web import (
     PREFIX,
     SYNC_THROTTLE_SECONDS,
+    _help,
     _mask_key,
     _nav,
     _page,
@@ -207,19 +208,23 @@ async def new_model_form(
             for p in presets
         )
         preset_block = f"""
+<section class="card">
 <h3>常用範本</h3>
-<p class="hint">從範本開始會自動帶入上次填過的上游、類型、額度等設定（不含 key）。</p>
+{_help('<p>從範本開始會自動帶入上次填過的上游、類型、額度等設定（不含 key）。</p>')}
 <table><tr><th>範本</th><th>內容</th><th></th></tr>{preset_rows}</table>
+</section>
 """ if presets else ""
 
         return _page(f"""
 {_nav('models_new')}
 <h2>上架新模型</h2>
-<p class="hint">上架後會先進到<b>草稿</b>狀態：已經註冊到 LiteLLM（所以測得起來），
+{_help('''<p>上架後會先進到<b>草稿</b>狀態：已經註冊到 LiteLLM（所以測得起來），
 但一般使用者一律打不通（<code>custom_auth</code> 回 403），要通過「測試呼叫」之後
-才發布得出去。</p>
+才發布得出去。</p>''')}
+<section class="card">
 <h3>第一步：上游是誰？</h3>
 <ul>{items}</ul>
+</section>
 {preset_block}
 """)
 
@@ -263,7 +268,7 @@ async def new_model_form(
     return _page(f"""
 {_nav('models_new')}
 <h2>上架新模型：{html.escape(up.label)}</h2>
-<p class="hint">上架後是<b>草稿</b>：一般使用者一律打不通，要先通過測試呼叫才能發布。</p>
+{_help('<p>上架後是<b>草稿</b>：一般使用者一律打不通，要先通過測試呼叫才能發布。</p>')}
 <form method="post" action="{PREFIX}/models">
   <input type="hidden" name="upstream" value="{upstream}">
   <p><label>模型 slug<br>
@@ -283,7 +288,7 @@ async def new_model_form(
        placeholder="留空＝不存範本"></label>
        <br><small class="hint">會存下上游、slug、類型、額度等欄位，<b>不含 key</b>。</small></p>
   </fieldset>
-  <button type="submit">上架為草稿</button>
+  <button type="submit" class="btn-primary">上架為草稿</button>
 </form>
 <p><a href="{PREFIX}/models/new">« 重新選擇</a></p>
 """)
@@ -375,6 +380,7 @@ async def create_model(
 {_nav('models_new')}
 <h2>已建立草稿</h2>
 {ip_warning}
+<section class="card">
 <p>model_name（可直接選取複製）：</p>
 <p><code style="font-size:1.1rem">{html.escape(result['model_name'])}</code></p>
 <p>這個模型現在是<b>草稿</b>——已經註冊到 LiteLLM，但 <code>config/custom_auth.py</code>
@@ -388,7 +394,8 @@ async def create_model(
       字串要跟上面 <code>{html.escape(result['model_name'])}</code> 逐字相同
       （這一步是讓模型出現在聊天畫面的下拉選單，授權本身已經在上一步做完了）</li>
 </ol>
-<p><a class="btn" href="{PREFIX}/models">回模型清單</a></p>
+<p><a class="btn btn-primary" href="{PREFIX}/models">回模型清單</a></p>
+</section>
 """)
 
 
@@ -584,7 +591,7 @@ async def edit_draft_form(model_name: str, admin: dict = Depends(require_admin))
   <p><label>API key<br><input type="password" name="api_key" autocomplete="off">
      <br><small class="hint">{key_hint}</small></label></p>
   {_metadata_fields(depts, meta)}
-  <button type="submit">儲存（會刪除重建）</button>
+  <button type="submit" class="btn-primary">儲存（會刪除重建）</button>
 </form>
 <p><a href="{PREFIX}/models/detail?model_name={quote(model_name, safe='')}">« 回詳情頁</a></p>
 """)
@@ -668,12 +675,14 @@ async def hard_delete_model(
     return _page(f"""
 {_nav('models')}
 <h2>已永久刪除</h2>
+<section class="card">
 <p><code>{html.escape(model_name)}</code> 已從 LiteLLM 與管理紀錄中移除，
 影響 {impact['total_headcount']} 人。用量累計（model_spend）刻意保留，
 避免同名模型重新上架時歷史花費被歸零。</p>
 <p class="hint">OpenWebUI 那邊的授權記錄不會自動清除；下一次同步會把它列進
 「模型 ID 對不上 LiteLLM」的診斷清單。</p>
-<p><a class="btn" href="{PREFIX}/models">回模型清單</a></p>
+<p><a class="btn btn-primary" href="{PREFIX}/models">回模型清單</a></p>
+</section>
 """)
 
 
@@ -687,8 +696,10 @@ async def trigger_sync(admin: dict = Depends(require_admin)):
         return _page(f"""
 {_nav('sync')}
 <h2>請稍候</h2>
+<section class="card">
 <p>節流中：同一帳號 {SYNC_THROTTLE_SECONDS} 秒內只能觸發一次同步，還要等 {int(remaining) + 1} 秒。</p>
-<p><a class="btn" href="{PREFIX}/sync">回同步與診斷頁</a></p>
+<p><a class="btn btn-primary" href="{PREFIX}/sync">回同步與診斷頁</a></p>
+</section>
 """, status_code=429)
 
     result = await openwebui_sync_service.pull_openwebui_model_access(dry_run=False)
@@ -704,5 +715,5 @@ async def trigger_sync(admin: dict = Depends(require_admin)):
 <h2>同步完成</h2>
 <p>已依 OpenWebUI 現況重算全平台的模型權限。</p>
 {render_sync_result(result)}
-<p><a class="btn" href="{PREFIX}/sync">回同步與診斷頁</a></p>
+<p><a class="btn btn-primary" href="{PREFIX}/sync">回同步與診斷頁</a></p>
 """)

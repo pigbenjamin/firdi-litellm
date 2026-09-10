@@ -23,7 +23,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException
 
 from admin_auth import require_admin
 from audit import write_audit
-from routers.admin_web import PREFIX, _nav, _page, access_model_url, status_badge
+from routers.admin_web import PREFIX, _help, _nav, _page, access_model_url, status_badge
 from services import model_access_service, model_metadata_service, models_service
 
 router = APIRouter(prefix=PREFIX)
@@ -216,6 +216,7 @@ def _confirm_page(
 <p class="hint">以下是<b>還沒寫入</b>的差異預覽。按下確認之後才會寫入資料庫，
 並立刻鏡像回 OpenWebUI（取代式的全平台鏡像），使用者端即時生效。</p>
 {warning}
+<section class="card">
 <p>共 {len(diffs)} 個對象有變化，涵蓋 {total_people} 人。</p>
 <div class="wide"><table>
   <tr><th>對象</th><th>人數</th><th>變化</th><th>變更後的完整授權</th></tr>
@@ -223,8 +224,9 @@ def _confirm_page(
 </table></div>
 <form method="post" action="{apply_action}">
   {hidden_fields}
-  <button type="submit">確認並立即生效</button>
+  <button type="submit" class="btn-primary">確認並立即生效</button>
 </form>
+</section>
 <p><a href="{back}">« 取消，回上一頁</a></p>
 """)
 
@@ -233,8 +235,10 @@ def _no_change_page(nav_key: str, back: str):
     return _page(f"""
 {_nav(nav_key)}
 <h2>沒有任何變化</h2>
+<section class="card">
 <p>送出的內容跟目前的設定一模一樣，沒有東西需要寫入。</p>
-<p><a class="btn" href="{back}">« 回上一頁</a></p>
+<p><a class="btn btn-primary" href="{back}">« 回上一頁</a></p>
+</section>
 """)
 
 
@@ -283,10 +287,12 @@ def _result_page(nav_key: str, summary: str, back: str):
     return _page(f"""
 {_nav(nav_key)}
 <h2>已生效</h2>
+<section class="card">
 <p>{html.escape(summary)}</p>
 <p class="hint">第二個 OpenWebUI 入口（如果有啟用）是唯讀鏡像，由 CronJob 每 2 分鐘自動對齊，
 最慢 2 分鐘後也會跟上。</p>
-<p><a class="btn" href="{back}">« 回授權頁</a></p>
+<p><a class="btn btn-primary" href="{back}">« 回授權頁</a></p>
+</section>
 """)
 
 
@@ -332,25 +338,28 @@ async def access_overview(admin: dict = Depends(require_admin)):
     return _page(f"""
 {_nav('access')}
 <h2>模型授權</h2>
-<p class="hint">這一頁是<b>唯讀現況</b>。要改授權請按該部門的「編輯」，一次改一個部門——
+{_help('''<p>這一頁是<b>唯讀現況</b>。要改授權請按該部門的「編輯」，一次改一個部門——
 存檔前一定會先給你差異預覽，確認之後才寫入，並立刻鏡像回 OpenWebUI（使用者端即時生效，
 不用等 2 分鐘的排程）。個人層級的額外授權請用下方的搜尋。</p>
+<p><code>＊ 不限制</code>的部門刻意不提供編輯：在矩陣或清單裡編輯它會把
+<code>＊</code> 換成一份逐筆清單、語意完全不同（之後新上架的模型它就不會自動有了）。
+真的要改請走 <code>ADMIN_API_KEY</code> 的 curl 路徑。</p>''')}
+<section class="card">
 <table>
   <tr><th>部門</th><th>人數</th><th>已授權的模型</th><th></th></tr>
   {''.join(rows) if rows else '<tr><td colspan="4">目前沒有任何部門。</td></tr>'}
 </table>
-<p class="hint"><code>＊ 不限制</code>的部門刻意不提供編輯：在矩陣或清單裡編輯它會把
-<code>＊</code> 換成一份逐筆清單、語意完全不同（之後新上架的模型它就不會自動有了）。
-真的要改請走 <code>ADMIN_API_KEY</code> 的 curl 路徑。</p>
+</section>
 
+<section class="card">
 <h3>按模型授權（一次開給多個部門）</h3>
-<p class="hint">剛上架一個模型、要一次開給好幾個部門時走這裡——勾部門而不是勾模型。
+{_help('''<p>剛上架一個模型、要一次開給好幾個部門時走這裡——勾部門而不是勾模型。
 逐部門改也做得到，但那樣要進出好幾次、每次都各自 push 一輪，而且看不到「這個模型
-總共影響幾個人」。模型清單與模型詳情頁也都有同一個入口。</p>
+總共影響幾個人」。模型清單與模型詳情頁也都有同一個入口。</p>''')}
 <form method="get" action="{PREFIX}/access/model/edit">
   <p><label>模型<br>
      <select name="model_name">{model_options}</select></label></p>
-  <button type="submit">前往</button>
+  <button type="submit" class="btn-primary">前往</button>
 </form>
 
 <details>
@@ -361,15 +370,18 @@ async def access_overview(admin: dict = Depends(require_admin)):
     {_matrix_rows(depts, model_ids)}
   </table></div>
 </details>
+</section>
 
+<section class="card">
 <h3>個人授權</h3>
-<p class="hint">個人授權是<b>加在部門授權之上</b>的（兩者聯集），用來處理少數需要額外模型的人。
-使用者有數百位，這裡用搜尋而不是列全表——一頁幾百個 checkbox 只會更容易點錯。</p>
+{_help('''<p>個人授權是<b>加在部門授權之上</b>的（兩者聯集），用來處理少數需要額外模型的人。
+使用者有數百位，這裡用搜尋而不是列全表——一頁幾百個 checkbox 只會更容易點錯。</p>''')}
 <form method="get" action="{PREFIX}/access/users">
   <p><label>搜尋使用者（email／user_id／key 名稱）<br>
      <input type="text" name="q" required></label></p>
-  <button type="submit">搜尋</button>
+  <button type="submit" class="btn-primary">搜尋</button>
 </form>
+</section>
 """)
 
 
@@ -431,20 +443,22 @@ async def dept_edit_form(dept_id: str, admin: dict = Depends(require_admin)):
     return _page(f"""
 {_nav('access')}
 <h2>部門授權：{html.escape(dept_id)}</h2>
+<section class="card">
 <table>
   <tr><td>部門名稱</td><td>{html.escape(dept["dept_name"])}</td></tr>
   <tr><td>影響人數</td><td>{dept["headcount"]} 人</td></tr>
 </table>
-<p class="hint">勾選＝這個部門可以使用該模型。每一列都標了「原本」是什麼，所以按了全選之後
+</section>
+{_help('''<p>勾選＝這個部門可以使用該模型。每一列都標了「原本」是什麼，所以按了全選之後
 也還看得到原設定；真的按錯就按「還原成原設定」。按「預覽變更」會先算出差異給你看，
-確認之後才寫入。</p>
+確認之後才寫入。</p>''')}
 {stale_note}
 <form method="post" action="{PREFIX}/access/departments/preview" id="access-form">
   <input type="hidden" name="scope" value="{html.escape(dept_id)}">
   {''.join(blocks) if blocks else '<p>LiteLLM 目前沒有任何可授權的模型。</p>'}
   <div class="sticky-bar">
     <p id="diff-summary" class="hint">目前跟原設定一樣，沒有變更</p>
-    <button type="submit" id="diff-submit">預覽變更</button>
+    <button type="submit" id="diff-submit" class="btn-primary">預覽變更</button>
     <button type="button" data-act="reset">還原成原設定</button>
     <a class="btn" href="{PREFIX}/access" style="margin-left:1rem">« 取消，回授權頁</a>
   </div>
@@ -643,10 +657,11 @@ async def model_access_form(model_name: str, admin: dict = Depends(require_admin
     return _page(f"""
 {_nav('access')}
 <h2>按模型授權：<code>{html.escape(model_name)}</code>{badge}</h2>
-<p class="hint">勾選＝該部門可以使用<b>這一個</b>模型。這一頁只動這個模型，各部門的
+{_help('''<p>勾選＝該部門可以使用<b>這一個</b>模型。這一頁只動這個模型，各部門的
 其他授權一個字都不會被碰到。按「預覽變更」會先算出差異給你看，確認之後才寫入，
-並立刻鏡像回 OpenWebUI。</p>
+並立刻鏡像回 OpenWebUI。</p>''')}
 {stale_note}
+<section class="card">
 <form method="post" action="{PREFIX}/access/model/preview" id="access-form"
       data-unit="部門" data-people="1">
   <input type="hidden" name="model_name" value="{html.escape(model_name)}">
@@ -660,11 +675,12 @@ async def model_access_form(model_name: str, admin: dict = Depends(require_admin
   </table>
   <div class="sticky-bar">
     <p id="diff-summary" class="hint">目前跟原設定一樣，沒有變更</p>
-    <button type="submit" id="diff-submit">預覽變更</button>
+    <button type="submit" id="diff-submit" class="btn-primary">預覽變更</button>
     <button type="button" data-act="reset">還原成原設定</button>
     <a class="btn" href="{PREFIX}/access" style="margin-left:1rem">« 回授權總覽</a>
   </div>
 </form>
+</section>
 <p class="hint">{"＊（不限制）的部門不列入勾選——它們本來就能用所有模型。"
                 if editable_count < len(depts) else ""}
 個人層級的額外授權請到<a href="{PREFIX}/access">授權總覽</a>用搜尋。</p>
@@ -730,16 +746,20 @@ def user_search(admin: dict = Depends(require_admin), q: str = ""):
     return _page(f"""
 {_nav('access')}
 <h2>個人授權：搜尋結果</h2>
+<section class="card">
 <form method="get" action="{PREFIX}/access/users">
   <p><label>搜尋使用者（email／user_id／key 名稱）<br>
      <input type="text" name="q" value="{html.escape(q)}" required></label></p>
-  <button type="submit">搜尋</button>
+  <button type="submit" class="btn-primary">搜尋</button>
 </form>
-<p class="hint">最多顯示 50 筆。「個人授權」欄位只列個人額外授權，不含部門本來就有的。</p>
+</section>
+{_help('<p>最多顯示 50 筆。「個人授權」欄位只列個人額外授權，不含部門本來就有的。</p>')}
+<section class="card">
 <table>
   <tr><th>使用者</th><th>部門</th><th>類型</th><th>個人授權</th></tr>
   {rows or '<tr><td colspan="4">沒有符合的使用者。</td></tr>'}
 </table>
+</section>
 <p><a href="{PREFIX}/access">« 回授權頁</a></p>
 """)
 
@@ -801,6 +821,7 @@ async def user_edit_form(user_id: str, admin: dict = Depends(require_admin)):
     return _page(f"""
 {_nav('access')}
 <h2>個人授權：{html.escape(user["user_email"] or user_id)}</h2>
+<section class="card">
 <table>
   <tr><td>user_id</td><td><code>{html.escape(user_id)}</code></td></tr>
   <tr><td>部門</td><td>{html.escape(user["dept_id"])}｜{html.escape(dept["dept_name"])}</td></tr>
@@ -810,6 +831,7 @@ async def user_edit_form(user_id: str, admin: dict = Depends(require_admin)):
     <a href="{PREFIX}/access/users/points?user_id={quote(user_id, safe='')}" style="margin-left:0.6em">設定 »</a>
   </td></tr>
 </table>
+</section>
 <p class="hint">{dept_note or "個人授權跟部門授權是聯集：這裡勾的是「部門沒有、但這個人要額外拿到」的模型。取消勾選部門本來就有的模型不會讓他失去存取權。"}</p>
 {stale_note}
 <form method="post" action="{PREFIX}/access/users/preview" id="access-form">
@@ -817,7 +839,7 @@ async def user_edit_form(user_id: str, admin: dict = Depends(require_admin)):
   {''.join(blocks) if blocks else '<p>LiteLLM 目前沒有任何可授權的模型。</p>'}
   <div class="sticky-bar">
     <p id="diff-summary" class="hint">目前跟原設定一樣，沒有變更</p>
-    <button type="submit" id="diff-submit">預覽變更</button>
+    <button type="submit" id="diff-submit" class="btn-primary">預覽變更</button>
     <button type="button" data-act="reset">還原成原設定</button>
     <a class="btn" href="{PREFIX}/access" style="margin-left:1rem">« 取消，回授權頁</a>
   </div>
@@ -896,13 +918,15 @@ def user_points_form(user_id: str, admin: dict = Depends(require_admin)):
 <p class="hint">這裡只存值——本平台不扣點、不擋，實際判斷由外部系統讀
 <code>GET /api/v1/users</code> 自己做。留空＝未設定，不是 0（0 點在外部系統眼裡
 是「完全不能用」）。</p>
+<section class="card">
 <form method="post" action="{PREFIX}/access/users/points">
   <input type="hidden" name="user_id" value="{html.escape(user_id)}">
   <p><label>點數上限（留空＝未設定）<br>
      <input type="number" name="points_limit" step="0.01" min="0" value="{limit_value}"></label></p>
   <p><label>週期<br><select name="points_period">{period_options}</select></label></p>
-  <button type="submit">儲存</button>
+  <button type="submit" class="btn-primary">儲存</button>
 </form>
+</section>
 <p><a href="{back}">« 回個人授權頁</a></p>
 """)
 
@@ -923,6 +947,8 @@ def apply_user_points(
     return _page(f"""
 {_nav('access')}
 <h2>已儲存</h2>
+<section class="card">
 <p>{html.escape(user_id)} 的點數上限已更新。</p>
-<p><a class="btn" href="{back}">« 回個人授權頁</a></p>
+<p><a class="btn btn-primary" href="{back}">« 回個人授權頁</a></p>
+</section>
 """)
