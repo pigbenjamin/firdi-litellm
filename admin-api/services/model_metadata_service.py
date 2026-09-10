@@ -202,16 +202,21 @@ def _empty_spend(period: str) -> dict:
 
 
 def list_spend() -> dict[str, dict]:
-    """model_name → 用量。一次撈完整張表，給模型清單頁用。
+    """model_name → 用量（跨部門加總）。一次撈完整張表，給模型清單頁用。
 
     模型清單一頁會列十幾筆，逐筆呼叫 get_spend 就是十幾次開關連線；這張表的資料量
     是「模型數 × 2」，直接全撈比較划算。
+
+    2026-09 起 model_spend 多了 dept_id 維度（見 database.py 的欄位註解），
+    一個 model_name+period 現在可能有好幾列（每個部門一列）——這裡用 GROUP BY
+    跨部門加總，回傳形狀跟改動前完全一樣，模型清單頁「累計用量」的顯示不受影響。
     """
     period = current_period()
     out: dict[str, dict] = {}
     with get_conn(DATABASE_URL) as conn:
         rows = conn.execute(
-            "SELECT model_name, period, spend_usd, calls FROM model_spend WHERE period IN (%s, 'total')",
+            "SELECT model_name, period, SUM(spend_usd) AS spend_usd, SUM(calls) AS calls "
+            "FROM model_spend WHERE period IN (%s, 'total') GROUP BY model_name, period",
             (period,),
         ).fetchall()
     for r in rows:
@@ -225,11 +230,13 @@ def list_spend() -> dict[str, dict]:
 
 
 def get_spend(model_name: str) -> dict:
-    """回傳 {"monthly": 本月花費, "total": 累計花費, "calls": 本月呼叫次數, "period": "YYYY-MM"}。"""
+    """回傳 {"monthly": 本月花費, "total": 累計花費, "calls": 本月呼叫次數, "period": "YYYY-MM"}
+    （跨部門加總，理由同 list_spend）。"""
     period = current_period()
     with get_conn(DATABASE_URL) as conn:
         rows = conn.execute(
-            "SELECT period, spend_usd, calls FROM model_spend WHERE model_name=%s AND period IN (%s, 'total')",
+            "SELECT period, SUM(spend_usd) AS spend_usd, SUM(calls) AS calls FROM model_spend "
+            "WHERE model_name=%s AND period IN (%s, 'total') GROUP BY period",
             (model_name, period),
         ).fetchall()
     by_period = {r["period"]: r for r in rows}
@@ -241,6 +248,33 @@ def get_spend(model_name: str) -> dict:
         "calls": int(monthly["calls"]) if monthly else 0,
         "total": float(total["spend_usd"]) if total else 0.0,
     }
+
+
+def dept_spend(model_name: str) -> dict[str, dict]:
+    """dept_id → 用量，給模型詳情頁顯示「各部門實際花費」用——取代原本手填的
+    model_metadata.cost_center 標籤（決策二：一個模型可能被多個部門共用同一把
+    key，單一標籤標不出真正的分帳，這裡改成從真實用量算）。
+
+    空字串 dept_id（見 config/custom_logger.py 的註解）代表沒有部門脈絡的呼叫
+    （地端模型健康檢查、curl 測試等），顯示成「（未分類）」。
+    """
+    period = current_period()
+    out: dict[str, dict] = {}
+    with get_conn(DATABASE_URL) as conn:
+        rows = conn.execute(
+            "SELECT dept_id, period, spend_usd, calls FROM model_spend "
+            "WHERE model_name=%s AND period IN (%s, 'total')",
+            (model_name, period),
+        ).fetchall()
+    for r in rows:
+        dept_id = r["dept_id"] or ""
+        entry = out.setdefault(dept_id, _empty_spend(period))
+        if r["period"] == "total":
+            entry["total"] = float(r["spend_usd"] or 0)
+        else:
+            entry["monthly"] = float(r["spend_usd"] or 0)
+            entry["calls"] = int(r["calls"] or 0)
+    return out
 
 
 def budget_state(meta: dict, spend: dict) -> dict:

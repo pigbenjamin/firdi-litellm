@@ -28,6 +28,7 @@ ACTIONS = {
     "delete_model_preset": "刪除上架範本",
     "set_dept_models": "設定部門模型授權",
     "set_user_models": "設定個人模型授權",
+    "set_user_points": "設定個人點數上限",
     "push_model_access": "推送授權到 OpenWebUI",
     "sync_permissions": "從 OpenWebUI 拉回授權",
 }

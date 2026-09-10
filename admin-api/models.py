@@ -40,6 +40,9 @@ class UserIn(BaseModel):
     models: list[str] = Field(default_factory=list)
     rpm_limit: int | None = None
     tpm_limit: int | None = None
+    # 個人點數上限（跨所有模型合計）。只存不算，見 database.py 的欄位註解。
+    points_limit: float | None = None
+    points_period: Literal["monthly", "total"] = "monthly"
     aliases: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
     blocked: bool = False
@@ -53,6 +56,8 @@ class UserPatch(BaseModel):
     models: list[str] | None = None
     rpm_limit: int | None = None
     tpm_limit: int | None = None
+    points_limit: float | None = None
+    points_period: Literal["monthly", "total"] | None = None
     aliases: dict[str, Any] | None = None
     metadata: dict[str, Any] | None = None
     blocked: bool | None = None
@@ -83,14 +88,11 @@ class ExternalModelIn(BaseModel):
     """
     model_name: str
     model: str  # litellm_params.model，如 "openai/gpt-4o-mini" 或 openrouter 路線的 "openai/anthropic/claude-sonnet-4-5"
-    api_key: str | None = None  # 原生 Provider 路線必填；openrouter 路線留空則用共用 placeholder，實際 key 由部門設定動態注入
+    # 一律模型自帶 key（2026-09 起，見 docs/admin-web-plan.md）：OpenRouter 路線
+    # 也必填，不再有「留空用部門 key」這條路。要給某個部門專屬 key，做法是
+    # 「同上游多上架一個模型」，開給誰仍由模型授權頁決定。
+    api_key: str
     api_base: str | None = None  # 原生 Provider 若非官方預設端點才需要；openrouter 路線留空則自動帶 https://openrouter.ai/api/v1
-    # 決策 E：這個模型的 key 從哪來，跟上面的 model_name/model（上游是誰）解耦。
-    # "model" = 用這筆 litellm_params.api_key；"dept:<provider>" = 執行期改用
-    # 呼叫者部門 provider_keys 裡對應 provider 的 key（見 config/custom_auth.py）。
-    # 留空時由後端推導預設值：openrouter/ 開頭 → "dept:openrouter"，其餘 → "model"，
-    # 跟決策 E 之前的唯一行為（只有 openrouter/ 前綴會觸發部門 key 注入）完全一致。
-    key_policy: str | None = None
 
     # ── WP1：管理面欄位（存 admin-api 自己的 SQLite model_metadata 表，不進 LiteLLM）──
     display_name: str = ""          # 顯示名稱，跟呼叫用的 model_name 分開
@@ -129,6 +131,8 @@ class UserOut(BaseModel):
     models: list[str]
     rpm_limit: int | None
     tpm_limit: int | None
+    points_limit: float | None
+    points_period: Literal["monthly", "total"]
     aliases: dict[str, Any]
     metadata: dict[str, Any]
     blocked: bool

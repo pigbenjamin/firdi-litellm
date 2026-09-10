@@ -38,9 +38,7 @@ LiteLLM 內建的 `store_model_in_db`（`config/litellm_config.yaml` 的
 
 admin-api 包了一層薄代理（`admin-api/routers/models.py`，`/api/v1/models/external`），
 用 LiteLLM master key 轉呼叫這組 LiteLLM 原生 API，這樣持有 `ADMIN_API_KEY` 的呼叫者
-（跟 [external-models.md](external-models.md) 步驟 2 的部門 OpenRouter key PATCH
-一樣，沿用既有角色/認證機制）不需要拿到 LiteLLM master key、也不需要任何 kubectl
-存取，就能自助上架。
+不需要拿到 LiteLLM master key、也不需要任何 kubectl 存取，就能自助上架。
 
 **一次性前置設定**（已完成，新機器/重灌環境才需要重做）：Postgres 部署見
 `./scripts/deploy.sh postgres`，密碼在 `.env` 的 `POSTGRES_PASSWORD`。之後日常新增
@@ -49,16 +47,16 @@ admin-api 包了一層薄代理（`admin-api/routers/models.py`，`/api/v1/model
 ### 新增模型
 
 ```bash
-# OpenRouter 路線：model_name 保留 openrouter/ 前綴只是命名慣例（決策 E 之後，
-# 要不要注入部門 key 是 model_key_policies 的明確 key_policy 欄位決定，不再是前綴
-# 本身；沒給 key_policy 時後端會用這個前綴推導預設值，效果跟以前一樣），
-# api_key/api_base 都留空即可，會自動帶入共用 placeholder 與 https://openrouter.ai/api/v1
+# OpenRouter 路線：model_name 保留 openrouter/ 前綴只是命名慣例，不是功能開關。
+# api_key 必填（2026-08 起一律模型自帶 key，沒有「留空退回部門 key」這條路），
+# api_base 留空即可，會自動帶入 https://openrouter.ai/api/v1
 curl -X POST "http://<node-ip>:30408/api/v1/models/external" \
   -H "Authorization: Bearer <admin-api-key>" \
   -H "Content-Type: application/json" \
   -d '{
         "model_name": "openrouter/anthropic/claude-sonnet-4-5",
-        "model": "openai/anthropic/claude-sonnet-4-5"
+        "model": "openai/anthropic/claude-sonnet-4-5",
+        "api_key": "sk-or-v1-xxxxxxxx"
       }'
 
 # 原生 Provider 路線：api_key 必填（這裡直接把 key 存進 Postgres，不需要像路線 B
@@ -140,10 +138,8 @@ curl -X POST "http://<node-ip>:30408/api/v1/models/external" \
       }'
 ```
 
-- `api_key` 是必填的（`model_name` 沒有 `openrouter/` 前綴時，`create_external_model`
-  推導出的 `key_policy` 預設是 `"model"`，也就是必須自帶 `api_key`，少了會回 422；
-  要改成從部門 key 注入，上架時明確帶 `key_policy: "dept:<provider>"` 即可），
-  但 Ollama 不驗證，填 `EMPTY` 即可——跟 YAML 裡地端 vLLM 那幾筆一致。
+- `api_key` 是必填的（不管哪個上游都一樣，少了會回 422），但 Ollama 不驗證，填
+  `EMPTY` 即可——跟 YAML 裡地端 vLLM 那幾筆一致。
 - `ollama/` 是 LiteLLM 原生 provider 前綴，`api_base` **不帶 `/v1`**。要帶 `/v1` 的話
   `model` 得改成 `openai/gemma4:31b`（走 Ollama 的 OpenAI 相容端點）。
 - `api_base` 填 `ollama-service` 而不是節點 IP，模型定義裡才不會硬編碼一個換機器就
@@ -196,56 +192,48 @@ nvidia-smi --query-gpu=index,memory.used,memory.total --format=csv
 
 ---
 
-## 路線 A：透過 OpenRouter
+## 路線 A：透過 OpenRouter（YAML `model_list`，需要 kubectl）
 
-平台既有機制：`model_list` 裡的 OpenRouter 模型其實是用 `openai/` provider 打
-OpenRouter 的 OpenAI 相容端點；真正的 API key **不寫死在 YAML 裡**。
-[config/custom_auth.py](../config/custom_auth.py) 在每次請求驗證時，依這個模型的
-`key_policy`（預設是 `dept:openrouter`）解析出該用哪個部門的哪把 key，放進
-metadata；[config/custom_logger.py](../config/custom_logger.py) 的 `async_pre_call_hook`
-只負責「metadata 有值就套用」，不再自己判斷前綴（決策 E，見
-[admin-web-plan.md](admin-web-plan.md)）。
+**這條路只適合平台管理員要長期維護、寫進 git 的正式模型清單。** 需要自助上架、
+不想碰 kubectl 的話，走下面的路線 C（`POST /api/v1/models/external`）更快，
+兩者行為現在完全一致（一律模型自帶 key），差別只在「改 YAML+部署」還是「打 API」。
 
-### 1. 加一筆 model_list
+**2026-09 起，部門專屬 key 的動態注入機制（決策 E 的 `dept:<provider>`）已經
+全面拔除。** YAML 定義的 OpenRouter 模型現在必須跟其他上游一樣，直接給一把真正
+的共用 key（透過 K8s Secret 注入，不寫死在 YAML 明文裡）；要給某個部門專屬的
+key，做法是走路線 C「同上游多上架一個模型」，不是靠這條 YAML 路。
 
-在 [config/litellm_config.yaml](../config/litellm_config.yaml) 依現有 OpenRouter 那筆樣式加：
+### 1. 把真正的 key 放進 secret
+
+`k8s/litellm/secrets.yaml` 加一個 key（例如 `openrouter-shared-key`），
+`k8s/litellm/deployment.yaml` 的 `env` 補一個 `secretKeyRef` 指過去（例如取名
+`OPENROUTER_SHARED_KEY`）。
+
+### 2. 加一筆 model_list
+
+在 [config/litellm_config.yaml](../config/litellm_config.yaml) 加：
 
 ```yaml
 - model_name: openrouter/anthropic/claude-sonnet-4-5
   litellm_params:
     model: openai/anthropic/claude-sonnet-4-5
     api_base: https://openrouter.ai/api/v1
-    api_key: os.environ/OPENROUTER_API_KEY_PLACEHOLDER
+    api_key: os.environ/OPENROUTER_SHARED_KEY
 ```
 
-- `model_name`：使用者呼叫時填的名字，慣例上保留 `openrouter/` 前綴方便辨識來源。
+- `model_name`：使用者呼叫時填的名字，慣例上保留 `openrouter/` 前綴方便辨識來源，
+  但這只是命名慣例，不是功能開關。
 - `litellm_params.model`：真正打 OpenRouter 的 model id，`openrouter.ai/models` 頁面上的
   slug 就是 `anthropic/claude-sonnet-4-5` 這種格式，前面加 `openai/` 是因為走的是 OpenAI
   相容端點，不是 LiteLLM 原生 OpenRouter provider。
-- `api_key` 那行**不用改**，只是佔位符，實際 key 由 `custom_auth.py` 解析、
-  `custom_logger.py` 的 pre_call_hook 動態注入。
+- `api_key` 指到上一步建立的真正 secret——**沒有任何機制會在執行期把它換成別的值**，
+  跟已經拔掉的部門動態注入完全不同。
 
-### 2. 部門的 OpenRouter key
+### 3. 開放使用權限
 
-這個欄位跟模型「使用權限」（`allowed_models`）是分開的東西，**不受** OpenWebUI 權限同步管
-（`pull`/`push` 只動 `allowed_models` 與 `users.models`，不碰 `openrouter_api_key`），所以
-PATCH 完立即生效、不用額外做 push。**這步驟使用管理者可以自己做**（見
-[external-models.md](external-models.md)），不需要平台管理員代勞：
-
-```bash
-curl -X PATCH "http://<node-ip>:30408/api/v1/departments/RD" \
-  -H "Authorization: Bearer <admin-api-key>" \
-  -H "Content-Type: application/json" \
-  -d '{"openrouter_api_key": "sk-or-v1-xxxxxxxx"}'
-```
-
-沒設定 key 的部門呼叫這類模型時會用回 `OPENROUTER_API_KEY_PLACEHOLDER`，打 OpenRouter 一定
-失敗（401），跟「有沒有 `allowed_models` 授權」是兩回事，兩個都要設對才能真的打通。
-
-> `openrouter_api_key` 這個獨立欄位仍然可用、行為不變。決策 E 之後它實際上是
-> `departments.provider_keys`（JSON，key 為 provider 名稱）裡 `"openrouter"` 這一格
-> 的同義寫法，兩者由 admin-api 自動同步——要設定其他 provider（如 `openai`）的部門
-> key，PATCH `provider_keys`，例如 `{"provider_keys": {"openai": "sk-..."}}`。
+跟路線 C 一樣，加進 `model_list` 只代表「LiteLLM 認得它」，還沒有任何人能打，
+接著到 [external-models.md](external-models.md) 的「開放使用權限」把它開給要用
+的部門或個人。
 
 ---
 

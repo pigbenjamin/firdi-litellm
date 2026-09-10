@@ -397,16 +397,26 @@ def seed():
                 "VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (api_key) DO NOTHING",
                 (f"sk-dev-{user_id}", email.split('@')[0], user_id, email, dept_id, "[]"),
             )
-        # 給既有的地端模型塞一點用量，額度那一欄才看得到東西
+        # 給既有的地端模型塞一點用量（分兩個部門，額度欄跟「各部門實際花費」都看得到東西）
         conn.execute(
-            "INSERT INTO model_spend (model_name, period, spend_usd, calls) "
-            "VALUES ('gemma-4-31B-it', to_char(now(), 'YYYY-MM'), 12.3456, 421) "
-            "ON CONFLICT (model_name, period) DO NOTHING"
+            "INSERT INTO model_spend (model_name, dept_id, period, spend_usd, calls) "
+            "VALUES ('gemma-4-31B-it', 'RD', to_char(now(), 'YYYY-MM'), 8.1234, 301) "
+            "ON CONFLICT (model_name, dept_id, period) DO NOTHING"
         )
         conn.execute(
-            "INSERT INTO model_spend (model_name, period, spend_usd, calls) "
-            "VALUES ('gemma-4-31B-it', 'total', 58.9012, 1893) "
-            "ON CONFLICT (model_name, period) DO NOTHING"
+            "INSERT INTO model_spend (model_name, dept_id, period, spend_usd, calls) "
+            "VALUES ('gemma-4-31B-it', 'RD', 'total', 40.0012, 1393) "
+            "ON CONFLICT (model_name, dept_id, period) DO NOTHING"
+        )
+        conn.execute(
+            "INSERT INTO model_spend (model_name, dept_id, period, spend_usd, calls) "
+            "VALUES ('gemma-4-31B-it', 'SALES', to_char(now(), 'YYYY-MM'), 4.2222, 120) "
+            "ON CONFLICT (model_name, dept_id, period) DO NOTHING"
+        )
+        conn.execute(
+            "INSERT INTO model_spend (model_name, dept_id, period, spend_usd, calls) "
+            "VALUES ('gemma-4-31B-it', 'SALES', 'total', 18.9000, 500) "
+            "ON CONFLICT (model_name, dept_id, period) DO NOTHING"
         )
 
 

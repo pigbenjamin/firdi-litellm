@@ -38,13 +38,9 @@ CREATE TABLE IF NOT EXISTS departments (
     updated_at         TEXT NOT NULL DEFAULT (now()::text)
 );
 
--- 決策 E：模型的上游（litellm_params.model）與 key 從哪來（部門 provider key 或
--- 模型自帶）解耦。key_policy 是 "model"（用模型自己定義的 key）或
--- "dept:<provider>"（用部門 provider_keys 裡該 provider 的 key,例如
--- "dept:openai"）。用 model_name（呼叫者請求時填的名字）當主鍵,因為 custom_auth
--- 熱路徑上只看得到這個字串,看不到 LiteLLM 內部的 deployment id。沒有紀錄的
--- model_name 由 custom_auth 自行推導預設值（openrouter/ 開頭 → dept:openrouter,
--- 其餘 → model）,不需要為既有模型補資料。
+-- 已棄用（2026-09 起，決策 E 的部門 key 機制全面拔除，一律模型自帶 key）。
+-- config/custom_auth.py 與 admin-api 都已經不再讀寫這張表，留著純粹是避免多一次
+-- 資料庫遷移，之後確認沒人依賴再一併清掉。
 CREATE TABLE IF NOT EXISTS model_key_policies (
     model_name TEXT PRIMARY KEY,
     key_policy TEXT NOT NULL
@@ -112,13 +108,19 @@ CREATE TABLE IF NOT EXISTS model_metadata (
 --
 -- period 是 'YYYY-MM'（UTC,budget_period='monthly'）或 'total'（budget_period='total'）。
 -- 兩種都會累計,換設定不會遺失歷史。
+-- dept_id（2026-09 新增）：取代手填的 model_metadata.cost_center 標籤，改成
+-- 用真實用量算「這個模型的花費各部門各花了多少」（config/custom_logger.py 寫入
+-- 時本來就拿得到呼叫者的部門，不需要另外掃 usage.jsonl）。沒有部門脈絡的呼叫
+-- 記 ''（未分類），不是 NULL——PK 需要穩定值。額度判斷（custom_auth.py）仍是
+-- 整個模型的總量，讀取端跨 dept_id 加總，語意不變。
 CREATE TABLE IF NOT EXISTS model_spend (
     model_name TEXT NOT NULL,
+    dept_id    TEXT NOT NULL DEFAULT '',
     period     TEXT NOT NULL,
     spend_usd  REAL NOT NULL DEFAULT 0,
     calls      INTEGER NOT NULL DEFAULT 0,
     updated_at TEXT NOT NULL DEFAULT (now()::text),
-    PRIMARY KEY (model_name, period)
+    PRIMARY KEY (model_name, dept_id, period)
 );
 
 -- 上架表單的「常用範本」（WP1）：把填過一次的表單欄位存起來,下次選範本直接帶入。
@@ -138,6 +140,13 @@ CREATE TABLE IF NOT EXISTS users (
     models          TEXT NOT NULL DEFAULT '[]',
     rpm_limit       INTEGER,
     tpm_limit       INTEGER,
+    -- 個人點數上限（跨所有模型合計，2026-09 新增）。**只存不算**：跟 model_metadata
+    -- 的 points_per_1k_prompt/completion 同一種取捨——扣點、擋人一律由外部系統處理，
+    -- config/custom_auth.py 完全不看這兩個欄位。admin-web 只負責提供設定介面，
+    -- 外部系統走既有的 GET /api/v1/users 讀（不需要新端點）。
+    -- NULL 表示「還沒設上限」，不是 0（0 點會被外部系統當成「完全不能用」）。
+    points_limit    REAL,
+    points_period   TEXT NOT NULL DEFAULT 'monthly',    -- monthly | total
     aliases         TEXT NOT NULL DEFAULT '{}',
     metadata        TEXT NOT NULL DEFAULT '{}',
     blocked         INTEGER NOT NULL DEFAULT 0,

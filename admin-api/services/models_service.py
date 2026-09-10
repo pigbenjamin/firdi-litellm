@@ -39,56 +39,6 @@ def _litellm_client(timeout: float = 15) -> httpx.AsyncClient:
     )
 
 
-# ── 決策 E：key 來源政策（見 docs/admin-web-plan.md）───────────────────────────
-# 上游（litellm_params.model）跟 key 從哪來解耦：政策存 admin-api 自己的 SQLite
-# （model_key_policies 表），不存 LiteLLM 的 model_info——後者會讓
-# config/custom_auth.py 在每個請求的熱路徑上多一個 Postgres 相依，不值得。
-
-
-def _infer_default_key_policy(model_name: str) -> str:
-    """沒有明確政策時的預設值，跟決策 E 之前的唯一行為（只有 openrouter/ 前綴
-    會觸發部門 key 注入）完全一致，既有模型不需要任何資料回填。
-    """
-    return "dept:openrouter" if model_name.startswith("openrouter/") else "model"
-
-
-def _validate_key_policy(policy: str) -> None:
-    if policy == "model":
-        return
-    if policy.startswith("dept:") and len(policy) > len("dept:"):
-        return
-    raise HTTPException(
-        status_code=422,
-        detail=f"key_policy 格式錯誤：'{policy}'，需為 'model' 或 'dept:<provider>'（如 'dept:openai'）",
-    )
-
-
-def _set_key_policy(model_name: str, policy: str) -> None:
-    with get_conn(DATABASE_URL) as conn:
-        conn.execute(
-            "INSERT INTO model_key_policies (model_name, key_policy) VALUES (%s, %s) "
-            "ON CONFLICT(model_name) DO UPDATE SET key_policy=excluded.key_policy",
-            (model_name, policy),
-        )
-
-
-async def _cleanup_orphaned_key_policy(model_name: str) -> None:
-    """model_name 底下已無其他 deployment 時才刪政策紀錄，避免同名模型日後重建被
-    舊政策悄悄套用；查不到（LiteLLM 連不上）就放著，不影響刪除本身——下次用同名
-    重新上架時 _set_key_policy 的 upsert 一樣會覆蓋掉舊值。
-    """
-    async with _litellm_client() as client:
-        try:
-            resp = await client.get("/model/info")
-        except httpx.RequestError:
-            return
-    if resp.status_code == 200:
-        if any(item.get("model_name") == model_name for item in resp.json().get("data", [])):
-            return  # 還有其他 deployment 用同一個 model_name，政策仍在使用中
-    with get_conn(DATABASE_URL) as conn:
-        conn.execute("DELETE FROM model_key_policies WHERE model_name=%s", (model_name,))
-
-
 async def list_models() -> dict:
     async with _litellm_client() as client:
         try:
@@ -156,11 +106,6 @@ async def list_external_models(include_yaml: bool = False) -> dict:
     # 一個被納管過的 YAML 模型會在 curl 端點被誤判成「停用中」。
     in_litellm = {item.get("model_name") for item in info}
 
-    with get_conn(DATABASE_URL) as conn:
-        stored_policies = {
-            row["model_name"]: row["key_policy"]
-            for row in conn.execute("SELECT model_name, key_policy FROM model_key_policies").fetchall()
-        }
     metadata = model_metadata_service.list_metadata()
     spend_by_model = model_metadata_service.list_spend()
     period = model_metadata_service.current_period()
@@ -187,7 +132,6 @@ async def list_external_models(include_yaml: bool = False) -> dict:
                 "model_name": model_name,
                 "model": litellm_params.get("model"),
                 "api_base": litellm_params.get("api_base"),
-                "key_policy": stored_policies.get(model_name) or _infer_default_key_policy(model_name),
                 "registered": True,
                 "meta": meta,
                 "spend": _spend(model_name),
@@ -204,7 +148,6 @@ async def list_external_models(include_yaml: bool = False) -> dict:
                 "model_name": model_name,
                 "model": meta["litellm_model"],
                 "api_base": meta["api_base"],
-                "key_policy": stored_policies.get(model_name) or _infer_default_key_policy(model_name),
                 "registered": False,
                 "meta": meta,
                 "spend": _spend(model_name),
@@ -218,25 +161,17 @@ async def list_external_models(include_yaml: bool = False) -> dict:
 # ── 註冊到 LiteLLM（上架與「重新啟用」共用）──────────────────────────────────
 
 def _build_litellm_params(
-    model: str, api_key: str | None, api_base: str | None, key_policy: str, model_name: str
+    model: str, api_key: str | None, api_base: str | None, model_name: str
 ) -> dict:
+    """一律模型自帶 key（2026-09 起，舊制 dept:<provider> 已拔除）。地端 vLLM／
+    Ollama 走固定共用值 model_upstreams.FIXED_SHARED_KEY（"EMPTY"），其餘上游
+    一律要求呼叫端明確提供 api_key——不再有「留空就用部門 key」這條路。
+    """
     litellm_params: dict = {"model": model}
     if api_key:
         litellm_params["api_key"] = api_key
-    elif key_policy.startswith("dept:"):
-        # 跟 YAML model_list 現有 openrouter 那幾筆一樣用共用 placeholder；這個值
-        # 只在 custom_auth 找不到對應部門 key 時才會真的被拿去打上游（會 401，
-        # 這是刻意的失敗模式，見 docs/admin-web-plan.md「容易做錯的五件事」#5）。
-        # 沿用既有 OPENROUTER_API_KEY_PLACEHOLDER 這個環境變數名稱，即使現在
-        # 也給非 openrouter 的 dept:* 政策用——重新命名要動 k8s deployment
-        # manifest，留給部署階段一併處理，不在這裡做。
-        litellm_params["api_key"] = "os.environ/OPENROUTER_API_KEY_PLACEHOLDER"
     else:
-        raise HTTPException(
-            status_code=422,
-            detail="api_key 必填（key_policy='model' 時一定要提供；"
-            "key_policy='dept:<provider>' 可留空，由該部門的 provider_keys 動態注入）",
-        )
+        raise HTTPException(status_code=422, detail="api_key 必填")
     if api_base:
         litellm_params["api_base"] = api_base
     elif model_name.startswith("openrouter/"):
@@ -288,8 +223,6 @@ async def create_external_model(body: ExternalModelIn) -> dict:
     if not body.model.strip():
         raise HTTPException(status_code=422, detail="model 不可為空白字串")
 
-    key_policy = body.key_policy or _infer_default_key_policy(body.model_name)
-    _validate_key_policy(key_policy)
     model_metadata_service.validate_model_type(body.model_type)
     model_metadata_service.validate_budget(body.budget_limit_usd, body.budget_period, body.budget_enforce)
     model_metadata_service.validate_points(body.points_per_1k_prompt, body.points_per_1k_completion)
@@ -297,12 +230,10 @@ async def create_external_model(body: ExternalModelIn) -> dict:
     async with _litellm_client() as client:
         await _assert_name_available(client, body.model_name)
         litellm_params = _build_litellm_params(
-            body.model, body.api_key, body.api_base, key_policy, body.model_name
+            body.model, body.api_key, body.api_base, body.model_name
         )
         await _post_model_new(client, body.model_name, litellm_params)
 
-    # 成功建立才落政策與 metadata，避免上架失敗卻留下孤兒紀錄。
-    _set_key_policy(body.model_name, key_policy)
     model_metadata_service.upsert_metadata(
         body.model_name,
         display_name=body.display_name,
@@ -321,8 +252,7 @@ async def create_external_model(body: ExternalModelIn) -> dict:
         api_key=body.api_key or "",
     )
 
-    return {"model_name": body.model_name, "status": "created", "key_policy": key_policy,
-            "lifecycle_status": body.status}
+    return {"model_name": body.model_name, "status": "created", "lifecycle_status": body.status}
 
 
 async def delete_external_model(model_id: str) -> None:
@@ -345,7 +275,6 @@ async def delete_external_model(model_id: str) -> None:
         raise HTTPException(status_code=502, detail=f"LiteLLM /model/delete failed: {resp.text}")
 
     if model_name:
-        await _cleanup_orphaned_key_policy(model_name)
         model_metadata_service.delete_metadata(model_name)
 
 
@@ -372,20 +301,6 @@ async def _delete_by_name(client: httpx.AsyncClient, model_name: str) -> None:
             raise HTTPException(status_code=502, detail=f"LiteLLM /model/delete failed: {resp.text}")
 
 
-def get_key_policy(model_name: str) -> str:
-    """這個模型目前的 key 來源政策。沒有紀錄時退回推導的預設值。
-
-    有這支是為了讓呼叫端（例如編輯草稿）能「沿用原本的政策」而不是重新猜一次。
-    上架動線已經一律建立 key_policy='model' 的模型（見 routers/admin_web_write.py），
-    但決策 E 時期建的 dept:<provider> 模型還在，重新推導會把它們改壞。
-    """
-    with get_conn(DATABASE_URL) as conn:
-        row = conn.execute(
-            "SELECT key_policy FROM model_key_policies WHERE model_name=%s", (model_name,)
-        ).fetchone()
-    return row["key_policy"] if row else _infer_default_key_policy(model_name)
-
-
 def _require_meta(model_name: str) -> dict:
     meta = model_metadata_service.get_metadata(model_name)
     if not meta["has_record"]:
@@ -399,7 +314,7 @@ def _require_meta(model_name: str) -> dict:
 
 async def update_draft_model(
     model_name: str, *, model: str, api_base: str | None, api_key: str | None,
-    key_policy: str, display_name: str, model_type: str, cost_center: str,
+    display_name: str, model_type: str, cost_center: str,
     budget_limit_usd: float | None, budget_enforce: bool, budget_period: str,
     points_per_1k_prompt: float | None, points_per_1k_completion: float | None,
     notes: str, upstream: str,
@@ -416,19 +331,17 @@ async def update_draft_model(
             detail=f"只有草稿狀態才能編輯，'{model_name}' 目前是 {meta['status']}。"
             "已發布的模型要改設定請先停用。",
         )
-    _validate_key_policy(key_policy)
     model_metadata_service.validate_model_type(model_type)
     model_metadata_service.validate_budget(budget_limit_usd, budget_period, budget_enforce)
     model_metadata_service.validate_points(points_per_1k_prompt, points_per_1k_completion)
     if not model.strip():
         raise HTTPException(status_code=422, detail="model 不可為空白字串")
 
-    litellm_params = _build_litellm_params(model, api_key, api_base, key_policy, model_name)
+    litellm_params = _build_litellm_params(model, api_key, api_base, model_name)
     async with _litellm_client() as client:
         await _delete_by_name(client, model_name)
         await _post_model_new(client, model_name, litellm_params)
 
-    _set_key_policy(model_name, key_policy)
     return model_metadata_service.upsert_metadata(
         model_name,
         display_name=display_name, model_type=model_type, cost_center=cost_center,
@@ -507,7 +420,7 @@ async def publish_model(model_name: str) -> dict:
 
 async def disable_model(model_name: str) -> dict:
     """停用：從 LiteLLM 刪掉（使用者立刻打不到、OpenWebUI 的模型清單也看不到），
-    但 model_metadata 那筆設定與 model_key_policies 的政策完整保留，可一鍵重建。
+    但 model_metadata 那筆設定完整保留，可一鍵重建。
 
     刻意不動 departments.allowed_models / users.models——授權是獨立的一件事，
     重新啟用時模型回到 LiteLLM 清單，原本的授權自然又生效，不必重放一次。
@@ -542,10 +455,8 @@ async def enable_model(model_name: str) -> dict:
             detail=f"'{model_name}' 沒有保留上游設定（litellm_model 是空的），無法自動重建，請重新上架",
         )
 
-    key_policy = get_key_policy(model_name)
-
     litellm_params = _build_litellm_params(
-        meta["litellm_model"], meta["api_key"] or None, meta["api_base"], key_policy, model_name
+        meta["litellm_model"], meta["api_key"] or None, meta["api_base"], model_name
     )
     async with _litellm_client() as client:
         await _assert_name_available(client, model_name)
@@ -557,15 +468,13 @@ async def enable_model(model_name: str) -> dict:
 
 
 async def hard_delete_model(model_name: str) -> None:
-    """硬刪除：從 LiteLLM 刪掉，並清掉 model_metadata 與 key policy。不可復原。
+    """硬刪除：從 LiteLLM 刪掉，並清掉 model_metadata。不可復原。
 
     呼叫端有義務先讓操作者看過 model_impact() 的結果（客戶回饋明確要求「刪除前
     要看得到影響範圍」）。
     """
     async with _litellm_client() as client:
         await _delete_by_name(client, model_name)
-    with get_conn(DATABASE_URL) as conn:
-        conn.execute("DELETE FROM model_key_policies WHERE model_name=%s", (model_name,))
     model_metadata_service.delete_metadata(model_name)
 
 

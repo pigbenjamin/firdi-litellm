@@ -307,6 +307,36 @@ python3 scripts/test_model_lifecycle.py
 非數字的看得懂 422、範本帶入）、上架只剩兩步、表單上架的模型一律 `key_policy=model`、
 以及上面那條舊制政策沿用的迴歸測試。250 項全過。
 
+### 2026-09：舊制 `dept:<provider>` 機制全面拔除（第三期之後）
+
+上面「舊制完整保留」只維持了短暫一段時間。實測環境查核後發現：ai-x-dev 與 k8s01
+兩個正式環境加起來只有 1 顆模型還在用 `dept:<provider>`（且是可以直接遷移的測試
+用途），k8s01 甚至完全沒有——維持舊制的代價（`custom_auth.py` 多一條熱路徑查詢、
+`model_key_policies` 表、Provider Key 頁面、`_infer_default_key_policy` 這類推導
+邏輯）已經大於保留它的好處，於是決定整個拔除，不再是「上架動線不產生、但保留讀取」
+這種過渡態。
+
+拔除範圍：`custom_auth.py` 的 `_resolve_injected_key`/`_infer_default_key_policy`
+與 `model_key_policies` 讀取、`custom_logger.py` 的 `injected_api_key` 消費端、
+`models_service.py` 的 `get_key_policy`/`_set_key_policy`/`_validate_key_policy`/
+`_cleanup_orphaned_key_policy`、`ExternalModelIn.key_policy` 欄位、admin-web 的
+Provider Key 整頁與總覽頁的 OpenRouter Key 欄位。`model_key_policies` 這張表刻意
+留著不刪（schema 層面無害，避免多一次遷移）。
+
+**踩到的坑**：`config/litellm_config.yaml` 裡有一筆 YAML `model_list` 定義的
+`openrouter/openai/gpt-4o-mini`，`api_key` 寫的是
+`os.environ/OPENROUTER_API_KEY_PLACEHOLDER`（一個字面值就是 `"placeholder"` 的
+環境變數，見 `k8s/litellm/deployment.yaml`），原本就是靠這裡拔除的注入機制在
+執行期換成真正的部門 key 才打得通。查證後這個模型目前沒有任何部門的
+`allowed_models` 包含它（純粹是「開發期先放一個代表模型」的示範，從未真的授權給
+任何人），所以直接刪掉這筆 YAML 定義與對應的環境變數，沒有影響到活流量——但這
+提醒了一件事：**任何審查「拔除某個機制安不安全」都不能只看 DB-managed 模型，
+YAML `model_list` 也可能依賴同一套 runtime 邏輯。**
+
+`config/custom_auth.py`／`custom_logger.py`／`models_service.py` 改完後
+`scripts/test_model_lifecycle.py` 270 項全過（含新增的決策二、三測試），
+`scripts/check_target_python.sh` 確認 Python 3.11 語法無誤。
+
 ## 第二期原始評估（保留脈絡）
 
 當初建議先不排程的理由是：委派已定案不做，OpenWebUI 本來就有一套能用且是別人維護的

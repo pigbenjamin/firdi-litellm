@@ -41,14 +41,6 @@ model_list:
       model: ollama/*
       api_base: http://ollama-service:11434
 
-  # 雲端（OpenRouter）— 開發期先放一個代表模型，需要時再加
-  # api_key 由 custom_logger.py 的 pre_call_hook 動態注入（從部門設定讀取）
-  - model_name: openrouter/openai/gpt-4o-mini
-    litellm_params:
-      model: openai/openai/gpt-4o-mini
-      api_base: https://openrouter.ai/api/v1
-      api_key: os.environ/OPENROUTER_API_KEY_PLACEHOLDER
-
 litellm_settings:
   callbacks: ["custom_logger.proxy_handler_config", "langfuse"]
   drop_params: true

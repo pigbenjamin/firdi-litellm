@@ -68,8 +68,9 @@ def create_user(body: UserIn):
         conn.execute(
             """INSERT INTO users
                (api_key, key_name, user_id, user_email, dept_id, account_type,
-                models, rpm_limit, tpm_limit, aliases, metadata, blocked)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                models, rpm_limit, tpm_limit, points_limit, points_period,
+                aliases, metadata, blocked)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
             (
                 body.api_key,
                 body.key_name,
@@ -80,6 +81,8 @@ def create_user(body: UserIn):
                 json.dumps(body.models, ensure_ascii=False),
                 body.rpm_limit,
                 body.tpm_limit,
+                body.points_limit,
+                body.points_period,
                 json.dumps(body.aliases, ensure_ascii=False),
                 json.dumps(body.metadata, ensure_ascii=False),
                 int(body.blocked),
@@ -104,7 +107,8 @@ def update_user(user_id: str, body: UserIn):
         conn.execute(
             """UPDATE users SET
                api_key=%s, key_name=%s, user_email=%s, dept_id=%s, account_type=%s,
-               models=%s, rpm_limit=%s, tpm_limit=%s, aliases=%s, metadata=%s, blocked=%s,
+               models=%s, rpm_limit=%s, tpm_limit=%s, points_limit=%s, points_period=%s,
+               aliases=%s, metadata=%s, blocked=%s,
                updated_at=now()::text
                WHERE user_id=%s""",
             (
@@ -116,6 +120,8 @@ def update_user(user_id: str, body: UserIn):
                 json.dumps(body.models, ensure_ascii=False),
                 body.rpm_limit,
                 body.tpm_limit,
+                body.points_limit,
+                body.points_period,
                 json.dumps(body.aliases, ensure_ascii=False),
                 json.dumps(body.metadata, ensure_ascii=False),
                 int(body.blocked),

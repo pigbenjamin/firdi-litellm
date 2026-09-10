@@ -805,6 +805,10 @@ async def user_edit_form(user_id: str, admin: dict = Depends(require_admin)):
   <tr><td>user_id</td><td><code>{html.escape(user_id)}</code></td></tr>
   <tr><td>部門</td><td>{html.escape(user["dept_id"])}｜{html.escape(dept["dept_name"])}</td></tr>
   <tr><td>部門已授權的模型</td><td class="hint">{html.escape(", ".join(sorted(dept_allowed)) or "（無）")}</td></tr>
+  <tr><td>個人點數上限</td><td>
+    {(f'{user["points_limit"]:g} 點' + ("／月" if user["points_period"] == "monthly" else "（累計）")) if user["points_limit"] is not None else "（未設定）"}
+    <a href="{PREFIX}/access/users/points?user_id={quote(user_id, safe='')}" style="margin-left:0.6em">設定 »</a>
+  </td></tr>
 </table>
 <p class="hint">{dept_note or "個人授權跟部門授權是聯集：這裡勾的是「部門沒有、但這個人要額外拿到」的模型。取消勾選部門本來就有的模型不會讓他失去存取權。"}</p>
 {stale_note}
@@ -858,3 +862,67 @@ async def apply_user(
         lambda d: model_access_service.apply_user(d["id"], d["after"], known),
     )
     return _result_page("access", summary, back)
+
+
+# ── 個人點數上限（決策三：只存值，admin-web 只提供設定介面，扣點/擋人由外部系統
+# 讀 GET /api/v1/users 自己判斷；不需要 preview/push，跟模型授權那種取代式全平台
+# 鏡像寫入完全不是同一類風險，一步存檔即可）───────────────────────────────────
+
+def _parse_points_limit(raw: str) -> float | None:
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        raise HTTPException(status_code=422, detail=f"點數上限要是數字，收到的是 '{raw}'")
+    if value < 0:
+        raise HTTPException(status_code=422, detail="點數上限不可以是負數")
+    return value
+
+
+@router.get("/access/users/points")
+def user_points_form(user_id: str, admin: dict = Depends(require_admin)):
+    user = model_access_service.get_user(user_id)
+    period_options = "".join(
+        f'<option value="{p}"{" selected" if p == user["points_period"] else ""}>{label}</option>'
+        for p, label in (("monthly", "每月（每月 1 日 UTC 歸零）"), ("total", "累計（不歸零）"))
+    )
+    limit_value = "" if user["points_limit"] is None else f'{user["points_limit"]:g}'
+    back = f'{PREFIX}/access/users/edit?user_id={quote(user_id, safe="")}'
+    return _page(f"""
+{_nav('access')}
+<h2>個人點數上限：{html.escape(user["user_email"] or user_id)}</h2>
+<p class="hint">這裡只存值——本平台不扣點、不擋，實際判斷由外部系統讀
+<code>GET /api/v1/users</code> 自己做。留空＝未設定，不是 0（0 點在外部系統眼裡
+是「完全不能用」）。</p>
+<form method="post" action="{PREFIX}/access/users/points">
+  <input type="hidden" name="user_id" value="{html.escape(user_id)}">
+  <p><label>點數上限（留空＝未設定）<br>
+     <input type="number" name="points_limit" step="0.01" min="0" value="{limit_value}"></label></p>
+  <p><label>週期<br><select name="points_period">{period_options}</select></label></p>
+  <button type="submit">儲存</button>
+</form>
+<p><a href="{back}">« 回個人授權頁</a></p>
+""")
+
+
+@router.post("/access/users/points")
+def apply_user_points(
+    admin: dict = Depends(require_admin), user_id: str = Form(...),
+    points_limit: str = Form(""), points_period: str = Form("monthly"),
+):
+    if points_period not in ("monthly", "total"):
+        raise HTTPException(status_code=422, detail="points_period 必須是 monthly 或 total")
+    limit = _parse_points_limit(points_limit)
+
+    diff = model_access_service.set_user_points(user_id, limit, points_period)
+    write_audit(admin, "set_user_points", user_id, "success", diff)
+
+    back = f'{PREFIX}/access/users/edit?user_id={quote(user_id, safe="")}'
+    return _page(f"""
+{_nav('access')}
+<h2>已儲存</h2>
+<p>{html.escape(user_id)} 的點數上限已更新。</p>
+<p><a class="btn" href="{back}">« 回個人授權頁</a></p>
+""")

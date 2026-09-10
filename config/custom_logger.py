@@ -83,7 +83,7 @@ def _extract_cost(kwargs: dict, response_obj) -> float | None:
     return _as_float(cost)
 
 
-def record_spend(model_name: str, cost: float) -> None:
+def record_spend(model_name: str, cost: float, dept_id: str | None = None) -> None:
     """把花費累加進 model_spend（同時記當月與累計兩筆）。
 
     這張表是本專案自己的用量累計，不是 LiteLLM 內建的 spend tracking——後者在
@@ -94,17 +94,26 @@ def record_spend(model_name: str, cost: float) -> None:
 
     刻意不 bump db_version：每筆請求都 bump 會讓 custom_auth 的設定快取一直失效，
     整個快取就白做了。代價是額度用完後最多 30 秒（_CACHE_TTL）才開始擋。
+
+    dept_id 是 2026-09 加的維度（取代手填的 model_metadata.cost_center 標籤，
+    改成用真實用量算出「這個模型的花費裡，各部門各花了多少」）。沒有部門脈絡的
+    呼叫（例如地端模型的健康檢查、curl 測試）記到 dept_id=''（未分類），不記
+    NULL——PK 需要一個穩定可比較的值，NULL 在 SQL 的 UNIQUE/ON CONFLICT 比對裡
+    不會視為相等，用 '' 才能正確累加到同一列。額度判斷（_check_model_budget）
+    仍然是整個模型的總量，讀取端會跨 dept_id 加總，這裡不用改判斷邏輯。
     """
     if not model_name:
         return
+    dept_id = dept_id or ""
     period = datetime.now(timezone.utc).strftime("%Y-%m")
     pool = _get_pool()
     # 注意：SET 右側的 spend_usd/calls 一定要加上表名前綴——不加的話 Postgres 會報
     # AmbiguousColumn（SQLite 不加也能跑，這是原本記憶裡誤判成「已經相容」的地方,
     # 實測才發現要修正）。
     sql = (
-        "INSERT INTO model_spend (model_name, period, spend_usd, calls) VALUES (%s, %s, %s, 1) "
-        "ON CONFLICT(model_name, period) DO UPDATE SET "
+        "INSERT INTO model_spend (model_name, dept_id, period, spend_usd, calls) "
+        "VALUES (%s, %s, %s, %s, 1) "
+        "ON CONFLICT(model_name, dept_id, period) DO UPDATE SET "
         "spend_usd = model_spend.spend_usd + excluded.spend_usd, "
         "calls = model_spend.calls + 1, updated_at = now()::text"
     )
@@ -115,8 +124,8 @@ def record_spend(model_name: str, cost: float) -> None:
         try:
             cur = conn.cursor()
             try:
-                cur.execute(sql, (model_name, period, cost))
-                cur.execute(sql, (model_name, "total", cost))
+                cur.execute(sql, (model_name, dept_id, period, cost))
+                cur.execute(sql, (model_name, dept_id, "total", cost))
             except Exception:
                 # 表還不存在（admin-api 還沒跑過 init_db）或短暫的連線問題——用量
                 # 累計不該影響這次呼叫本身，靜默跳過，jsonl 那份記錄仍然完整。
@@ -147,12 +156,6 @@ class FirdiLogger(CustomLogger):
         if billing_model:
             data.setdefault("metadata", {})["billing_model"] = billing_model
 
-        # 決策 E（見 docs/admin-web-plan.md）：要不要注入、注入哪個部門的哪把 key，
-        # 判斷已經在 config/custom_auth.py 做完並放進 metadata——這裡不再看 model
-        # 字串前綴，metadata 有值就套用，沒有就維持模型自己定義的 key。
-        injected_key = user_meta.get("injected_api_key", "")
-        if injected_key:
-            data["api_key"] = injected_key
         return data
 
     async def async_log_success_event(self, kwargs: dict, response_obj: Any, start_time: Any, end_time: Any) -> None:
@@ -191,7 +194,7 @@ class FirdiLogger(CustomLogger):
             })
 
             if cost is not None:
-                record_spend(billing_model, cost)
+                record_spend(billing_model, cost, dept_id)
         except Exception:
             pass
 

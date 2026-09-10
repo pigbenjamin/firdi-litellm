@@ -192,10 +192,6 @@ def _load_config() -> dict:
                     u["blocked"] = bool(u.get("blocked", 0))
                     users.append(u)
 
-                # 決策 E：model_name → key_policy。
-                cur.execute("SELECT model_name, key_policy FROM model_key_policies")
-                model_key_policies = {r["model_name"]: r["key_policy"] for r in cur.fetchall()}
-
                 # WP1/WP2：模型的狀態閘門與額度上限。沒有紀錄的 model_name 一律放行
                 # （視為 published），跟這個功能上線前的行為完全一樣。
                 cur.execute(
@@ -217,7 +213,13 @@ def _load_config() -> dict:
                 # db_version（每筆請求都 bump 會讓所有 replica 的快取一直失效），所以
                 # 額度用完之後最多要等 _CACHE_TTL（30 秒）才會開始擋。這是刻意的取捨：
                 # 額度上限是成本護欄不是硬性配額，換 30 秒的誤差省掉熱路徑上的 DB 查詢。
-                cur.execute("SELECT model_name, period, spend_usd FROM model_spend")
+                # 額度是整個模型的總量、不分部門（2026-09 起 model_spend 多了 dept_id
+                # 維度給 admin-web 顯示各部門實際花費用，這裡用 GROUP BY 跨部門加總，
+                # 額度判斷本身的語意完全不變）。
+                cur.execute(
+                    "SELECT model_name, period, SUM(spend_usd) AS spend_usd "
+                    "FROM model_spend GROUP BY model_name, period"
+                )
                 model_spend = {
                     (r["model_name"], r["period"]): float(r["spend_usd"] or 0)
                     for r in cur.fetchall()
@@ -231,7 +233,6 @@ def _load_config() -> dict:
             _CACHE_DATA = {
                 "departments": depts,
                 "users": users,
-                "model_key_policies": model_key_policies,
                 "model_metadata": model_meta,
                 "model_spend": model_spend,
             }
@@ -281,37 +282,6 @@ def _find_dept(dept_id: str) -> dict | None:
         if dept.get("dept_id") == dept_id:
             return dept
     return None
-
-
-# ── 決策 E：key 來源政策（見 docs/admin-web-plan.md）───────────────────────────
-# 「上游是誰」（litellm_params.model）跟「key 從哪來」解耦。這個判斷本來在
-# config/custom_logger.py 用 model 字串的 openrouter/ 前綴硬判斷；現在移來這裡，
-# 因為這裡本來就在讀 SQLite（db_version + 30 秒 TTL 快取）、本來就知道請求的
-# model 是什麼，解析完直接把結果放進 metadata，custom_logger 退化成「metadata
-# 有就套用」，前綴檢查整段刪掉。決策 E 落地後 openrouter/ 前綴只是命名慣例，
-# 不再是功能開關。
-
-
-def _infer_default_key_policy(model_name: str) -> str:
-    """沒有明確政策的模型：openrouter/ 開頭視為 dept:openrouter，其餘視為 model——
-    跟決策 E 之前的唯一行為完全一致，既有模型不需要任何資料回填。
-    """
-    return "dept:openrouter" if model_name.startswith("openrouter/") else "model"
-
-
-def _resolve_injected_key(model_name: str, dept: dict) -> str:
-    """回傳這次請求該注入的 api_key；"" 表示不注入（沿用模型自己定義的 key）。"""
-    policies = _load_config().get("model_key_policies", {})
-    policy = policies.get(model_name) or _infer_default_key_policy(model_name)
-
-    if not policy.startswith("dept:"):
-        return ""
-
-    provider = policy.split(":", 1)[1]
-    key = (dept.get("provider_keys") or {}).get(provider, "")
-    if key.startswith("sk-or-CHANGE"):
-        return ""  # 未換過的 placeholder，視同未設定，不注入（見「容易做錯的五件事」#5）
-    return key
 
 
 # ── Model 權限檢查 ────────────────────────────────────────────────────────────
@@ -385,8 +355,8 @@ def _check_model_status(user: dict, model: str | None) -> None:
 def _check_model_budget(user: dict, model: str | None) -> None:
     """額度上限。budget_enforce=0 時只累計、不擋（管理者可以先觀察一個月再決定）。
 
-    額度是「整個模型」的總量，不是每個部門各自的——model_metadata.cost_center
-    只是成本歸屬的標記，不切分額度。
+    額度是「整個模型」的總量，不是每個部門各自的——`_load_config()` 讀
+    model_spend 時已經跨 dept_id 加總，這裡拿到的 used 就是整個模型的合計。
     """
     meta = _model_meta(model) if model else None
     if meta is None or not meta.get("budget_enforce"):
@@ -471,9 +441,6 @@ def _build_auth_response(
     metadata: dict = dict(user.get("metadata", {}))
     metadata["dept_id"] = dept["dept_id"]
     metadata["dept_name"] = dept.get("dept_name", "")
-    # 決策 E：這裡已經解析完「這次請求該用哪把 key」，custom_logger 不再需要自己
-    # 判斷 model 字串前綴——metadata 裡有值就套用，沒有就維持模型自己定義的 key。
-    metadata["injected_api_key"] = _resolve_injected_key(requested_model, dept) if requested_model else ""
     metadata["portal"] = source  # 請求來源入口（portal-a / portal-b / api_key），供用量分流
     # WP1 額度累計用：呼叫者請求的那個 model_name（＝ model_metadata / allowed_models
     # 認的字串）。kwargs["model"] 在 logger 端拿到的可能是上游的 litellm_params.model

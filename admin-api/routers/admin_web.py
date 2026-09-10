@@ -64,7 +64,6 @@ _NAV_ITEMS = [
     ("models", "/models", "模型清單"),
     ("models_new", "/models/new", "上架模型"),
     ("access", "/access", "模型授權"),
-    ("keys", "/keys", "Provider Key"),
     ("sync", "/sync", "同步與診斷"),
     ("audit", "/audit", "稽核紀錄"),
 ]
@@ -282,19 +281,17 @@ async def callback(request: Request, code: str = "", state: str = "", error: str
 
 @router.get("")
 def overview(admin: dict = Depends(require_admin)):
-    """總覽：身分、可管理範圍、各部門 provider key 是否已設定、待處理提示。"""
+    """總覽：身分、可管理範圍、部門總覽。
+
+    2026-09 起模型一律自帶 key（舊制部門 provider key 機制已拔除），這裡不再顯示
+    OpenRouter Key 欄與「待處理」——那是決策 E 時期的畫面，跟著機制一起卸掉。
+    """
     depts = departments_service.list_departments()
 
-    pending = [d["dept_id"] for d in depts if not d["openrouter_api_key"]]
     rows = "".join(
         f"<tr><td>{html.escape(d['dept_id'])}</td><td>{html.escape(d['dept_name'])}</td>"
-        f"<td>{len(d['allowed_models'])} 個{'（含 *）' if '*' in d['allowed_models'] else ''}</td>"
-        f"<td>{html.escape(_mask_key(d['openrouter_api_key']))}</td></tr>"
+        f"<td>{len(d['allowed_models'])} 個{'（含 *）' if '*' in d['allowed_models'] else ''}</td></tr>"
         for d in depts
-    )
-    pending_html = (
-        f"<p>尚未設定 OpenRouter key 的部門：{html.escape(', '.join(pending))}</p>"
-        if pending else "<p>所有部門都已設定 OpenRouter key。</p>"
     )
 
     return _page(f"""
@@ -306,11 +303,9 @@ def overview(admin: dict = Depends(require_admin)):
 </table>
 <h3>部門總覽</h3>
 <table>
-  <tr><th>部門</th><th>名稱</th><th>已授權模型</th><th>OpenRouter Key</th></tr>
-  {rows or '<tr><td colspan="4">目前沒有部門。</td></tr>'}
+  <tr><th>部門</th><th>名稱</th><th>已授權模型</th></tr>
+  {rows or '<tr><td colspan="3">目前沒有部門。</td></tr>'}
 </table>
-<h3>待處理</h3>
-{pending_html}
 """)
 
 
@@ -411,13 +406,6 @@ def access_model_url(model_name: str) -> str:
     return f"{PREFIX}/access/model/edit?model_name={quote(model_name, safe='')}"
 
 
-def key_source_display(policy: str) -> str:
-    """model_key_policies 的政策字串翻成人話（決策 E 落地後 openrouter/ 前綴只是命名慣例）。"""
-    if policy.startswith("dept:"):
-        return f"部門 {policy.split(':', 1)[1]} key"
-    return "模型自帶 key"
-
-
 def authorized_departments(depts: list[dict]) -> tuple[dict[str, list[str]], list[str]]:
     """回傳 (model_name → 授權它的部門清單, 含 * 的部門清單)。"""
     by_model: dict[str, list[str]] = {}
@@ -434,7 +422,7 @@ def authorized_departments(depts: list[dict]) -> tuple[dict[str, list[str]], lis
 
 @router.get("/models")
 async def model_list(admin: dict = Depends(require_admin)):
-    """模型清單：狀態、類型、key 來源、用量／額度、測試結果、已授權部門。
+    """模型清單：狀態、類型、用量／額度、測試結果、已授權部門。
 
     含停用中的模型（它們在 LiteLLM 裡已經不存在，只剩 model_metadata 那筆紀錄），
     否則停用之後就再也找不到地方按「重新啟用」。
@@ -457,7 +445,6 @@ async def model_list(admin: dict = Depends(require_admin)):
             f"<td>{status_badge(meta)}</td>"
             f"<td>{html.escape(model_metadata_service.MODEL_TYPES.get(meta.get('model_type') or 'chat', ''))}</td>"
             f"<td><code>{html.escape(m['model'] or '')}</code></td>"
-            f"<td>{html.escape(key_source_display(m['key_policy']))}</td>"
             f"<td>{budget_cell(meta, m['spend'])}</td>"
             f"<td>{points_cell(meta)}</td>"
             f"<td>{test_cell(meta)}</td>"
@@ -479,13 +466,13 @@ async def model_list(admin: dict = Depends(require_admin)):
 以部門為主的檢視在 <a href="{PREFIX}/access">模型授權</a>。
 標<span class="badge badge-legacy">既有</span>的是 YAML <code>model_list</code> 定義的地端模型，
 上游設定在 <code>config/litellm_config.yaml</code>、改了要重啟 litellm pod，所以這裡不提供
-停用／刪除／編輯上游，但顯示名稱、類型、成本歸屬、備註仍可設定。
+停用／刪除／編輯上游，但顯示名稱、類型、備註仍可設定。
 <a href="{PREFIX}/models/new">上架新模型 »</a></p>
 {draft_hint}
 <div class="wide"><table>
-  <tr><th>名稱</th><th>狀態</th><th>類型</th><th>上游</th><th>Key 來源</th>
+  <tr><th>名稱</th><th>狀態</th><th>類型</th><th>上游</th>
       <th>本期用量／額度</th><th>點數費率</th><th>測試</th><th>已授權部門</th></tr>
-  {''.join(rows) if rows else '<tr><td colspan="9">目前沒有 DB-managed 模型。</td></tr>'}
+  {''.join(rows) if rows else '<tr><td colspan="8">目前沒有 DB-managed 模型。</td></tr>'}
 </table></div>
 """)
 
@@ -507,7 +494,25 @@ async def model_detail(
     meta, spend = entry["meta"], entry["spend"]
     status = meta.get("status") if meta.get("has_record") else "legacy"
     impact = models_service.model_impact(model_name)
-    depts = departments_service.list_departments()
+
+    # 各部門實際花費（取代決策 E 時期手填的 cost_center 標籤，2026-09）：一個模型
+    # 可能被多個部門共用同一把 key，單一標籤標不出真正的分帳，改成從
+    # model_spend 的真實用量算。dept_id='' 是沒有部門脈絡的呼叫（地端模型健康
+    # 檢查、curl 測試等）。
+    dept_names_by_id = {d["dept_id"]: d["dept_name"] for d in departments_service.list_departments()}
+
+    def _dept_label(dept_id: str) -> str:
+        if not dept_id:
+            return "（未分類）"
+        name = dept_names_by_id.get(dept_id)
+        return f"{dept_id}｜{name}" if name else dept_id
+
+    dept_spend_map = model_metadata_service.dept_spend(model_name)
+    dept_spend_rows = "".join(
+        f"<tr><td>{html.escape(_dept_label(dept_id))}</td>"
+        f"<td>{money(v['monthly'])}</td><td>{money(v['total'])}</td><td>{v['calls']}</td></tr>"
+        for dept_id, v in sorted(dept_spend_map.items())
+    )
     enc = quote(model_name, safe="")
 
     # msg 來自 query string（使用者可控），一律 escape、絕不當 HTML 渲染。
@@ -573,12 +578,6 @@ async def model_detail(
     actions_html = " ".join(actions) or '<span class="hint">這個模型不受狀態機管理（見上方「既有」標記）。</span>'
 
     # ── 編輯表單：draft 可改全部；published 只能改描述性欄位 ──
-    dept_options = "".join(
-        f'<option value="{html.escape(d["dept_id"])}"'
-        f'{" selected" if d["dept_id"] == meta.get("cost_center") else ""}>'
-        f'{html.escape(d["dept_id"])}｜{html.escape(d["dept_name"])}</option>'
-        for d in depts
-    )
     budget_period_options = "".join(
         f'<option value="{k}"{" selected" if k == (meta.get("budget_period") or "monthly") else ""}>'
         f'{html.escape(v)}</option>'
@@ -602,8 +601,6 @@ async def model_detail(
   {type_field}
   <p><label>顯示名稱<br><input type="text" name="display_name"
      value="{html.escape(meta.get('display_name') or '')}"></label></p>
-  <p><label>成本歸屬部門<br><select name="cost_center">
-     <option value="">（不指定）</option>{dept_options}</select></label></p>
   <p><label>額度上限（USD，留空＝不設額度）<br>
      <input type="number" name="budget_limit_usd" step="0.01" min="0" value="{limit_value}"></label></p>
   <p><label>額度週期<br><select name="budget_period">{budget_period_options}</select></label></p>
@@ -634,8 +631,7 @@ async def model_detail(
 <table>
   <tr><td>litellm_params.model</td><td><code>{html.escape(meta.get('litellm_model') or entry['model'] or '')}</code></td></tr>
   <tr><td>api_base</td><td><code>{html.escape(meta.get('api_base') or entry['api_base'] or '（用上游預設端點）')}</code></td></tr>
-  <tr><td>Key 來源</td><td>{html.escape(key_source_display(entry['key_policy']))}
-      {f'（{html.escape(_mask_key(meta.get("api_key") or ""))}）' if meta.get('api_key') else ''}</td></tr>
+  <tr><td>API key</td><td>{html.escape(_mask_key(meta.get("api_key") or "")) if meta.get('api_key') else '（未設定）'}</td></tr>
   <tr><td>模型類型</td><td>{html.escape(model_metadata_service.MODEL_TYPES.get(meta.get('model_type') or 'chat', ''))}</td></tr>
 </table>
 {'<p class="hint">這是 YAML <code>model_list</code> 定義的地端模型，上游設定在 <code>config/litellm_config.yaml</code>——要改請改那個檔案並重啟 litellm pod，這個畫面不提供（也不提供停用與刪除）。</p>' if yaml_managed else ''}
@@ -667,6 +663,14 @@ async def model_detail(
 </fieldset>
 
 {routing_block}
+
+<fieldset><legend>各部門實際花費</legend>
+<p class="hint">依真實用量算出，不是手填的標籤——一個模型可能被多個部門共用，這裡看得出各自花了多少。</p>
+<table>
+  <tr><th>部門</th><th>本月花費</th><th>累計花費</th><th>本月呼叫次數</th></tr>
+  {dept_spend_rows or '<tr><td colspan="4">目前沒有用量紀錄。</td></tr>'}
+</table>
+</fieldset>
 
 <fieldset><legend>可修改的欄位</legend>
 <p class="hint">這幾個欄位在任何狀態都能改——它們不影響請求打到哪裡去。</p>

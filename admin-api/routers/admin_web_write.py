@@ -18,7 +18,7 @@ from fastapi.responses import RedirectResponse
 from admin_auth import require_admin
 from audit import mask_key, write_audit
 from model_upstreams import FIXED_SHARED_KEY, UPSTREAMS, derive_api_base, derive_model, looks_like_ip, suggest_model_name
-from models import DepartmentPatch, ExternalModelIn
+from models import ExternalModelIn
 from routers.admin_web import (
     PREFIX,
     SYNC_THROTTLE_SECONDS,
@@ -39,11 +39,6 @@ from services import (
 
 router = APIRouter(prefix=PREFIX)
 
-# 「Provider Key」頁面（舊制維護）可設定部門 key 的 provider。vLLM/Ollama 固定共用
-# EMPTY，沒有部門 key 概念，所以不在此列。上架動線已不再產生 dept:<provider> 模型，
-# 這一頁只服務決策 E 時期建立、還在跑的那些模型。
-_DEPT_KEY_PROVIDERS = [(k, u.label) for k, u in UPSTREAMS.items() if u.provider]
-
 
 def _looks_like_placeholder_key(key: str) -> bool:
     """R-21／R-31：擋掉未換過的 OpenRouter 共用 placeholder 前綴。"""
@@ -51,13 +46,7 @@ def _looks_like_placeholder_key(key: str) -> bool:
 
 
 def _audit_key(api_key: str | None) -> str:
-    """稽核紀錄裡的 key 欄位（R-40：只留末四碼）。
-
-    沒有 key 的時候刻意寫「（無）」而不是空字串：key_policy 是 dept:* 的模型本來
-    就不帶 key（執行期才由 config/custom_auth.py 依呼叫者的部門注入），記成 ""
-    會讓人以為是「key 被清空了」，跟「這個模型沒有自己的 key」差很多。同一筆
-    紀錄裡一定會有 key_policy，兩個一起看才完整。
-    """
+    """稽核紀錄裡的 key 欄位（R-40：只留末四碼）。沒有 key 記「（無）」而不是空字串。"""
     return mask_key(api_key) if api_key else "（無）"
 
 
@@ -73,12 +62,6 @@ def _metadata_fields(depts: list[dict], meta: dict | None = None) -> str:
         f'<option value="{k}"{" selected" if k == (meta.get("model_type") or "chat") else ""}>{html.escape(v)}</option>'
         for k, v in model_metadata_service.MODEL_TYPES.items()
     )
-    dept_options = "".join(
-        f'<option value="{html.escape(d["dept_id"])}"'
-        f'{" selected" if d["dept_id"] == meta.get("cost_center") else ""}>'
-        f'{html.escape(d["dept_id"])}｜{html.escape(d["dept_name"])}</option>'
-        for d in depts
-    )
     period_options = "".join(
         f'<option value="{k}"{" selected" if k == (meta.get("budget_period") or "monthly") else ""}>{html.escape(v)}</option>'
         for k, v in model_metadata_service.BUDGET_PERIODS.items()
@@ -91,9 +74,6 @@ def _metadata_fields(depts: list[dict], meta: dict | None = None) -> str:
   <p><label>模型類型<br><select name="model_type">{type_options}</select>
      <br><small class="hint">決定「測試呼叫」要送哪種最小請求——用 chat 的形狀去測 embedding 模型
      只會拿到看不懂的 400。</small></label></p>
-  <p><label>成本歸屬部門<br><select name="cost_center">
-     <option value="">（不指定）</option>{dept_options}</select>
-     <br><small class="hint">只是成本歸屬的標記，不影響誰能用、也不切分額度。</small></label></p>
   <p><label>額度上限（USD，留空＝不設額度）<br>
      <input type="number" name="budget_limit_usd" step="0.01" min="0" value="{limit_value}"></label></p>
   <p><label>額度週期<br><select name="budget_period">{period_options}</select></label></p>
@@ -328,12 +308,7 @@ async def create_model(
     notes: str = Form(""),
     preset_name: str = Form(""),
 ):
-    """新模型一律 key_policy='model'（模型自帶 key）。
-
-    第三期後表單不再問「key 從哪來」，所以這裡也沒有 dept:<provider> 那條分支。
-    既有的 dept:* 模型不受影響（見 config/custom_auth.py 的 _resolve_injected_key
-    與「Provider Key」頁面），只是不會再產生新的。
-    """
+    """新模型一律模型自帶 key（2026-09 起，舊制部門 key 機制已拔除）。"""
     up = UPSTREAMS.get(upstream)
     if up is None:
         raise HTTPException(status_code=422, detail=f"不認得的上游 '{upstream}'")
@@ -348,7 +323,6 @@ async def create_model(
     model = derive_model(up, slug.strip())
     name = model_name.strip() or suggest_model_name(up, slug.strip())
 
-    key_policy = "model"
     if not up.key_required:
         final_api_key = FIXED_SHARED_KEY
     else:
@@ -366,13 +340,13 @@ async def create_model(
 
     body = ExternalModelIn(
         model_name=name, model=model, api_key=final_api_key, api_base=resolved_api_base,
-        key_policy=key_policy, upstream=upstream, status="draft", **fields,
+        upstream=upstream, status="draft", **fields,
     )
 
     audit_detail = {
         "before": None,
         "after": {
-            "model": model, "api_base": resolved_api_base, "key_policy": key_policy,
+            "model": model, "api_base": resolved_api_base,
             "api_key": _audit_key(final_api_key), "status": "draft", **fields,
         },
         "upstream": upstream,
@@ -587,12 +561,11 @@ async def edit_draft_form(model_name: str, admin: dict = Depends(require_admin))
     depts = departments_service.list_departments()
     up = UPSTREAMS.get(meta["upstream"])
     upstream_label = up.label if up else (meta["upstream"] or "（未記錄）")
-    key_policy = models_service.get_key_policy(model_name)
     key_hint = (
         f'目前的 key：{html.escape(_mask_key(meta["api_key"]))}；留空＝沿用不變'
         if meta["api_key"] else
-        f"這是舊制模型，用的是部門 provider key（{html.escape(key_policy)}），這裡留空即可；"
-        "填了 key 就會改成模型自帶 key"
+        "這個模型目前沒有存 key（可能是舊制部門 key 的模型，機制已拔除）；"
+        "請填入一把真正的 key 才能繼續使用"
     )
 
     return _page(f"""
@@ -640,8 +613,7 @@ async def edit_draft(
         notes, points_per_1k_prompt, points_per_1k_completion,
     )
 
-    # 空的 key 欄位＝沿用原值，不是清除——跟 Provider Key 頁面同一個慣例
-    # （見 docs/admin-web-plan.md「已定案」#5）。
+    # 空的 key 欄位＝沿用原值，不是清除。
     final_key = api_key.strip() or before["api_key"]
     if final_key and _looks_like_placeholder_key(final_key):
         raise HTTPException(
@@ -649,19 +621,10 @@ async def edit_draft(
             detail="這把 key 看起來還是沒換過的共用 placeholder（sk-or-CHANGE 開頭），請填入真正的 key",
         )
 
-    # 政策沿用這個模型原本的，不重新推導：填了 key 就是「模型自帶 key」，key 留空
-    # 且原本就是舊制的 dept:<provider> 才維持舊制。
-    #
-    # 這裡刻意用「讀出原本的政策」而不是「依上游重新判斷」——上架動線已不再產生
-    # dept:* 模型（第三期），但決策 E 時期建的還在跑，重新判斷會把一個明明自帶 key
-    # 的模型改回部門 key，使用者當下就打不通了。
-    stored_policy = models_service.get_key_policy(model_name)
-    key_policy = "model" if final_key else stored_policy
-
     try:
         after = await models_service.update_draft_model(
             model_name, model=model.strip(), api_base=api_base.strip() or None,
-            api_key=final_key or None, key_policy=key_policy, upstream=before["upstream"], **fields,
+            api_key=final_key or None, upstream=before["upstream"], **fields,
         )
     except HTTPException as exc:
         write_audit(admin, "update_draft_model", model_name, "failed",
@@ -673,7 +636,6 @@ async def edit_draft(
     write_audit(admin, "update_draft_model", model_name, "success", {
         "before": {**{k: before.get(k) for k in tracked}, "api_key": _audit_key(before.get("api_key"))},
         "after": {**{k: after.get(k) for k in tracked}, "api_key": _audit_key(after.get("api_key"))},
-        "key_policy": key_policy,   # 沒有這個，光看 api_key 是「（無）」判斷不出為什麼
     })
     return _detail_redirect(model_name, "已重建。上一次的測試結果已清除，請重新測試後再發布。")
 
@@ -712,109 +674,6 @@ async def hard_delete_model(
 <p class="hint">OpenWebUI 那邊的授權記錄不會自動清除；下一次同步會把它列進
 「模型 ID 對不上 LiteLLM」的診斷清單。</p>
 <p><a class="btn" href="{PREFIX}/models">回模型清單</a></p>
-""")
-
-
-# ── Provider Key 設定 ─────────────────────────────────────────────────────────
-
-@router.get("/keys")
-def keys_form(admin: dict = Depends(require_admin), provider: str = ""):
-    if not provider:
-        items = "".join(
-            f'<li><a href="{PREFIX}/keys?provider={key}">{html.escape(label)}</a></li>'
-            for key, label in _DEPT_KEY_PROVIDERS
-        )
-        return _page(f"""
-{_nav('keys')}
-<h2>Provider Key</h2>
-<p class="hint">地端 vLLM／Ollama 固定共用 <code>{FIXED_SHARED_KEY}</code>，不需要、也不能設定部門 key。</p>
-<h3>選一個 provider</h3>
-<ul>{items}</ul>
-""")
-
-    label = dict(_DEPT_KEY_PROVIDERS).get(provider)
-    if label is None:
-        raise HTTPException(status_code=422, detail=f"'{provider}' 不是可以設定部門 key 的 provider")
-
-    depts = departments_service.list_departments()
-    rows = "".join(
-        f"""<tr>
-  <td><input type="checkbox" name="dept_ids" value="{html.escape(d['dept_id'])}"></td>
-  <td>{html.escape(d['dept_id'])}</td><td>{html.escape(d['dept_name'])}</td>
-  <td>{html.escape(_mask_key((d['provider_keys'] or {}).get(provider, '')))}</td>
-</tr>"""
-        for d in depts
-    )
-
-    return _page(f"""
-{_nav('keys')}
-<h2>Provider Key：{html.escape(label)}</h2>
-<p class="hint">生效時間 ≤30 秒（enforcement 端有 30 秒 TTL 快取）。留空的部門不會被勾選；
-空白的 key 欄位一律代表「不修改」，這個表單不提供清除功能——真的要清除請走
-<code>ADMIN_API_KEY</code> 的 curl 路徑。</p>
-<form method="post" action="{PREFIX}/keys">
-  <input type="hidden" name="provider" value="{provider}">
-  <p><label>要套用的 key（必填，會套用到下面勾選的所有部門）<br>
-  <input type="password" name="api_key" required autocomplete="off"></label></p>
-  <p>
-    <button type="button" onclick="document.querySelectorAll('input[name=dept_ids]').forEach(c=>c.checked=true)">全選</button>
-    <button type="button" onclick="document.querySelectorAll('input[name=dept_ids]').forEach(c=>c.checked=false)">全不選</button>
-  </p>
-  <table><tr><th></th><th>部門</th><th>名稱</th><th>目前的 {html.escape(label)} key</th></tr>{rows}</table>
-  <button type="submit">套用到勾選的部門</button>
-</form>
-""")
-
-
-@router.post("/keys")
-def apply_keys(
-    admin: dict = Depends(require_admin),
-    provider: str = Form(...),
-    api_key: str = Form(...),
-    dept_ids: list[str] = Form(default=[]),
-):
-    label = dict(_DEPT_KEY_PROVIDERS).get(provider)
-    if label is None:
-        raise HTTPException(status_code=422, detail=f"'{provider}' 不是可以設定部門 key 的 provider")
-    if not api_key.strip():
-        raise HTTPException(status_code=422, detail="key 必填——這個表單不提供清除功能，空白不會送出")
-    if _looks_like_placeholder_key(api_key.strip()):
-        raise HTTPException(
-            status_code=422,
-            detail="這把 key 看起來還是沒換過的共用 placeholder（sk-or-CHANGE 開頭），請填入真正的 key",
-        )
-    if not dept_ids:
-        raise HTTPException(status_code=422, detail="至少要勾選一個部門")
-
-    key = api_key.strip()
-    results = []
-    for dept_id in dept_ids:
-        try:
-            departments_service.patch_department(dept_id, DepartmentPatch(provider_keys={provider: key}))
-        except HTTPException as exc:
-            results.append({"dept_id": dept_id, "ok": False, "detail": str(exc.detail)})
-            write_audit(
-                admin, f"set_provider_key:{provider}", dept_id, "failed",
-                {"key_last4": mask_key(key), "status": exc.status_code, "detail": str(exc.detail)},
-            )
-        else:
-            results.append({"dept_id": dept_id, "ok": True, "detail": ""})
-            write_audit(admin, f"set_provider_key:{provider}", dept_id, "success", {"key_last4": mask_key(key)})
-
-    # R-30：逐一 PATCH，部分失敗要逐筆回報，不可只顯示「失敗」也不可讓人以為全部沒生效。
-    rows = "".join(
-        f"<tr><td>{html.escape(r['dept_id'])}</td>"
-        f"<td>{'成功' if r['ok'] else '失敗：' + html.escape(r['detail'])}</td></tr>"
-        for r in results
-    )
-    ok_count = sum(1 for r in results if r["ok"])
-
-    return _page(f"""
-{_nav('keys')}
-<h2>套用結果：{html.escape(label)}</h2>
-<p>{ok_count} / {len(results)} 個部門套用成功。生效時間 ≤30 秒。</p>
-<table><tr><th>部門</th><th>結果</th></tr>{rows}</table>
-<p><a class="btn" href="{PREFIX}/keys?provider={provider}">回這個 provider 的設定頁</a></p>
 """)
 
 

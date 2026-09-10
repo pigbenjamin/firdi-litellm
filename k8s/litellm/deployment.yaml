@@ -55,9 +55,6 @@ spec:
                 secretKeyRef:
                   name: litellm-secrets
                   key: database-url
-            # OpenRouter key placeholder（實際 key 由 custom_auth 從 users.json 取得）
-            - name: OPENROUTER_API_KEY_PLACEHOLDER
-              value: "placeholder"
             - name: OPENWEBUI_URL
               valueFrom:
                 secretKeyRef:

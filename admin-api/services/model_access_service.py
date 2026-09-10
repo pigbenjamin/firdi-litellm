@@ -72,7 +72,8 @@ def search_users(query: str, limit: int = 50) -> list[dict]:
     like = f"%{q}%"
     with get_conn(DATABASE_URL) as conn:
         rows = conn.execute(
-            "SELECT user_id, user_email, key_name, dept_id, models, blocked, account_type "
+            "SELECT user_id, user_email, key_name, dept_id, models, blocked, account_type, "
+            "points_limit, points_period "
             "FROM users WHERE user_id LIKE %s OR user_email LIKE %s OR key_name LIKE %s "
             "ORDER BY user_email, user_id LIMIT %s",
             (like, like, like, limit),
@@ -86,6 +87,8 @@ def search_users(query: str, limit: int = 50) -> list[dict]:
             "models": _loads(r["models"]),
             "blocked": bool(r["blocked"]),
             "account_type": r["account_type"],
+            "points_limit": r["points_limit"],
+            "points_period": r["points_period"],
         }
         for r in rows
     ]
@@ -94,7 +97,8 @@ def search_users(query: str, limit: int = 50) -> list[dict]:
 def get_user(user_id: str) -> dict:
     with get_conn(DATABASE_URL) as conn:
         r = conn.execute(
-            "SELECT user_id, user_email, key_name, dept_id, models, blocked, account_type "
+            "SELECT user_id, user_email, key_name, dept_id, models, blocked, account_type, "
+            "points_limit, points_period "
             "FROM users WHERE user_id = %s",
             (user_id,),
         ).fetchone()
@@ -108,6 +112,29 @@ def get_user(user_id: str) -> dict:
         "models": _loads(r["models"]),
         "blocked": bool(r["blocked"]),
         "account_type": r["account_type"],
+        "points_limit": r["points_limit"],
+        "points_period": r["points_period"],
+    }
+
+
+# ── 個人點數上限（只存不算，見 database.py 的欄位註解）────────────────────────
+
+def set_user_points(user_id: str, points_limit: float | None, points_period: str) -> dict:
+    """回傳 {"before": {...}, "after": {...}} 供呼叫端寫稽核。不需要 preview/push——
+    這兩個欄位純粹是設定值，外部系統自己讀 GET /api/v1/users，跟模型授權那種會
+    鏡像回 OpenWebUI 的取代式寫入完全不是同一類風險。
+    """
+    before = get_user(user_id)
+    with get_conn(DATABASE_URL) as conn:
+        conn.execute(
+            "UPDATE users SET points_limit=%s, points_period=%s, updated_at=now()::text "
+            "WHERE user_id=%s",
+            (points_limit, points_period, user_id),
+        )
+        bump_version(conn)
+    return {
+        "before": {"points_limit": before["points_limit"], "points_period": before["points_period"]},
+        "after": {"points_limit": points_limit, "points_period": points_period},
     }
 
 

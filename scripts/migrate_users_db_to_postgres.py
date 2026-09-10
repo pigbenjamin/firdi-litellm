@@ -57,9 +57,13 @@ TABLES = [
         ["model_name"],
     ),
     (
+        # dept_id（2026-09 新增，見 admin-api/database.py）不存在於舊版 SQLite
+        # schema——這裡舊資料一律搬進 dept_id=''（未分類）這個桶，不是猜的，
+        # 是「這批資料本來就沒有部門脈絡」的誠實表達。
         "model_spend",
         ["model_name", "period", "spend_usd", "calls", "updated_at"],
-        ["model_name", "period"],
+        ["model_name", "dept_id", "period"],
+        {"dept_id": ""},
     ),
     (
         "model_presets",
@@ -69,28 +73,38 @@ TABLES = [
 ]
 
 
-def migrate_table(sqlite_conn, pg_conn, table: str, columns: list[str], pk: list[str]) -> tuple[int, int]:
+def migrate_table(
+    sqlite_conn, pg_conn, table: str, columns: list[str], pk: list[str],
+    extra: dict[str, object] | None = None,
+) -> tuple[int, int]:
+    """extra：目標表有、但來源 SQLite 沒有的欄位，一律填同一個固定值（不是從
+    SQLite 讀出來的）——目前只有 model_spend 的 dept_id 用得到，見上面 TABLES。
+    """
+    extra = extra or {}
     src_cols = ", ".join(columns)
     rows = sqlite_conn.execute(f"SELECT {src_cols} FROM {table}").fetchall()
 
-    placeholders = ", ".join(["%s"] * len(columns))
-    update_cols = [c for c in columns if c not in pk]
+    dest_cols = columns + list(extra.keys())
+    dest_cols_sql = ", ".join(dest_cols)
+    placeholders = ", ".join(["%s"] * len(dest_cols))
+    update_cols = [c for c in dest_cols if c not in pk]
     conflict_target = ", ".join(pk)
     set_clause = ", ".join(f"{c}=excluded.{c}" for c in update_cols)
     if set_clause:
         upsert_sql = (
-            f"INSERT INTO {table} ({src_cols}) VALUES ({placeholders}) "
+            f"INSERT INTO {table} ({dest_cols_sql}) VALUES ({placeholders}) "
             f"ON CONFLICT ({conflict_target}) DO UPDATE SET {set_clause}"
         )
     else:
         upsert_sql = (
-            f"INSERT INTO {table} ({src_cols}) VALUES ({placeholders}) "
+            f"INSERT INTO {table} ({dest_cols_sql}) VALUES ({placeholders}) "
             f"ON CONFLICT ({conflict_target}) DO NOTHING"
         )
 
+    extra_values = tuple(extra.values())
     with pg_conn.cursor() as cur:
         for row in rows:
-            cur.execute(upsert_sql, tuple(row))
+            cur.execute(upsert_sql, tuple(row) + extra_values)
     pg_conn.commit()
 
     with pg_conn.cursor() as cur:
@@ -113,8 +127,10 @@ def migrate(sqlite_path: str, postgres_url: str) -> None:
     print()
 
     mismatches = []
-    for table, columns, pk in TABLES:
-        src_count, pg_count = migrate_table(sqlite_conn, pg_conn, table, columns, pk)
+    for entry in TABLES:
+        table, columns, pk = entry[0], entry[1], entry[2]
+        extra = entry[3] if len(entry) > 3 else None
+        src_count, pg_count = migrate_table(sqlite_conn, pg_conn, table, columns, pk, extra)
         status = "OK" if src_count == pg_count else "MISMATCH"
         if status == "MISMATCH":
             mismatches.append(table)

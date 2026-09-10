@@ -557,13 +557,12 @@ C」](external-models-ops.md)）的模型，不含 `litellm_config.yaml` `model_
       "model_name": "openrouter/anthropic/claude-sonnet-4-5",
       "model": "openai/anthropic/claude-sonnet-4-5",
       "api_base": "https://openrouter.ai/api/v1",
-      "key_policy": "dept:openrouter",
       "registered": true,
       "meta": {
         "display_name": "Claude Sonnet 4.5",
         "model_type": "chat",
         "status": "published",
-        "cost_center": "RD",
+        "cost_center": "",
         "budget_limit_usd": 200.0,
         "budget_enforce": 1,
         "budget_period": "monthly",
@@ -591,8 +590,12 @@ C」](external-models-ops.md)）的模型，不含 `litellm_config.yaml` `model_
   情況就是 `status: "disabled"`（停用＝真的從 LiteLLM 刪掉、但保留設定）。這種
   項目的 `id` 是 `null`，不能拿去打 `DELETE /api/v1/models/external/{id}`。
 - `spend` 是本專案自己累計的用量（`model_spend` 表，由 `config/custom_logger.py`
-  寫入）。LiteLLM 內建的 spend tracking 在本專案是關掉的，見
-  `config/litellm_config.yaml` 的 `disable_spend_logs`。
+  寫入，跨部門加總後的整個模型總量）。LiteLLM 內建的 spend tracking 在本專案是
+  關掉的，見 `config/litellm_config.yaml` 的 `disable_spend_logs`。
+- `meta.cost_center` 這個手填標籤 admin-web 已經不再提供編輯介面（2026-09 起，
+  透過這個 curl 端點仍然可以設定，欄位本身沒拿掉）：一個模型可能被多個部門共用
+  同一把 key，單一標籤標不出真正的分帳。admin-web 的模型詳情頁改成顯示從
+  `model_spend` 真實用量算出的「各部門實際花費」，這個端點目前不回傳那份細節。
 - `meta.points_per_1k_prompt` / `meta.points_per_1k_completion` 是**只存不算**的
   點數費率（每 1K token 幾點，可填小數，`null` = 還沒填）。這個平台不累計點數、
   不檢查點數上限、也不會因為點數用完而擋下呼叫——扣點與部門／人員的總點數上限
@@ -611,27 +614,19 @@ C」](external-models-ops.md)）的模型，不含 `litellm_config.yaml` `model_
   "model_name": "gpt-4o-mini",
   "model": "openai/gpt-4o-mini",
   "api_key": "sk-xxxxxxxx",
-  "api_base": null,
-  "key_policy": "model"
+  "api_base": null
 }
 ```
 
-- `model_name`：使用者呼叫時填的名字。`openrouter/` 前綴只是命名慣例（決策 E
-  之後不再是功能開關），純粹方便人看得懂來源。
+- `model_name`：使用者呼叫時填的名字。`openrouter/` 前綴只是命名慣例，純粹方便
+  人看得懂來源，不是功能開關。
 - `model`：`litellm_params.model`，供應商前綴 + 模型 id（`openai/gpt-4o-mini`、
   `anthropic/claude-...`……），OpenRouter 路線則是 `openai/<openrouter slug>`。
-- `key_policy`：這個模型的 key 從哪來，跟 `model_name`/`model`（上游是誰）解耦
-  （決策 E，見 [admin-web.md](admin-web.md)）。`"model"` = 用這筆的 `api_key`；
-  `"dept:<provider>"`（如 `"dept:openai"`）= 執行期改用呼叫者部門
-  `provider_keys` 裡對應 provider 的 key，此時 `api_key` 可留空。**留空**這個
-  欄位時後端會推導預設值：`openrouter/` 開頭 → `dept:openrouter`，其餘 →
-  `"model"`（維持決策 E 之前的唯一行為，既有呼叫者不受影響）。
-- `api_key`：`key_policy` 解析為 `"model"` 時必填（直接存進 Postgres，LiteLLM
-  會加密儲存）；`"dept:<provider>"` 時可留空，會自動帶入共用 placeholder。
-- **`dept:<provider>` 是舊制**：admin-web 的上架表單已不再產生這種模型（新模型一律
-  `"model"`，見 [admin-web.md](admin-web.md)），要給某個部門專屬 key 的做法改成
-  「同一個上游再上架一個加後綴的模型」。這個端點仍然接受 `dept:<provider>`，既有
-  模型與腳本行為完全不變。
+- `api_key`：**必填**（2026-09 起，不管哪個上游）。一律模型自帶 key，直接存進
+  Postgres（LiteLLM 會加密儲存）。**舊制的 `dept:<provider>` 部門 key 機制已經
+  全面拔除**——這個端點不再接受 `key_policy` 欄位，也不會在留空時默默退回部門
+  key；沒帶 `api_key` 直接 422。要給某個部門專屬 key，做法是「同一個上游再上架
+  一個加後綴的模型」（見 [admin-web.md](admin-web.md)）。
 
 **管理面欄位（全部選填，存進 admin-api 的 `model_metadata` 表，不進 LiteLLM）**
 
@@ -655,8 +650,7 @@ C」](external-models-ops.md)）的模型，不含 `litellm_config.yaml` `model_
 curl 這條路只負責建立與刪除。
 
 **回應**：201 成功；409 表示 `model_name` 已存在（回應會註明是 YAML 定義還是
-DB-managed）；422 表示 `key_policy="model"` 卻沒給 `api_key`，或 `key_policy`
-格式錯誤。
+DB-managed）；422 表示沒給 `api_key`（或給了空字串）。
 
 ```bash
 curl -X POST "http://<host>:30408/api/v1/models/external" \

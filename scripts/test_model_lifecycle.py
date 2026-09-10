@@ -244,7 +244,7 @@ openwebui_sync_service.OWUI_A = {"name": "portal-a", "url": "http://owui-mock", 
 openwebui_sync_service.LITELLM_URL = "http://litellm-mock"
 openwebui_sync_service.LITELLM_MASTER_KEY = "sk-test-master"
 
-from models import ExternalModelIn  # noqa: E402
+from models import ExternalModelIn, UserOut  # noqa: E402
 import audit  # noqa: E402
 
 
@@ -359,7 +359,7 @@ section("L1 上架後是草稿，custom_auth 擋掉一般使用者")
 
 run(models_service.create_external_model(ExternalModelIn(
     model_name=NAME, model="openai/anthropic/claude-sonnet-4-5",
-    api_base="https://openrouter.ai/api/v1", key_policy="dept:openrouter",
+    api_base="https://openrouter.ai/api/v1", api_key="sk-or-test-key",
     display_name="Claude Sonnet 4.5", model_type="chat", cost_center="RD",
     notes="客戶指定", upstream="openrouter", status="draft",
 )))
@@ -407,7 +407,7 @@ check("找不到" in model_metadata_service.get_metadata(NAME)["last_test_result
 # embedding 模型應該打 /v1/embeddings
 EMB = "openrouter/text-embed"
 run(models_service.create_external_model(ExternalModelIn(
-    model_name=EMB, model="openai/text-embed", key_policy="dept:openrouter",
+    model_name=EMB, model="openai/text-embed", api_key="sk-or-test-key",
     model_type="embedding", upstream="openrouter", status="draft",
 )))
 FAKE.infer_status, FAKE.infer_body = 200, {"data": []}
@@ -448,7 +448,7 @@ check(not ok, "沒授權的部門仍然打不通（狀態閘門不會取代授�
 section("L5 已發布鎖定上游設定，描述性欄位仍可改")
 try:
     run(models_service.update_draft_model(
-        NAME, model="openai/other", api_base=None, api_key=None, key_policy="model",
+        NAME, model="openai/other", api_base=None, api_key=None,
         display_name="x", model_type="chat", cost_center="", budget_limit_usd=None,
         budget_enforce=False, budget_period="monthly", points_per_1k_prompt=None,
         points_per_1k_completion=None, notes="", upstream="openrouter",
@@ -501,7 +501,7 @@ check(ok, "重新啟用後不用重放授權就打得通")
 # 沒通過測試的草稿停用再啟用，不該偷偷變成已發布
 UNTESTED = "openrouter/never-tested"
 run(models_service.create_external_model(ExternalModelIn(
-    model_name=UNTESTED, model="openai/never-tested", key_policy="dept:openrouter",
+    model_name=UNTESTED, model="openai/never-tested", api_key="sk-or-test-key",
     upstream="openrouter", status="draft",
 )))
 run(models_service.disable_model(UNTESTED))
@@ -544,8 +544,8 @@ except Exception as exc:
 
 # ══ B：額度累計與強制 ═════════════════════════════════════════════════════════
 section("B 額度：只記錄 vs 真的擋下來")
-custom_logger.record_spend(NAME, 0.6)
-custom_logger.record_spend(NAME, 0.5)
+custom_logger.record_spend(NAME, 0.6, "RD")
+custom_logger.record_spend(NAME, 0.5, "SALES")
 # 成本來源的優先序（2026-08-28 在 ai-x-dev 驗收 W-51 時踩到的真實 bug）：
 # LiteLLM 的 response_cost 是用內建定價表算的，查不到的模型一律回 0.0 而不是
 # None——透過 OpenRouter 上架的模型 litellm_params.model 是 openai/<slug>，
@@ -566,9 +566,23 @@ check(custom_logger._extract_cost({"response_cost": 0.0}, None) == 0.0,
       "沒有 response_obj 也不會爆，且 LiteLLM 明講的 0 就記 0（地端模型確實免費）")
 
 spend = model_metadata_service.get_spend(NAME)
-check(abs(spend["monthly"] - 1.1) < 1e-9, "用量累加正確", str(spend))
+check(abs(spend["monthly"] - 1.1) < 1e-9, "用量累加正確（跨部門加總，語意不變）", str(spend))
 check(spend["calls"] == 2, "呼叫次數累加正確")
 check(abs(spend["total"] - 1.1) < 1e-9, "累計欄位也同步累加")
+
+# 決策二：cost_center 手填標籤取代成從真實用量算出的各部門花費
+dept_breakdown = model_metadata_service.dept_spend(NAME)
+check(abs(dept_breakdown["RD"]["monthly"] - 0.6) < 1e-9, "RD 的花費算得出來", str(dept_breakdown))
+check(abs(dept_breakdown["SALES"]["monthly"] - 0.5) < 1e-9, "SALES 的花費算得出來", str(dept_breakdown))
+check(
+    abs(spend["monthly"] - (dept_breakdown["RD"]["monthly"] + dept_breakdown["SALES"]["monthly"])) < 1e-9,
+    "get_spend 的總量等於各部門加總（額度判斷用的聚合語意沒有變）",
+)
+
+custom_logger.record_spend(NAME, 0.1)  # 沒帶 dept_id：地端健康檢查／curl 測試常見情境
+dept_breakdown2 = model_metadata_service.dept_spend(NAME)
+check("" in dept_breakdown2 and abs(dept_breakdown2[""]["monthly"] - 0.1) < 1e-9,
+      "沒有部門脈絡的呼叫記到（未分類）桶，不是丟掉或報錯", str(dept_breakdown2))
 
 # 額度 1.0、只記錄 → 不擋
 run(models_service.update_descriptive_fields(
@@ -669,16 +683,26 @@ for label, url in [
     ("部門授權編輯", "/api/v1/admin/web/access/dept/edit?dept_id=RD"),
     ("使用者搜尋", "/api/v1/admin/web/access/users?q=rd"),
     ("個人授權編輯", "/api/v1/admin/web/access/users/edit?user_id=uid-rd-0"),
-    ("Provider Key 選單", "/api/v1/admin/web/keys"),
-    ("Provider Key 表單", "/api/v1/admin/web/keys?provider=openrouter"),
     ("稽核紀錄", "/api/v1/admin/web/audit"),
 ]:
     resp = client.get(url)
     check(resp.status_code == 200, f"{label} 渲染成功", f"HTTP {resp.status_code}: {resp.text[:300]}")
 
+# 決策一：舊制 Provider Key 頁面已整頁拔除
+resp = client.get("/api/v1/admin/web/keys")
+check(resp.status_code == 404, "Provider Key 舊頁面已經整個拔除 → 404", str(resp.status_code))
+resp = client.get("/api/v1/admin/web")
+check("Provider Key" not in resp.text, "總覽頁的導覽列不再有 Provider Key 入口")
+check("OpenRouter Key" not in resp.text and "待處理" not in resp.text,
+      "總覽頁不再顯示 OpenRouter Key 欄與待處理清單")
+resp = client.get("/api/v1/admin/web/models")
+check("Key 來源" not in resp.text, "模型清單不再顯示 Key 來源欄")
+
 resp = client.get(f"/api/v1/admin/web/models/detail?model_name={enc_name}")
 check("Claude 4.5" in resp.text, "詳情頁顯示得出顯示名稱")
 check("影響範圍" in resp.text and "人" in resp.text, "詳情頁顯示得出影響範圍")
+check("各部門實際花費" in resp.text, "詳情頁有各部門實際花費區塊（取代決策 E 的 cost_center 標籤）")
+check('name="cost_center"' not in resp.text, "詳情頁不再讓人手填成本歸屬部門")
 
 # 草稿模型的詳情頁：要有「發布」按鈕與「編輯上游設定」連結
 resp = client.get(f"/api/v1/admin/web/models/detail?model_name={UNTESTED.replace('/', '%2F')}")
@@ -715,7 +739,7 @@ section("O OpenWebUI 的模型 IDs 白名單")
 OWUI_CONFIG["OPENAI_API_CONFIGS"]["1"]["model_ids"] = ["gemma-4-31B-it"]
 WL = "openrouter/whitelist-check"
 run(models_service.create_external_model(ExternalModelIn(
-    model_name=WL, model="openai/whitelist-check", key_policy="dept:openrouter",
+    model_name=WL, model="openai/whitelist-check", api_key="sk-or-test-key",
     upstream="openrouter", status="draft",
 )))
 run(models_service.test_model(WL))
@@ -743,7 +767,7 @@ check(WL in ids, "重新啟用回到已發布時，白名單也加回來", str(i
 # 沒通過測試的模型啟用後是草稿，不該出現在使用者的下拉選單裡
 NOWL = "openrouter/never-published"
 run(models_service.create_external_model(ExternalModelIn(
-    model_name=NOWL, model="openai/nwp", key_policy="dept:openrouter",
+    model_name=NOWL, model="openai/nwp", api_key="sk-or-test-key",
     upstream="openrouter", status="draft",
 )))
 run(models_service.disable_model(NOWL))
@@ -754,7 +778,7 @@ check(NOWL not in OWUI_CONFIG["OPENAI_API_CONFIGS"]["1"]["model_ids"],
 # 白名單同步失敗不能擋掉主操作——發布本身（LiteLLM + DB）已經成功了
 SOFT = "openrouter/failsoft-check"
 run(models_service.create_external_model(ExternalModelIn(
-    model_name=SOFT, model="openai/failsoft", key_policy="dept:openrouter",
+    model_name=SOFT, model="openai/failsoft", api_key="sk-or-test-key",
     upstream="openrouter", status="draft",
 )))
 run(models_service.test_model(SOFT))          # 先讓它通過發布閘門
@@ -946,6 +970,54 @@ resp = client.get("/api/v1/admin/web/access/users/edit?user_id=uid-rd-0")
 check('data-was=' in resp.text and "還原成原設定" in resp.text,
       "個人授權編輯頁也有原設定與還原")
 
+# ── 決策三：個人點數上限（只存值，admin-web 只提供設定介面，扣點/擋人是外部系統
+# 的事，不需要 preview/push）───────────────────────────────────────────────────
+section("P 個人點數上限")
+
+resp = client.get("/api/v1/admin/web/access/users/points?user_id=uid-rd-0")
+check(resp.status_code == 200, "點數上限設定頁渲染成功", f"HTTP {resp.status_code}")
+check("（未設定）" not in resp.text or 'value=""' in resp.text, "還沒設定時欄位是空的")
+
+resp = client.post("/api/v1/admin/web/access/users/points",
+                   data={"user_id": "uid-rd-0", "points_limit": "500", "points_period": "monthly"},
+                   follow_redirects=False)
+check(resp.status_code == 200, "設定點數上限成功", str(resp.status_code))
+saved = model_access_service.get_user("uid-rd-0")
+check(saved["points_limit"] == 500.0 and saved["points_period"] == "monthly",
+      "點數上限與週期存進去了", str(saved))
+
+# UserOut（既有的 GET /api/v1/users 回應形狀，外部系統讀用量的入口）要含新欄位，
+# 不用新開端點——curl 路徑本身要另外帶 ADMIN_API_KEY 認證，不在這支離線測試的
+# 範圍內（見檔案開頭的說明），這裡直接查 DB 驗證欄位確實存下去、且 UserOut 有這兩格。
+check("points_limit" in UserOut.model_fields and "points_period" in UserOut.model_fields,
+      "UserOut 含點數上限欄位，GET /api/v1/users 會自動帶出去")
+with get_conn(DATABASE_URL) as conn:
+    row = conn.execute("SELECT points_limit, points_period FROM users WHERE user_id='uid-rd-0'").fetchone()
+check(row["points_limit"] == 500.0 and row["points_period"] == "monthly", "DB 裡確實存下去了", str(dict(row)))
+
+resp = client.post("/api/v1/admin/web/access/users/points",
+                   data={"user_id": "uid-rd-0", "points_limit": "", "points_period": "total"},
+                   follow_redirects=False)
+check(resp.status_code == 200, "留空存檔成功", str(resp.status_code))
+cleared_pts = model_access_service.get_user("uid-rd-0")
+check(cleared_pts["points_limit"] is None, "留空存成 None（未設定），不是 0", str(cleared_pts["points_limit"]))
+check(cleared_pts["points_period"] == "total", "週期同時可以改", str(cleared_pts["points_period"]))
+
+resp = client.post("/api/v1/admin/web/access/users/points",
+                   data={"user_id": "uid-rd-0", "points_limit": "-5", "points_period": "monthly"})
+check(resp.status_code == 422 and "負數" in resp.text, "點數上限填負數 → 422", resp.text[:200])
+resp = client.post("/api/v1/admin/web/access/users/points",
+                   data={"user_id": "uid-rd-0", "points_limit": "abc", "points_period": "monthly"})
+check(resp.status_code == 422 and "要是數字" in resp.text, "點數上限填非數字 → 看得懂的 422", resp.text[:200])
+
+points_audit = {}
+for line in open(os.environ["ADMIN_AUDIT_LOG_PATH"], encoding="utf-8"):
+    rec = json.loads(line)
+    if rec["action"] == "set_user_points" and rec["target"] == "uid-rd-0":
+        points_audit = rec["detail"]
+check(points_audit.get("after", {}).get("points_period") == "total",
+      "點數上限的變更有進稽核紀錄", str(points_audit))
+
 
 # ── 按模型授權：一個模型一次開給多個部門 ─────────────────────────────────────
 #
@@ -1078,7 +1150,7 @@ check(resp.status_code == 422 and "額度上限" in resp.text,
 # 上架表單的完整往返（客戶回饋的第一個痛點就是這條流程）
 #
 # 第三期起表單只有兩步：選上游 → 填欄位。原本的「第二步：key 從哪來？」拿掉了，
-# 新模型一律是模型自帶 key（key_policy='model'）。
+# 新模型一律是模型自帶 key。
 resp = client.get("/api/v1/admin/web/models/new?upstream=openrouter")
 check("key 從哪來" not in resp.text, "選完上游直接進填寫頁，不再問「key 從哪來」")
 check('name="api_key"' in resp.text and 'name="slug"' in resp.text,
@@ -1105,8 +1177,7 @@ check(formed["display_name"] == "Llama 4" and formed["budget_limit_usd"] == 50.0
 check(formed["budget_enforce"] == 0, "沒勾「超額擋下來」＝只記錄")
 check(formed["points_per_1k_prompt"] == 0.5 and formed["points_per_1k_completion"] == 2.0,
       "點數費率存進去了（含小數）", str(formed["points_per_1k_prompt"]))
-check(models_service.get_key_policy(FORMED) == "model",
-      "表單上架的模型一律是模型自帶 key", models_service.get_key_policy(FORMED))
+check(formed["api_key"] == "sk-or-v1-formkey1234", "表單上架的模型自帶 key 存進去了", str(formed["api_key"]))
 
 # 費率是純記錄：填了不該影響認證（不累計、不擋）
 ok, exc = run(_auth_model("sk-rd-0", "gemma-4-31B-it"))
@@ -1146,7 +1217,7 @@ check(cleared["points_per_1k_prompt"] is None,
 
 # curl 路徑的回溯相容：不帶 status 的舊呼叫仍然直接可用（published）
 run(models_service.create_external_model(ExternalModelIn(
-    model_name="openrouter/legacy-curl", model="openai/legacy", key_policy="dept:openrouter",
+    model_name="openrouter/legacy-curl", model="openai/legacy", api_key="sk-or-legacy-key",
 )))
 check(model_metadata_service.get_metadata("openrouter/legacy-curl")["status"] == "published",
       "curl 路徑不帶 status → published（既有流程行為不變）")
@@ -1177,31 +1248,33 @@ shared = by_target.get("audit/sharedkey", {})
 check(shared.get("api_key") == "...4321", "上架帶的 key 稽核只留末四碼", str(shared.get("api_key")))
 check("secret4321" not in json.dumps(shared, ensure_ascii=False), "完整的 key 沒有進稽核紀錄")
 
-# 舊制（決策 E 時期）的 dept:<provider> 模型：上架動線已不再產生，但既有的還在跑，
-# 用表單編輯草稿時政策必須沿用、不能被重新推導成模型自帶 key——不然那個模型當下
-# 就會拿一把不存在的 key 去打上游。
+# 決策一（2026-09）：舊制 dept:<provider> key 機制已全面拔除，curl 路徑也一律
+# 要求明確的 api_key，不再有「留空就退回部門 key」這條路。
+try:
+    ExternalModelIn(model_name="openrouter/no-key-attempt", model="openai/no-key")
+    check(False, "curl 路徑沒帶 api_key 應該被 Pydantic 擋下來（欄位必填）")
+except Exception:
+    check(True, "curl 路徑沒帶 api_key → Pydantic 驗證錯誤（欄位必填，不再退回部門 key）")
+
+resp = client.post("/api/v1/admin/web/models", data={
+    "upstream": "openrouter", "slug": "no-key-attempt-2", "api_key": "",
+    "model_type": "chat", "budget_period": "monthly",
+})
+check(resp.status_code == 422, "表單上架 OpenRouter 模型沒填 key → 422", str(resp.status_code))
+
+# 編輯草稿時 key 留空＝沿用原本的值（不是清除），這條行為不受決策一影響。
+KEEPKEY = "openrouter/keep-key"
 run(models_service.create_external_model(ExternalModelIn(
-    model_name="openrouter/legacy-dept", model="openai/legacy-dept",
-    key_policy="dept:openrouter", upstream="openrouter", status="draft",
+    model_name=KEEPKEY, model="openai/keep-key", api_key="sk-or-keepme-1234",
+    upstream="openrouter", status="draft",
 )))
 resp = client.post("/api/v1/admin/web/models/edit", data={
-    "model_name": "openrouter/legacy-dept", "model": "openai/legacy-dept-v2",
+    "model_name": KEEPKEY, "model": "openai/keep-key-v2",
     "api_key": "", "model_type": "chat", "budget_period": "monthly",
 }, follow_redirects=False)
-check(resp.status_code == 303, "舊制草稿編輯成功", str(resp.status_code))
-check(models_service.get_key_policy("openrouter/legacy-dept") == "dept:openrouter",
-      "key 留空時沿用舊制的部門 key 政策，不會被改成模型自帶 key",
-      models_service.get_key_policy("openrouter/legacy-dept"))
-
-legacy_audit = {}
-for line in open(os.environ["ADMIN_AUDIT_LOG_PATH"], encoding="utf-8"):
-    rec = json.loads(line)
-    if rec["action"] == "update_draft_model" and rec["target"] == "openrouter/legacy-dept":
-        legacy_audit = rec["detail"]
-check(legacy_audit.get("after", {}).get("api_key") == "（無）",
-      "不帶 key 的模型記「（無）」而不是空字串", str(legacy_audit.get("after", {}).get("api_key")))
-check(legacy_audit.get("key_policy", "").startswith("dept:"),
-      "同一筆紀錄有 key_policy，看得出為什麼是「（無）」", str(legacy_audit.get("key_policy")))
+check(resp.status_code == 303, "草稿編輯成功", str(resp.status_code))
+kept = model_metadata_service.get_metadata(KEEPKEY)
+check(kept["api_key"] == "sk-or-keepme-1234", "key 留空時沿用原值，不是清空", str(kept["api_key"]))
 
 # 既有模型（沒有管理紀錄）存一次描述性欄位＝納管；打錯名字要擋下來
 resp = client.post("/api/v1/admin/web/models/fields",
